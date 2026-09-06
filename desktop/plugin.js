@@ -90,6 +90,18 @@ function storeSet(key, value) {
 
 const PROBLEM_STATES = ['broken-link', 'foreign-link', 'unmanaged-dir']
 
+function downloadText(text, filename) {
+  const blob = new Blob([text], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = filename
+  document.body.appendChild(anchor)
+  anchor.click()
+  document.body.removeChild(anchor)
+  URL.revokeObjectURL(url)
+}
+
 function isProblemState(state) {
   return PROBLEM_STATES.indexOf(state) !== -1
 }
@@ -581,7 +593,11 @@ function DriftPanel({ drift, tools, onPush, onPull, onKeepBoth, busy }) {
 
 // Setup / onboarding panel — create tool dirs, add custom tools, manage
 // auto-link prefs, and find copies to adopt. Purely user-initiated (opt-in).
-function SetupPanel({ tools, onClose, onEnsureDir, onAddTool, busy, autoLink, onAutoLink, adopt, onScanAdopt, onAdoptTool }) {
+function SetupPanel({
+  tools, onClose, onEnsureDir, onAddTool, busy, autoLink, onAutoLink, adopt, onScanAdopt, onAdoptTool,
+  watchPrefs, onWatchPref, onBlueprintExport, onBlueprintFile, blueprintPreview, onBlueprintApply,
+  backups, onScanBackups, onRestoreBackup
+}) {
   const t = usePluginI18n(ID)
   const [label, setLabel] = useState('')
   const [dir, setDir] = useState('')
@@ -646,6 +662,92 @@ function SetupPanel({ tools, onClose, onEnsureDir, onAddTool, busy, autoLink, on
             children: autoLink[tool.id] ? `⚡ ${tool.label}` : tool.label
           }, tool.id)
         ) })
+      ] }),
+      jsxs('div', { className: 'mt-2', children: [
+        jsx('div', { className: 'mb-1 text-muted-foreground', children: t('watchDesc') }),
+        jsxs('div', { className: 'flex flex-wrap items-center gap-1', children: [
+          jsx('button', {
+            type: 'button',
+            onClick: () => onWatchPref('on', !watchPrefs.on),
+            className: cn(
+              'rounded-[4px] px-1.5 py-0.5 text-[0.6875rem] transition-colors',
+              watchPrefs.on ? 'bg-primary/10 font-medium text-primary' : 'text-muted-foreground hover:bg-(--chrome-action-hover) hover:text-foreground'
+            ),
+            children: watchPrefs.on ? '⚡ ' + t('watchOn') : t('watchOff')
+          }),
+          watchPrefs.on
+            ? ['arrivals', 'broken', 'drift'].map(cls =>
+                jsx('button', {
+                  type: 'button',
+                  onClick: () => onWatchPref(cls, !watchPrefs[cls]),
+                  className: cn(
+                    'rounded-[4px] px-1 py-0.5 text-[0.625rem] transition-colors',
+                    watchPrefs[cls] ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:bg-(--chrome-action-hover)'
+                  ),
+                  children: t('watch' + cls.charAt(0).toUpperCase() + cls.slice(1))
+                }, cls)
+              )
+            : null
+        ] })
+      ] }),
+      jsxs('div', { className: 'mt-2', children: [
+        jsx('div', { className: 'mb-1 text-muted-foreground', children: t('blueprintDesc') }),
+        jsxs('div', { className: 'flex flex-wrap items-center gap-1', children: [
+          jsx(Button, { variant: 'secondary', size: 'xs', disabled: busy, onClick: onBlueprintExport, children: t('blueprintExport') }),
+          jsx('label', {
+            className: cn(
+              'cursor-pointer rounded-[4px] border border-(--ui-stroke-secondary) px-1.5 py-0.5 text-[0.6875rem] text-muted-foreground transition-colors',
+              'hover:bg-(--chrome-action-hover) hover:text-foreground',
+              busy && 'opacity-50'
+            ),
+            children: [
+              t('blueprintOpen'),
+              jsx('input', {
+                type: 'file',
+                accept: '.json,application/json',
+                className: 'hidden',
+                onChange: e => {
+                  const file = e && e.target && e.target.files ? e.target.files[0] : null
+                  onBlueprintFile(file)
+                  e.target.value = ''
+                }
+              })
+            ]
+          })
+        ] }),
+        blueprintPreview
+          ? jsxs('div', { className: 'mt-1 text-muted-foreground', children: [
+              jsx('span', { children: t('blueprintPreview', blueprintPreview.counts.links, blueprintPreview.counts.skills_disabled, blueprintPreview.counts.refused) }),
+              blueprintPreview.counts.links + blueprintPreview.counts.skills_disabled > 0
+                ? jsx(Button, {
+                    variant: 'secondary', size: 'xs', className: 'ml-2', disabled: busy,
+                    onClick: onBlueprintApply, children: t('blueprintApply')
+                  })
+                : null
+            ] })
+          : null
+      ] }),
+      jsxs('div', { className: 'mt-2', children: [
+        jsx(Button, {
+          variant: 'secondary', size: 'xs', disabled: busy,
+          onClick: onScanBackups,
+          children: t('backupList')
+        }),
+        backups && backups.ok
+          ? jsxs('div', { className: 'mt-1 flex flex-col gap-0.5', children: [
+              jsx('span', { className: 'text-[0.625rem] text-muted-foreground', children: t('backupCount', backups.count) }),
+              backups.backups.slice(0, 12).map(b =>
+                jsxs('div', { className: 'flex items-center gap-2', children: [
+                  jsx('span', { className: 'min-w-0 flex-1 truncate text-muted-foreground', children: b.name }),
+                  jsx(Badge, { variant: 'outline', size: 'xs', children: b.kind }),
+                  jsx(Button, {
+                    variant: 'ghost', size: 'xs', className: 'h-4 px-1 text-[0.625rem]', disabled: busy,
+                    onClick: () => onRestoreBackup(b), children: t('backupRestore')
+                  })
+                ] }, b.path)
+              )
+            ] })
+          : null
       ] }),
       jsxs('div', { className: 'mt-2', children: [
         jsx(Button, {
@@ -788,6 +890,16 @@ function SkillsPane() {
   const [showPresetImport, setShowPresetImport] = useState(false)
   const [presetText, setPresetText] = useState('')
   const [taskBusy, setTaskBusy] = useState(false)
+  const [watchPrefs, setWatchPrefsState] = useState(
+    () => storeGet('watchPrefs', null) || { on: false, arrivals: true, broken: true, drift: true }
+  )
+  const setWatchPrefs = next => {
+    setWatchPrefsState(next)
+    storeSet('watchPrefs', JSON.stringify(next))
+  }
+  const [blueprintBp, setBlueprintBp] = useState(null)
+  const [blueprintPreview, setBlueprintPreview] = useState(null)
+  const [backups, setBackups] = useState(null)
 
   useEffect(() => storeSet('toolFilter', activeTool), [activeTool])
   useEffect(() => storeSet('viewFilter', view), [view])
@@ -1006,8 +1118,19 @@ function SkillsPane() {
       seen = new Set(ids)
     }
     const fresh = ids.filter(id => !seen.has(id))
-    if (fresh.length) setArrivals(prev => Array.from(new Set([...prev, ...fresh])))
-  }, [state])
+    if (fresh.length) {
+      setArrivals(prev => Array.from(new Set([...prev, ...fresh])))
+      try {
+        const wpRaw = storeGet('watchPrefs', null)
+        const wp = wpRaw ? JSON.parse(wpRaw) : null
+        if (wp && wp.on && wp.arrivals && pluginCtx && pluginCtx.os && typeof pluginCtx.os.notify === 'function') {
+          pluginCtx.os.notify({ title: t('watchArrivalsTitle'), body: t('watchArrivalsBody', fresh.length) })
+        }
+      } catch (_err) {
+        /* watch prefs are optional */
+      }
+    }
+  }, [state, t])
 
   const autoLinkRef = useRef(false)
   useEffect(() => {
@@ -1040,6 +1163,35 @@ function SkillsPane() {
     })()
   }, [arrivals, state, linkTools, skills, t, qc])
 
+  // -- watch mode (v3-5): opt-in native notifications on change -------------
+  const watchRef = useRef({ initialized: false, broken: null, drift: null })
+  useEffect(() => {
+    if (!watchPrefs.on) {
+      watchRef.current.initialized = false
+      return
+    }
+    const broken = diff && diff.ok ? diff.counts.broken : 0
+    const driftCount = drift && drift.ok ? drift.count : 0
+    if (!watchRef.current.initialized) {
+      watchRef.current = { initialized: true, broken: broken, drift: driftCount }
+      return
+    }
+    const notify = (title, body) => {
+      if (pluginCtx && pluginCtx.os && typeof pluginCtx.os.notify === 'function') {
+        pluginCtx.os.notify({ title: title, body: body })
+      } else {
+        host.notify({ kind: 'info', message: title + ' — ' + body })
+      }
+    }
+    if (watchPrefs.broken && broken > watchRef.current.broken) {
+      notify(t('watchBrokenTitle'), t('watchBrokenBody', broken))
+    }
+    if (watchPrefs.drift && driftCount > watchRef.current.drift) {
+      notify(t('watchDriftTitle'), t('watchDriftBody', driftCount))
+    }
+    watchRef.current.broken = broken
+    watchRef.current.drift = driftCount
+  }, [diff, drift, watchPrefs, t])
   // -- imperative bulk runner with undo capture ------------------------------
   // entries: [{ tool, ids, enabled }]; undoActions: [{ skill, tool, enabled }]
   // carrying the RESTORE polarity captured before the change.
@@ -1200,16 +1352,7 @@ function SkillsPane() {
   })
 
   const downloadPresetFile = () => {
-    const text = JSON.stringify(buildPresetExport(), null, 2)
-    const blob = new Blob([text], { type: 'application/json' })
-    const url = URL.createObjectURL(blob)
-    const anchor = document.createElement('a')
-    anchor.href = url
-    anchor.download = 'skills-toggle-preset.json'
-    document.body.appendChild(anchor)
-    anchor.click()
-    document.body.removeChild(anchor)
-    URL.revokeObjectURL(url)
+    downloadText(JSON.stringify(buildPresetExport(), null, 2), 'skills-toggle-preset.json')
     host.notify({ kind: 'success', message: t('downloaded') })
   }
 
@@ -1469,6 +1612,109 @@ function SkillsPane() {
     })
   }
 
+  // -- machine blueprint (v3-2, additive-only) --------------------------------
+  const onBlueprintExport = () => {
+    setTaskBusy(true)
+    pluginCtx
+      .rest('/blueprint/export')
+      .then(res => {
+        if (res && res.ok) {
+          downloadText(JSON.stringify(res.blueprint, null, 2), 'skills-toggle-blueprint.json')
+          host.notify({ kind: 'success', message: t('blueprintExported') })
+        } else host.notify({ kind: 'error', message: t('blueprintFailed') })
+      })
+      .catch(err => host.notifyError(err, t('blueprintFailed')))
+      .finally(() => setTaskBusy(false))
+  }
+
+  const onBlueprintFile = file => {
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = () => {
+      let bp
+      try {
+        bp = JSON.parse(String(reader.result || ''))
+        if (!bp || bp.version !== 2) throw new Error('version')
+      } catch (_err) {
+        host.notify({ kind: 'error', message: t('blueprintInvalid') })
+        return
+      }
+      setBlueprintBp(bp)
+      setTaskBusy(true)
+      pluginCtx
+        .rest('/blueprint/apply', { method: 'POST', body: { blueprint: bp, dry_run: true } })
+        .then(res => {
+          if (res && res.ok) setBlueprintPreview(res.plan)
+          else host.notify({ kind: 'error', message: t('blueprintFailed') })
+        })
+        .catch(err => host.notifyError(err, t('blueprintFailed')))
+        .finally(() => setTaskBusy(false))
+    }
+    reader.readAsText(file)
+  }
+
+  const onBlueprintApply = () => {
+    if (!blueprintBp) return
+    setConfirm({
+      title: t('blueprintApplyTitle'),
+      description: t('blueprintApplyDesc', blueprintPreview.counts.links, blueprintPreview.counts.skills_disabled),
+      confirmLabel: t('blueprintApply'),
+      destructive: false,
+      action: () => {
+        setTaskBusy(true)
+        pluginCtx
+          .rest('/blueprint/apply', { method: 'POST', body: { blueprint: blueprintBp, dry_run: false } })
+          .then(res => {
+            if (res && res.ok) {
+              host.notify({ kind: 'success', message: t('blueprintApplied', res.applied.links, res.applied.skills_disabled, res.applied.failed) })
+              setBlueprintBp(null)
+              setBlueprintPreview(null)
+            } else host.notify({ kind: 'error', message: res && res.error ? res.error : t('blueprintFailed') })
+          })
+          .catch(err => host.notifyError(err, t('blueprintFailed')))
+          .finally(() => {
+            setTaskBusy(false)
+            qc.invalidateQueries({ queryKey: STATE_KEY })
+            qc.invalidateQueries({ queryKey: DIFF_KEY })
+          })
+      }
+    })
+  }
+
+  // -- backups (v3-6) ----------------------------------------------------------
+  const onScanBackups = () => {
+    setTaskBusy(true)
+    pluginCtx
+      .rest('/backups')
+      .then(res => setBackups(res))
+      .catch(err => host.notifyError(err, t('backupScanFailed')))
+      .finally(() => setTaskBusy(false))
+  }
+
+  const onRestoreBackup = backup => {
+    setConfirm({
+      title: t('backupRestoreTitle'),
+      description: t('backupRestoreDesc', backup.name),
+      confirmLabel: t('backupRestore'),
+      destructive: false,
+      action: () => {
+        setTaskBusy(true)
+        pluginCtx
+          .rest('/backups/restore', { method: 'POST', body: { path: backup.path } })
+          .then(res => {
+            if (res && res.ok) host.notify({ kind: 'success', message: t('backupRestored', backup.name) })
+            else host.notify({ kind: 'error', message: res && res.error ? res.error : t('backupScanFailed') })
+          })
+          .catch(err => host.notifyError(err, t('backupScanFailed')))
+          .finally(() => {
+            setTaskBusy(false)
+            qc.invalidateQueries({ queryKey: STATE_KEY })
+            onScanBackups()
+          })
+      }
+    })
+  }
+
   const onArrivalLink = toolIds => {
     const byId = new Map(skills.map(s => [s.id, s]))
     const undoActions = []
@@ -1701,7 +1947,19 @@ function SkillsPane() {
             onAutoLink: onToggleAutoLink,
             adopt: adopt,
             onScanAdopt: onScanAdopt,
-            onAdoptTool: onAdoptTool
+            onAdoptTool: onAdoptTool,
+            watchPrefs: watchPrefs,
+            onWatchPref: (cls, value) => {
+              const next = { ...watchPrefs, [cls]: value }
+              setWatchPrefs(next)
+            },
+            onBlueprintExport: onBlueprintExport,
+            onBlueprintFile: onBlueprintFile,
+            blueprintPreview: blueprintPreview,
+            onBlueprintApply: onBlueprintApply,
+            backups: backups,
+            onScanBackups: onScanBackups,
+            onRestoreBackup: onRestoreBackup
           })
         : null,
       arrivals.length
@@ -2186,6 +2444,36 @@ export default {
         mcpRemoveForceDesc: 'Its config differs from the Hermes catalog. The old copy is kept in a timestamped backup next to the config file.',
         mcpRemoveForce: 'Remove anyway',
         mcpFailed: 'MCP change failed',
+        watchDesc: 'Watch mode — notify me when skills or links change (only when the app is in the background)',
+        watchOn: 'watching',
+        watchOff: 'Watch: off',
+        watchArrivals: 'new skills',
+        watchBroken: 'broken links',
+        watchDrift: 'drift',
+        watchBrokenTitle: 'Skills: broken links detected',
+        watchBrokenBody: n => `${n} broken link(s) — open the Skills pane to repair`,
+        watchDriftTitle: 'Skills: drift detected',
+        watchDriftBody: n => `${n} drifted skill(s) — open the Skills pane to resolve`,
+        watchArrivalsTitle: 'Skills: new skills found',
+        watchArrivalsBody: n => `${n} new skill(s) — open the Skills pane to enable`,
+        blueprintDesc: 'Machine blueprint — export the full link map, apply it on another machine (additive only: nothing is removed).',
+        blueprintExport: 'Export blueprint',
+        blueprintOpen: 'Open blueprint…',
+        blueprintPreview: (l, d, r) => `Will create ${l} link(s) and disable ${d} skill(s) for Hermes (${r} refused).`,
+        blueprintApply: 'Apply blueprint',
+        blueprintApplyTitle: 'Apply this machine blueprint?',
+        blueprintApplyDesc: (l, d) => `Creates ${l} link(s) and disables ${d} skill(s) in Hermes. Additive only — existing links are never removed.`,
+        blueprintApplied: (l, d, f) => `Blueprint applied: ${l} link(s), ${d} hermes-off, ${f} failed`,
+        blueprintExported: 'Blueprint downloaded',
+        blueprintFailed: 'Blueprint operation failed',
+        blueprintInvalid: 'Invalid blueprint file (need version 2)',
+        backupList: 'List backups',
+        backupCount: n => `${n} backup(s) found`,
+        backupRestore: 'Restore',
+        backupRestoreTitle: 'Restore this backup?',
+        backupRestoreDesc: name => `"${name}" will be restored. The current state is backed up first.`,
+        backupRestored: name => `"${name}" restored`,
+        backupScanFailed: 'Backup scan failed',
         rowAllTip: 'Link this skill into every tool',
         rowNoneTip: 'Unlink this skill from every tool',
         viewDrift: 'Drift',
