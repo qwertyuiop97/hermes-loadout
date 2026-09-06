@@ -789,6 +789,18 @@ class SkillsToggleCore:
 
     # -- routes: mutate ----------------------------------------------------
 
+    def _backup(self, path: Path) -> str | None:
+        if not path.is_file():
+            return None
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        backup = path.with_name(f"{path.name}.bak.skills-toggle.{stamp}")
+        n = 1
+        while backup.exists():
+            backup = path.with_name(f"{path.name}.bak.skills-toggle.{stamp}-{n}")
+            n += 1
+        shutil.copy2(path, backup)
+        return str(backup)
+
     def _backup_config(self) -> str | None:
         if not self.config_path.is_file():
             return None
@@ -1485,6 +1497,105 @@ class SkillsToggleCore:
                 "aside": str(aside) if aside else None,
             }
 
+    # -- v3-6: backup browser + restore ----------------------------------------
+
+    _BACKUP_PATTERNS = (
+        re.compile(r"^config\.yaml\.bak\.skills-toggle\.(\d{8}-\d{6})(?:-\d+)?$"),
+        re.compile(r"^skills-toggle\.json\.bak\.skills-toggle\.(\d{8}-\d{6})(?:-\d+)?$"),
+        re.compile(r"^(.+)\.skills-toggle-backup\.(\d{8}-\d{6})(?:-\d+)?$"),
+        re.compile(r"^(.+)\.skills-toggle-backup-(\d{8}-\d{6})$"),
+        re.compile(r"^\.skills-toggle-(?:backup|reverted)-(.+)-(\d{8}-\d{6})$"),
+    )
+
+    def list_backups(self) -> dict:
+        rows = []
+        home = self.home
+        for ln in sorted(home.glob("config.yaml.bak.skills-toggle.*")):
+            rows.append({"path": str(ln), "kind": "config", "name": ln.name})
+        for ln in sorted(home.glob("skills-toggle.json.bak.skills-toggle.*")):
+            rows.append({"path": str(ln), "kind": "tools-json", "name": ln.name})
+        for tool_id in self.tools:
+            if tool_id == "hermes":
+                continue
+            tool_dir = self.tool_dir(tool_id)
+            if tool_dir is None or not tool_dir.is_dir():
+                continue
+            try:
+                children = sorted(tool_dir.iterdir())
+            except OSError:
+                continue
+            for ln in children:
+                if ln.name.endswith(".skills-toggle-backup") or ".skills-toggle-backup-" in ln.name:
+                    if ln.is_dir():
+                        rows.append({"path": str(ln), "kind": "tool-link", "tool": tool_id, "name": ln.name})
+        if self.skills_root.is_dir():
+            for cat_dir in sorted(self.skills_root.iterdir()):
+                if not cat_dir.is_dir() or cat_dir.name.startswith("."):
+                    continue
+                try:
+                    children = sorted(cat_dir.iterdir())
+                except OSError:
+                    continue
+                for ln in children:
+                    if ln.name.startswith(".skills-toggle-backup-") or ln.name.startswith(".skills-toggle-reverted-"):
+                        if ln.is_dir():
+                            rows.append({"path": str(ln), "kind": "hermes-copy", "name": ln.name, "category": cat_dir.name})
+        rows.sort(key=lambda r: r["path"], reverse=True)
+        return {"ok": True, "backups": rows[:200], "count": len(rows)}
+
+    def restore_backup(self, path: object) -> dict:
+        """Restore a plugin-created backup. The path must appear in the live
+        backup scan (no arbitrary files), and the current state is backed up
+        before anything moves."""
+        with self._lock:
+            if not isinstance(path, str):
+                raise SkillsToggleError("missing path", "invalid-body")
+            live = {r["path"]: r for r in self.list_backups()["backups"]}
+            row = live.get(path)
+            if not row:
+                raise SkillsToggleError("not a known skills-toggle backup", "unknown-backup")
+            src = Path(path)
+            kind = row["kind"]
+            if kind in ("config", "tools-json"):
+                target = self.config_path if kind == "config" else user_config_path(self.home)
+                if not target.is_file():
+                    raise SkillsToggleError(f"{target} is missing — nothing to replace", "restore-failed")
+                pre = self._backup(target)
+                shutil.copy2(src, target)
+                self._log(action="restore", kind=kind, path=path, pre_restore_backup=pre)
+                self.invalidate()
+                reset_core()
+                return {"ok": True, "kind": kind, "action": "restored", "pre_restore_backup": pre}
+            if kind == "tool-link":
+                tool_dir = self.tool_dir(row["tool"])
+                if tool_dir is None:
+                    raise SkillsToggleError("tool dir missing", "absent-dir")
+                name = row["name"].split(".skills-toggle-backup")[0]
+                self._restore_tool_entry(tool_dir, name, src)
+                self._log(action="restore", kind=kind, path=path)
+                self.invalidate()
+                return {"ok": True, "kind": kind, "action": "restored", "name": name}
+            if kind == "hermes-copy":
+                # dotted name: .skills-toggle-backup-<name>-<stamp> or .skills-toggle-reverted-<name>-<stamp>
+                m = re.match(r"^\.skills-toggle-(?:backup|reverted)-(.+)-\d{8}-\d{6}$", row["name"])
+                if not m:
+                    raise SkillsToggleError("cannot parse backup name", "restore-failed")
+                name = m.group(1)
+                canonical = self.skills_root / row["category"] / name
+                if not canonical.is_dir():
+                    raise SkillsToggleError(f"canonical {canonical} is missing", "restore-failed")
+                aside = canonical.parent / f".skills-toggle-replaced-{name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+                os.rename(canonical, aside)
+                try:
+                    os.rename(src, canonical)
+                except OSError:
+                    os.rename(aside, canonical)
+                    raise SkillsToggleError("restore failed — rolled back", "restore-failed")
+                self._log(action="restore", kind=kind, path=path, replaced_aside=str(aside))
+                self.invalidate()
+                return {"ok": True, "kind": kind, "action": "restored", "name": name, "replaced_aside": str(aside)}
+            raise SkillsToggleError(f"restore not supported for kind {kind}", "restore-failed")
+
     # -- v2: custom tool config ------------------------------------------------
 
     def set_tool(self, tool_id: object, label: object, dir_str: object) -> dict:
@@ -2085,6 +2196,14 @@ if APIRouter is not None:
     @router.post("/mcp/remove")
     async def mcp_remove(body: dict) -> dict:
         return _call(get_mcp_core().remove_from_claude, body.get("name"), body.get("force", False))
+
+    @router.get("/backups")
+    async def list_backups() -> dict:
+        return _call(get_core().list_backups)
+
+    @router.post("/backups/restore")
+    async def restore_backup(body: dict) -> dict:
+        return _call(get_core().restore_backup, body.get("path"))
 
     @router.post("/conflict/revert-push")
     async def revert_push(body: dict) -> dict:
