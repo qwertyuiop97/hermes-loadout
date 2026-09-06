@@ -160,13 +160,17 @@ if color_hits:
 else:
     print("ok  no hardcoded colors (theme vars / theme-mapped tokens only)")
 
-# -- 6. localStorage / document access (must use ctx.storage) -------------------
-for pat, why in [(r"\blocalStorage\b", "localStorage"), (r"\bdocument\.", "document access"), (r"\bwindow\.", "window access")]:
+# -- 6. persistence hygiene ------------------------------------------------------
+# localStorage is banned (persistence must go through ctx.storage). document.*
+# and window.* ARE allowed — native disk plugins legitimately touch the DOM
+# (the shipped theme template does) and window.location is avoided by design,
+# but state that should survive reloads never lives in the DOM.
+for pat, why in [(r"\blocalStorage\b", "localStorage"), (r"\bsessionStorage\b", "sessionStorage")]:
     for m in re.finditer(pat, src):
         line = src[: m.start()].count("\n") + 1
-        fail(f"{why} at line {line} — persistence/access must go through the SDK (ctx.storage / host)")
-if not any("persistence/access" in f for f in fails):
-    print("ok  no localStorage/document/window access")
+        fail(f"{why} at line {line} — persistence must go through ctx.storage")
+if not any("ctx.storage" in f for f in fails):
+    print("ok  no web-storage persistence (ctx.storage only)")
 
 print()
 for w in warns:

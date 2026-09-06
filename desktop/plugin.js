@@ -1144,6 +1144,40 @@ function SkillsPane() {
     })
   }
 
+  const buildPresetExport = () => ({
+    version: 1,
+    name: 'my-skills',
+    skills: skills
+      .filter(sk => linkTools.some(tool => sk.tools[tool.id] && sk.tools[tool.id].state === 'enabled'))
+      .map(sk => sk.id),
+    tools: linkTools.map(tool => tool.id)
+  })
+
+  const downloadPresetFile = () => {
+    const text = JSON.stringify(buildPresetExport(), null, 2)
+    const blob = new Blob([text], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = 'skills-toggle-preset.json'
+    document.body.appendChild(anchor)
+    anchor.click()
+    document.body.removeChild(anchor)
+    URL.revokeObjectURL(url)
+    host.notify({ kind: 'success', message: t('downloaded') })
+  }
+
+  const importPresetFile = file => {
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = () => {
+      setPresetText(String(reader.result || ''))
+      setShowPresetImport(true)
+    }
+    reader.onerror = () => host.notify({ kind: 'error', message: t('invalidPreset') })
+    reader.readAsText(file)
+  }
+
   const importPreset = () => {
     let parsed
     try {
@@ -1183,16 +1217,7 @@ function SkillsPane() {
   }
 
   const exportPreset = async () => {
-    const ids = skills
-      .filter(s => linkTools.some(tool => s.tools[tool.id] && s.tools[tool.id].state === 'enabled'))
-      .map(s => s.id)
-    const payload = {
-      version: 1,
-      name: 'my-skills',
-      skills: ids,
-      tools: linkTools.map(tool => tool.id)
-    }
-    const text = JSON.stringify(payload, null, 2)
+    const text = JSON.stringify(buildPresetExport(), null, 2)
     try {
       if (pluginCtx && pluginCtx.os && typeof pluginCtx.os.writeClipboard === 'function') {
         const okDone = await pluginCtx.os.writeClipboard(text)
@@ -1599,6 +1624,33 @@ function SkillsPane() {
           }),
           jsx('button', {
             type: 'button',
+            onClick: downloadPresetFile,
+            disabled: busy,
+            className: 'rounded-[4px] border border-(--ui-stroke-secondary) px-1.5 py-0.5 text-[0.6875rem] text-muted-foreground transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground',
+            children: t('downloadPreset')
+          }),
+          jsx('label', {
+            className: cn(
+              'cursor-pointer rounded-[4px] border border-(--ui-stroke-secondary) px-1.5 py-0.5 text-[0.6875rem] text-muted-foreground transition-colors',
+              'hover:bg-(--chrome-action-hover) hover:text-foreground',
+              busy && 'opacity-50'
+            ),
+            children: [
+              t('importFile'),
+              jsx('input', {
+                type: 'file',
+                accept: '.json,application/json',
+                className: 'hidden',
+                onChange: e => {
+                  const file = e && e.target && e.target.files ? e.target.files[0] : null
+                  importPresetFile(file)
+                  e.target.value = ''
+                }
+              })
+            ]
+          }),
+          jsx('button', {
+            type: 'button',
             onClick: exportPreset,
             disabled: busy,
             className: 'rounded-[4px] border border-(--ui-stroke-secondary) px-1.5 py-0.5 text-[0.6875rem] text-muted-foreground transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground',
@@ -1978,6 +2030,9 @@ export default {
         minimalTitle: 'Unlink every tool?',
         minimalDesc: n => `Removes ${n} consumer link(s). Sources stay in Hermes; Undo restores them for 30 seconds.`,
         presetImport: 'Import…',
+        downloadPreset: 'Download',
+        downloaded: 'Preset file downloaded',
+        importFile: 'Open file…',
         pasteHint: 'Paste a shared preset JSON:',
         copyPreset: 'Copy current',
         copied: 'Preset JSON copied to clipboard',
