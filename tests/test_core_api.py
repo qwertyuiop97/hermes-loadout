@@ -1,0 +1,193 @@
+"""Scope-lock guarantees for the shared Python core.
+
+A sibling app imports this module directly, so:
+
+1. Module-level imports must be STDLIB ONLY (fastapi/yaml/gateway modules may
+   appear only inside a try/except ImportError guard).
+2. The module must import cleanly with fastapi AND yaml unimportable, and then
+   behave identically except `router is None`.
+3. The stable surface (__all__) must exist and round-trip on a fixture when
+   the core is constructed directly (the sibling integration pattern).
+"""
+
+from __future__ import annotations
+
+import ast
+import builtins
+import importlib.util
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+MODULE = REPO / "dashboard" / "plugin_api.py"
+
+STDLIB = set(sys.stdlib_module_names)  # py3.10+
+
+
+def _module_tree():
+    return ast.parse(MODULE.read_text(encoding="utf-8"))
+
+
+class ImportHygieneTests(unittest.TestCase):
+    def test_module_level_imports_are_stdlib_only(self) -> None:
+        """Unguarded module-level imports: stdlib only. No gateway, no
+        third-party, no sibling-project imports."""
+        tree = _module_tree()
+        bad = []
+        for node in tree.body:
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    root = alias.name.split(".")[0]
+                    if root not in STDLIB and root != "__future__":
+                        bad.append((node.lineno, alias.name))
+            elif isinstance(node, ast.ImportFrom):
+                root = (node.module or "").split(".")[0]
+                if node.level == 0 and root and root not in STDLIB and root != "__future__":
+                    bad.append((node.lineno, node.module))
+        self.assertEqual(bad, [], f"non-stdlib module-level imports: {bad}")
+
+    def test_thirdparty_imports_are_guarded(self) -> None:
+        """fastapi (and any other non-stdlib import) may only appear inside a
+        try/except whose handler catches ImportError."""
+        tree = _module_tree()
+        guarded_modules = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Try):
+                catches_import_error = any(
+                    isinstance(h.type, ast.Name) and h.type.id == "ImportError"
+                    or isinstance(h.type, ast.Tuple)
+                    and any(isinstance(t, ast.Name) and t.id == "ImportError" for t in h.type.elts)
+                    for h in node.handlers
+                )
+                if catches_import_error:
+                    for inner in ast.walk(node):
+                        if isinstance(inner, ast.ImportFrom) and inner.module:
+                            guarded_modules.add(inner.module.split(".")[0])
+                        elif isinstance(inner, ast.Import):
+                            for alias in inner.names:
+                                guarded_modules.add(alias.name.split(".")[0])
+        # every non-stdlib import ANYWHERE in the file must be one of the
+        # guarded ones
+        stray = []
+        for node in ast.walk(tree):
+            names = []
+            if isinstance(node, ast.Import):
+                names = [a.name for a in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                names = [node.module or ""]
+            for n in names:
+                root = n.split(".")[0]
+                if root and root not in STDLIB and root != "__future__" and root not in guarded_modules:
+                    stray.append((node.lineno, n))
+        self.assertEqual(stray, [], f"unguarded third-party imports: {stray}")
+        self.assertIn("fastapi", guarded_modules, "fastapi import lost its ImportError guard")
+
+    def test_imports_cleanly_without_fastapi_and_yaml(self) -> None:
+        """Run in a fresh interpreter with fastapi/yaml import-blocked; the
+        module must load, export its stable surface, and set router=None."""
+        probe = """
+import sys
+class Blocker:
+    def find_spec(self, name, path=None, target=None):
+        if name.split('.')[0] in BLOCKED:
+            raise ImportError(name + ' is blocked in this probe')
+BLOCKED = {'fastapi', 'yaml'}
+sys.meta_path.insert(0, Blocker())
+import importlib.util
+spec = importlib.util.spec_from_file_location('sib_core', 'MODULE_PATH')
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+assert m.router is None, m.router
+for name in m.__all__:
+    assert hasattr(m, name), name
+core = m.SkillsToggleCore(m.Path('/tmp/does-not-exist-skills-toggle'), {'hermes': {'label': 'H', 'special': 'config'}})
+st = core.state()
+assert st['ok'] and st['skills'] == []
+print('PROBE_OK', m.PLUGIN_VERSION)
+""".replace('MODULE_PATH', str(MODULE))
+        r = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("PROBE_OK", r.stdout)
+
+    def test_no_io_at_import_time(self) -> None:
+        """Importing the module must not create files or dirs anywhere."""
+        with tempfile.TemporaryDirectory() as td:
+            probe = (
+                "import sys, os\n"
+                "os.chdir(r'%s')\n"
+                "before = set(os.listdir('.'))\n"
+                "import importlib.util\n"
+                "spec = importlib.util.spec_from_file_location('sib_core2', r'%s')\n"
+                "m = importlib.util.module_from_spec(spec)\n"
+                "spec.loader.exec_module(m)\n"
+                "after = set(os.listdir('.'))\n"
+                "assert before == after, after - before\n"
+                "print('NO_IO_OK')\n"
+            ) % (td, MODULE)
+            r = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, timeout=60)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("NO_IO_OK", r.stdout)
+
+
+class StableSurfaceTests(unittest.TestCase):
+    """The documented sibling integration pattern: load by path, construct
+    the core with explicit home/tools, drive it as plain functions."""
+
+    def setUp(self) -> None:
+        sys.path.insert(0, str(REPO / "tests"))
+        from test_plugin_api import Fixture, pa  # noqa: F401
+
+        self.pa = pa
+        self.fx = Fixture()
+
+    def tearDown(self) -> None:
+        self.fx.cleanup()
+
+    def test_all_matches_reality(self) -> None:
+        for name in self.pa.__all__:
+            self.assertTrue(hasattr(self.pa, name), f"__all__ entry missing: {name}")
+        # __all__ is the stable contract; module imports/optionals (os, router,
+        # ...) may also be public. What must NEVER be public: gateway modules
+        # or anything that would make the core unusable without the gateway.
+        leaked = [
+            n for n in dir(self.pa)
+            if not n.startswith("_") and ("hermes_cli" in n or "gateway" in n.lower())
+        ]
+        self.assertEqual(leaked, [], f"gateway leakage in module namespace: {leaked}")
+
+    def test_sibling_roundtrip(self) -> None:
+        core = self.pa.SkillsToggleCore(self.fx.home, self.fx.tools, log_path=self.fx.tmp / "data" / "m.log")
+        st = core.state()
+        self.assertTrue(st["ok"])
+        sid = "apple/apple-notes"
+        r = core.toggle(sid, "claude", True)
+        self.assertTrue(r["ok"])
+        self.assertEqual(core.toggle(sid, "claude", False)["state"], "missing")
+        # config editing helpers work standalone (no core instance needed)
+        text = (self.fx.home / "config.yaml").read_text()
+        out = self.pa.set_disabled_member(text, "some-skill", add=True)
+        self.assertIn("some-skill", self.pa.parse_disabled(out))
+        # tool map loader is a pure function of home
+        tools = self.pa.load_tools_config(self.fx.home)
+        self.assertIn("claude", tools)
+
+    def test_expand_path_never_cwd(self) -> None:
+        os.environ.pop("SKT_SIBLING_VAR", None)
+        with self.assertRaises(ValueError):
+            self.pa.expand_path("${SKT_SIBLING_VAR:-}")
+        with self.assertRaises(ValueError):
+            self.pa.expand_path("   ")
+        # core treats un-expandable tool dirs as unconfigured, never CWD
+        core = self.pa.SkillsToggleCore(
+            self.fx.home, {"ghost": {"label": "Ghost", "dir": "${SKT_SIBLING_VAR:-}"}}
+        )
+        self.assertIsNone(core.tool_dir("ghost"))
+
+
+if __name__ == "__main__":
+    unittest.main()
