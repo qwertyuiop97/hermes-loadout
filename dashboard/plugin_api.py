@@ -1745,6 +1745,8 @@ _MCP_CORE: "McpCore | None" = None
 
 def get_mcp_core() -> "McpCore":
     global _MCP_CORE
+    if _CORE_FROZEN and _MCP_CORE is not None:
+        return _MCP_CORE  # test env: frozen alongside the skills core
     if _MCP_CORE is None:
         home = hermes_home()
         _MCP_CORE = McpCore(home, log_path=Path(__file__).resolve().parent.parent / "data" / "mutations.log")
@@ -1752,15 +1754,18 @@ def get_mcp_core() -> "McpCore":
 
 
 def set_core_for_testing(core: SkillsToggleCore | None) -> None:
-    global _CORE, _CORE_SIG, _CORE_FROZEN
+    global _CORE, _CORE_SIG, _CORE_FROZEN, _MCP_CORE
     if core is None:
         _CORE = None
         _CORE_SIG = None
         _CORE_FROZEN = False
+        _MCP_CORE = None
         return
     _CORE = core
     _CORE_SIG = ("test", id(core))
     _CORE_FROZEN = True
+    # the MCP singleton must follow the fixture home, never the real one
+    _MCP_CORE = McpCore(core.home, log_path=core.log_path)
 
 
 def reset_core() -> None:
