@@ -376,14 +376,18 @@ class RevertTests(unittest.TestCase):
         self.assertNotIn(kb["skill"], [x["id"] for x in self.core.state()["skills"]])
 
     def test_revert_refusals(self) -> None:
-        r = call(self.core.revert_push, "codex", "architecture-diagram", "/nonexistent/backup")
-        self.assertFalse(r["ok"])
-        self.assertEqual(r["code"], "backup-missing")
-        # entry is a real dir — refuses to treat as managed
+        # real dir (not managed) — refuses before anything else
         r = call(self.core.revert_pull, "codex", "architecture-diagram",
                  str(self.fx.home / "skills" / "creative" / ".hb"), str(self.drifted))
         self.assertFalse(r["ok"])
         self.assertEqual(r["code"], "not-managed")
+        # managed entry + missing backup -> backup-missing
+        push = self.core.drift_push("codex", "architecture-diagram")
+        r = call(self.core.revert_push, "codex", "architecture-diagram", "/nonexistent/backup")
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["code"], "backup-missing")
+        # a valid revert still works after the failed attempts
+        self.assertTrue(self.core.revert_push("codex", "architecture-diagram", push["tool_backup"])["ok"])
 
 
 class ConfigToolsTests(unittest.TestCase):
