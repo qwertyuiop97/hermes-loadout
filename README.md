@@ -204,6 +204,24 @@ staging render harness verifies the pane against a fixture shaped like the Air
 8. Toggle Hermes off for a skill → `grep -A3 '^skills:' ~/.hermes/config.yaml` shows it under `disabled:` (a `config.yaml.bak.skills-toggle.*` backup appears next to it).
 9. Restart the desktop app → pane, filters, and link states persist (links are real symlinks; filters live in plugin storage).
 
+## Troubleshooting
+
+**The pane renders but shows "Skills backend unavailable" with `404 … Headless backend (hermes serve): web UI disabled`.**
+The gateway mounts plugin API routes **only at startup** — your gateway was started before `skills-toggle` was added to `plugins.enabled`, so the router never mounted. Fix:
+
+```bash
+hermes plugins enable skills-toggle   # if not already in plugins.enabled
+hermes gateway restart                # mounts the routes
+```
+
+Then hit **Retry** in the pane (the pane detects this exact failure and shows this remedy inline; the raw error stays visible underneath).
+
+**`404 {"detail": "Plugin not found"}`** — the per-request gate rejected the plugin: `skills-toggle` is missing from `plugins.enabled` (or present in `plugins.disabled`). Same two commands as above.
+
+**Pane doesn't appear at all.** Confirm `desktop/plugin.js` is installed, enable it in **Settings → Plugins**, then ⌘K → **Reload desktop plugins**. The folder name must equal the plugin `id` (`skills-toggle`).
+
+**`ctx.rest` 404 after edits to `plugin_api.py`.** Python routes import at gateway start too — `hermes gateway restart` picks them up.
+
 ## Requirements
 
 - Hermes desktop app (disk-plugin capable build) with `@hermes/plugin-sdk`

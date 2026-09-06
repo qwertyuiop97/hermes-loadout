@@ -178,6 +178,18 @@ html = render()
 ok(html.includes('Skills backend unavailable'), 'error state renders a clear banner')
 ok(html.includes('Retry'), 'error state offers Retry')
 
+// known backend-mount failure maps to the exact remedy
+channel.errorMessage = "Error invoking remote method 'hermes:api': Error: 404: Headless backend (hermes serve): web UI disabled"
+html = render()
+ok(
+  html.includes('gateway mounts this plugin') && html.includes('hermes gateway restart'),
+  'headless-404 maps to the gateway-restart remedy'
+)
+ok(html.includes('Headless backend'), 'raw error stays visible for debugging')
+channel.errorMessage = 'Error: 404: {"detail": "Plugin not found"}'
+html = render()
+ok(html.includes('hermes gateway restart'), 'plugin-not-found maps to the same remedy')
+
 // ---- render: empty -----------------------------------------------------------
 channel.mode = 'ready'
 channel.state = { ok: true, skills_root_exists: true, counts: { skills: 0, unlinked: 0 }, tools: [], skills: [] }
