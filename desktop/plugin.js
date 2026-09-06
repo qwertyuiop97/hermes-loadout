@@ -659,14 +659,32 @@ function SkillsPane() {
       )
     })
   } else if (stateQuery.isError) {
+    const raw = stateQuery.error && stateQuery.error.message ? stateQuery.error.message : ''
+    // Map known backend-mount failures to their exact remedy (see README
+    // troubleshooting): the gateway mounts plugin API routes at startup only.
+    const needsRestart =
+      raw.indexOf('Headless backend') !== -1 ||
+      raw.indexOf('web UI disabled') !== -1 ||
+      raw.indexOf('Plugin not found') !== -1
     body = jsx(ErrorState, {
       title: t('errorTitle'),
-      description: stateQuery.error && stateQuery.error.message ? stateQuery.error.message : t('errorDesc'),
-      children: jsx(Button, {
-        variant: 'secondary',
-        size: 'xs',
-        onClick: () => stateQuery.refetch(),
-        children: t('retry')
+      description: needsRestart ? t('errorNeedsRestart') : raw || t('errorDesc'),
+      children: jsxs('div', {
+        className: 'flex flex-col items-center gap-2',
+        children: [
+          jsx(Button, {
+            variant: 'secondary',
+            size: 'xs',
+            onClick: () => stateQuery.refetch(),
+            children: t('retry')
+          }),
+          needsRestart && raw
+            ? jsx('span', {
+                className: 'max-w-[280px] text-center text-[0.625rem] text-muted-foreground',
+                children: raw
+              })
+            : null
+        ]
       })
     })
   } else if (state && state.ok && !state.skills_root_exists) {
@@ -765,6 +783,7 @@ export default {
         bulkFailed: 'Bulk toggle failed',
         errorTitle: 'Skills backend unavailable',
         errorDesc: 'The plugin backend did not answer. Check that skills-toggle is in `plugins.enabled` in config.yaml, then retry.',
+        errorNeedsRestart: "The gateway mounts this plugin's backend only at startup — it looks like the gateway started before skills-toggle was enabled. Run `hermes gateway restart` (or restart from Settings), then Retry.",
         noRootTitle: 'No skills root found',
         noRootDesc: 'The Hermes skills directory does not exist yet. Create skills and reload.',
         emptyTitle: 'No skills yet',
