@@ -278,7 +278,7 @@ function CategoryGroup({
     className: 'mb-3',
     children: [
       jsxs('div', {
-        className: 'sticky top-0 z-10 mb-1 flex items-center gap-2 bg-transparent px-1 py-1',
+        className: 'sticky top-0 z-10 mb-1 flex items-center gap-2 bg-background px-1 py-1',
         children: [
           jsx('span', {
             className: 'text-[0.65rem] font-semibold uppercase tracking-wider text-muted-foreground',
