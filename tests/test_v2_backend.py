@@ -166,6 +166,90 @@ class ImportDriftTests(unittest.TestCase):
         self.assertEqual(d2["count"], 0)
 
 
+class ConflictResolutionTests(unittest.TestCase):
+    """V3-1: pull external in + keep both (D31 completion)."""
+
+    def setUp(self) -> None:
+        self.fx = Fixture()
+        self.core = self.fx.core
+        self.drifted = self.fx.codex / "architecture-diagram"
+        self.drifted.mkdir()
+        (self.drifted / "SKILL.md").write_text(
+            "---\nname: architecture-diagram\ndescription: local improved edit\n---\nbody",
+            encoding="utf-8",
+        )
+
+    def tearDown(self) -> None:
+        self.fx.cleanup()
+
+    def test_pull_makes_tool_copy_canonical(self) -> None:
+        r = self.core.conflict_pull("codex", "architecture-diagram")
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["action"], "pulled")
+        # canonical content is now the tool's version
+        canonical = self.fx.home / "skills" / "creative" / "architecture-diagram" / "SKILL.md"
+        self.assertIn("local improved edit", canonical.read_text())
+        # hermes original preserved as a DOTTED backup inside the category
+        backups = list((self.fx.home / "skills" / "creative").glob(".skills-toggle-backup-*"))
+        self.assertEqual(len(backups), 1)
+        self.assertIn("draw diagrams", (backups[0] / "SKILL.md").read_text())
+        # tool entry is a symlink to the new canonical
+        link = self.fx.codex / "architecture-diagram"
+        self.assertTrue(link.is_symlink())
+        self.assertEqual(Path(os.readlink(link)).resolve(), canonical.parent.resolve())
+        # drift resolved + scanner sees the skill under the same id
+        self.assertEqual(self.core.drift()["count"], 0)
+        self.assertIn("creative/architecture-diagram", [s["id"] for s in self.core.state()["skills"]])
+
+    def test_pull_rolls_back_on_failure(self) -> None:
+        orig = os.symlink
+        try:
+            def boom(*a, **k):
+                raise OSError("simulated")
+            os.symlink = boom
+            r = call(self.core.conflict_pull, "codex", "architecture-diagram")
+        finally:
+            os.symlink = orig
+        self.assertFalse(r["ok"])
+        self.assertIn("rolled back", r["error"])
+        # hermes copy restored with original content
+        canonical = self.fx.home / "skills" / "creative" / "architecture-diagram" / "SKILL.md"
+        self.assertIn("draw diagrams", canonical.read_text())
+        # tool dir restored as a real dir
+        self.assertTrue(self.drifted.is_dir() and not self.drifted.is_symlink())
+
+    def test_keep_both_adopts_suffixed(self) -> None:
+        r = self.core.conflict_keep_both("codex", "architecture-diagram")
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["skill"], "imported/architecture-diagram.from-codex")
+        adopted = self.fx.home / "skills" / "imported" / "architecture-diagram.from-codex" / "SKILL.md"
+        self.assertIn("local improved edit", adopted.read_text())
+        # original canonical untouched
+        self.assertIn("draw diagrams", (self.fx.home / "skills" / "creative" / "architecture-diagram" / "SKILL.md").read_text())
+        # tool now links the adopted copy
+        link = self.fx.codex / "architecture-diagram"
+        self.assertEqual(Path(os.readlink(link)).resolve(), adopted.parent.resolve())
+        # keep-both works for plain adoption too (name not in tree)
+        local = self.fx.codex / "solo-skill"
+        local.mkdir()
+        (local / "SKILL.md").write_text("---\nname: solo-skill\ndescription: x\n---\n", encoding="utf-8")
+        r2 = self.core.conflict_keep_both("codex", "solo-skill")
+        self.assertEqual(r2["skill"], "imported/solo-skill.from-codex")
+
+    def test_conflict_refusals(self) -> None:
+        for fn in (self.core.conflict_pull, self.core.conflict_keep_both):
+            r = call(fn, "codex", "ghost")
+            self.assertFalse(r["ok"])  # not a real dir (pull: also not in tree)
+            r = call(fn, "hermes", "architecture-diagram")
+            self.assertFalse(r["ok"])
+            if fn.__name__ == "conflict_pull":
+                continue  # tested above via ghost/hermes; apple-notes is in-tree here
+            plain = self.fx.codex / "apple-notes"
+            plain.mkdir()
+            r = call(fn, "codex", "apple-notes")
+            self.assertFalse(r["ok"])  # real dir, no SKILL.md
+
+
 class DriftPushTests(unittest.TestCase):
     def setUp(self) -> None:
         self.fx = Fixture()

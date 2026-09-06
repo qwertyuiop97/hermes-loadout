@@ -1275,6 +1275,111 @@ class SkillsToggleCore:
                 "backup": str(backup),
             }
 
+    # -- v3: conflict resolution (PROPOSAL-v3 #1, D31 completion) --------------
+
+    def _conflict_context(self, tool_id: object, name: object, require_in_tree: bool):
+        if not isinstance(name, str) or "/" in name or name in (".", "..") or not name.strip():
+            raise SkillsToggleError(f"invalid skill name {name!r}", "invalid-name")
+        tool_id = self._validate_tool(tool_id)
+        if tool_id == "hermes":
+            raise SkillsToggleError("hermes already is the source of truth", "no-dir")
+        skills = self._scan_skills()
+        existing = next((sk for sk in skills.values() if sk["name"] == name), None)
+        if require_in_tree and not existing:
+            raise SkillsToggleError(f"no skill named {name!r} in the skills tree", "unknown-skill")
+        tool_dir = self.tool_dir(tool_id)
+        if tool_dir is None or not tool_dir.is_dir():
+            raise SkillsToggleError(f"tool dir for {tool_id} is missing", "absent-dir")
+        entry = tool_dir / name
+        if entry.is_symlink() or not entry.is_dir() or not (entry / "SKILL.md").is_file():
+            raise SkillsToggleError(
+                f"{entry} is not a skill directory — refusing to touch it", "unmanaged-dir"
+            )
+        return existing, tool_dir, entry
+
+    def conflict_pull(self, tool_id: object, name: object) -> dict:
+        """Use the tool's copy as the new canonical source (D31 'pull external
+        in', completed): the hermes source is backed up dotted inside its
+        category, the external copy becomes canonical, and the tool entry is
+        swapped to a symlink. Originals are never deleted."""
+        with self._lock:
+            existing, tool_dir, entry = self._conflict_context(tool_id, name, require_in_tree=True)
+            hermes_dir = existing["dir"]
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            hermes_backup = hermes_dir.parent / f".skills-toggle-backup-{name}-{stamp}"
+            tool_backup = tool_dir / f"{name}.skills-toggle-backup-{stamp}"
+            try:
+                os.rename(hermes_dir, hermes_backup)
+            except OSError as exc:
+                raise SkillsToggleError(f"could not back up the hermes copy: {exc}", "pull-failed") from exc
+            try:
+                shutil.copytree(entry, hermes_dir, symlinks=True)
+                os.rename(entry, tool_backup)
+                os.symlink(str(hermes_dir.resolve()), str(entry))
+            except OSError as exc:
+                # roll everything back: drop the half-copy, restore both sides
+                shutil.rmtree(hermes_dir, ignore_errors=True)
+                try:
+                    os.rename(hermes_backup, hermes_dir)
+                except OSError:
+                    pass
+                try:
+                    if not entry.exists():
+                        os.rename(tool_backup, entry)
+                except OSError:
+                    pass
+                raise SkillsToggleError(f"drift pull failed (rolled back): {exc}", "pull-failed") from exc
+            skill_id = f"{existing['category']}/{existing['name']}"
+            self._log(action="conflict-pull", tool=tool_id, skill=skill_id,
+                      hermes_backup=str(hermes_backup), tool_backup=str(tool_backup))
+            self.invalidate()
+            return {
+                "ok": True, "tool": tool_id, "name": name, "skill": skill_id,
+                "action": "pulled", "hermes_backup": str(hermes_backup),
+                "tool_backup": str(tool_backup),
+            }
+
+    def conflict_keep_both(self, tool_id: object, name: object) -> dict:
+        """Keep both copies: the tool's copy is adopted under a free suffixed
+        name (imported/<name>.from-<tool>), and the tool entry links to it."""
+        with self._lock:
+            _, tool_dir, entry = self._conflict_context(tool_id, name, require_in_tree=False)
+            skills = self._scan_skills()
+            taken = {sk["name"] for sk in skills.values()}
+            base = f"{name}.from-{tool_id}"
+            dest_name = base
+            n = 2
+            while dest_name in taken:
+                dest_name = f"{base}-{n}"
+                n += 1
+            dest_dir = self.skills_root / "imported"
+            dest = dest_dir / dest_name
+            if dest.exists():
+                raise SkillsToggleError(f"destination {dest} already exists", "invalid-destination")
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            tool_backup = tool_dir / f"{name}.skills-toggle-backup-{stamp}"
+            try:
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copytree(entry, dest, symlinks=True)
+                os.rename(entry, tool_backup)
+                os.symlink(str(dest.resolve()), str(tool_dir / name))
+            except OSError as exc:
+                shutil.rmtree(dest, ignore_errors=True)
+                try:
+                    if not (tool_dir / name).exists():
+                        os.rename(tool_backup, entry)
+                except OSError:
+                    pass
+                raise SkillsToggleError(f"keep-both failed (rolled back): {exc}", "keep-both-failed") from exc
+            self._log(action="conflict-keep-both", tool=tool_id, skill=f"imported/{dest_name}",
+                      tool_backup=str(tool_backup))
+            self.invalidate()
+            return {
+                "ok": True, "tool": tool_id, "name": name,
+                "skill": f"imported/{dest_name}", "action": "kept-both",
+                "tool_backup": str(tool_backup),
+            }
+
     # -- v2: custom tool config ------------------------------------------------
 
     def set_tool(self, tool_id: object, label: object, dir_str: object) -> dict:
@@ -1875,6 +1980,14 @@ if APIRouter is not None:
     @router.post("/mcp/remove")
     async def mcp_remove(body: dict) -> dict:
         return _call(get_mcp_core().remove_from_claude, body.get("name"), body.get("force", False))
+
+    @router.post("/conflict/pull")
+    async def conflict_pull(body: dict) -> dict:
+        return _call(get_core().conflict_pull, body.get("tool"), body.get("name"))
+
+    @router.post("/conflict/keep-both")
+    async def conflict_keep_both(body: dict) -> dict:
+        return _call(get_core().conflict_keep_both, body.get("tool"), body.get("name"))
 
     @router.post("/drift/push")
     async def drift_push(body: dict) -> dict:
