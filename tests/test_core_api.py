@@ -152,6 +152,46 @@ print('PROBE_OK', m.PLUGIN_VERSION)
             self.assertIn("NO_IO_OK", r.stdout)
 
 
+def _load_module():
+    spec = importlib.util.spec_from_file_location("pa_helpers", MODULE)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class WindowsPathHelperTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.pa = _load_module()
+    """same_path / is_inside must survive \}? prefixes, case, and 8.3 names."""
+
+    def test_strip_extended(self) -> None:
+        self.assertEqual(self.pa._strip_extended(r"\\?\C:\x\y"), "C:\\x\\y")
+        self.assertEqual(self.pa._strip_extended(r"\\?\UNC\server\share"), r"\\server\share")
+        self.assertEqual(self.pa._strip_extended("C:/x"), "C:/x")
+
+    def test_same_path_literal_windows_forms(self) -> None:
+        a = self.pa.Path(r"\\?\C:\Users\runneradmin\Temp\x")
+        b = self.pa.Path(r"C:\Users\runneradmin\Temp\x")
+        self.assertTrue(self.pa.same_path(a, b))
+        c = self.pa.Path(r"C:\Users\RUNNER~1\Temp\x")
+        self.assertTrue(self.pa.same_path(a, c))  # 8.3 expands via realpath (dir must exist on nt)
+
+    def test_same_path_case_and_slash(self) -> None:
+        self.assertTrue(self.pa.same_path(self.pa.Path("/Tmp/A"), self.pa.Path("/tmp/a")) if os.name == "nt" else True)
+        self.assertTrue(self.pa.same_path(self.pa.Path("/tmp/../tmp/a"), self.pa.Path("/tmp/a")))
+
+    def test_same_path_macos_alias(self) -> None:
+        # on macOS /tmp is a symlink to /private/tmp — realpath canonicalizes
+        if Path("/tmp").exists() and Path("/private/tmp").exists():
+            self.assertTrue(self.pa.same_path(Path("/tmp"), Path("/private/tmp")))
+
+    def test_is_inside(self) -> None:
+        root = self.pa.Path("/tmp")
+        self.assertTrue(self.pa.is_inside(self.pa.Path("/tmp/x/y"), root))
+        self.assertFalse(self.pa.is_inside(self.pa.Path("/tmpx"), root))
+        self.assertTrue(self.pa.is_inside(self.pa.Path("/tmp"), root))  # equal counts as inside
+
+
 class StableSurfaceTests(unittest.TestCase):
     """The documented sibling integration pattern: load by path, construct
     the core with explicit home/tools, drive it as plain functions."""

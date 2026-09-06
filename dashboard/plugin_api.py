@@ -136,6 +136,39 @@ def hermes_home() -> Path:
     return Path.home() / ".hermes"
 
 
+def _strip_extended(path_str: str) -> str:
+    r"""Drop the Windows extended-length \\?\ prefix (keep UNC form)."""
+    if path_str.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + path_str[8:]
+    if path_str.startswith("\\\\?\\"):
+        return path_str[4:]
+    return path_str
+
+
+def _canonical(path_str: str) -> str:
+    """strip \\?\ → realpath → strip again (realpath re-adds it on Windows)
+    → normcase/normpath."""
+    once = _strip_extended(path_str)
+    twice = _strip_extended(os.path.realpath(once))
+    return os.path.normcase(os.path.normpath(twice))
+
+
+def same_path(a: Path, b: Path) -> bool:
+    r"""Path identity that survives Windows symlink resolution: readlink and
+    resolve() can disagree on the \?\ prefix and 8.3 short names."""
+    return _canonical(str(a)) == _canonical(str(b))
+
+
+def is_inside(child: Path, parent: Path) -> bool:
+    """Containment check with the same Windows canonicalization."""
+    nc = _canonical(str(child))
+    np_ = _canonical(str(parent))
+    if nc == np_:
+        return True
+    sep = "\\" if os.name == "nt" or "\\" in nc or "\\" in np_ else "/"
+    return nc.startswith(np_.rstrip(sep) + sep)
+
+
 _VAR_DEFAULT_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 _VAR_BARE_RE = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)")
 
@@ -608,7 +641,7 @@ class SkillsToggleCore:
             target = os.readlink(link)
             base = Path(target) if os.path.isabs(target) else (link.parent / target)
             resolved = base.resolve()
-            if resolved == skill["dir"].resolve():
+            if same_path(resolved, skill["dir"]):
                 return {"state": "enabled", "target": target}
             if not resolved.exists():
                 return {"state": "broken-link", "target": target}
@@ -771,7 +804,7 @@ class SkillsToggleCore:
                     resolved = base.resolve()
                     if not resolved.exists():
                         broken.append({"tool": tool_id, "name": entry.name, "target": target})
-                    elif self.skills_root_resolved not in resolved.parents:
+                    elif not is_inside(resolved, self.skills_root_resolved):
                         foreign.append({"tool": tool_id, "name": entry.name, "target": target})
                 elif entry.is_dir() and entry.name in {s["name"] for s in skills.values()}:
                     unmanaged.append({"tool": tool_id, "name": entry.name})
@@ -840,14 +873,14 @@ class SkillsToggleCore:
         if tool_dir is None:
             raise SkillsToggleError(f"tool {tool_id} has no target dir configured", "no-dir")
         link = tool_dir / skill["name"]
-        skill_dir_resolved = skill["dir"].resolve()
+        skill_dir_resolved = skill["dir"].resolve()  # compared via same_path
 
         def link_state() -> tuple[str, str | None]:
             if link.is_symlink():
                 target = os.readlink(link)
                 base = Path(target) if os.path.isabs(target) else (link.parent / target)
                 resolved = base.resolve()
-                if resolved == skill_dir_resolved:
+                if same_path(resolved, skill_dir_resolved):
                     return "enabled", target
                 if not resolved.exists():
                     return "broken-link", target
@@ -908,7 +941,7 @@ class SkillsToggleCore:
             # broken links are only removed when they point inside our skills tree
             if state == "broken-link":
                 base = Path(target) if os.path.isabs(target) else (link.parent / target)
-                if self.skills_root_resolved not in base.resolve().parents:
+                if not is_inside(base.resolve(), self.skills_root_resolved):
                     raise SkillsToggleError(
                         f"{link} points at {target} which is outside the skills tree — refusing", "foreign-link"
                     )
@@ -1414,7 +1447,7 @@ class SkillsToggleCore:
             raise SkillsToggleError(f"backup {backup} is missing", "backup-missing")
         resolved = Path(os.readlink(entry))
         base = resolved if resolved.is_absolute() else (entry.parent / resolved)
-        if self.skills_root_resolved not in base.resolve().parents:
+        if not is_inside(base, self.skills_root_resolved):
             raise SkillsToggleError(f"{entry} does not point into the skills tree", "not-managed")
         entry.unlink()
         os.rename(backup, entry)
