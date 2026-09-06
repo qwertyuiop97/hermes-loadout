@@ -449,6 +449,80 @@ class BackupBrowserTests(unittest.TestCase):
         self.assertFalse(r["ok"])
 
 
+class BlueprintTests(unittest.TestCase):
+    """V3-2: machine blueprint — export, additive-only apply, dry-run."""
+
+    def setUp(self) -> None:
+        self.fx = Fixture()
+        self.core = self.fx.core
+
+    def tearDown(self) -> None:
+        self.fx.cleanup()
+
+    def test_export_shape(self) -> None:
+        self.core.toggle("apple/apple-notes", "claude", True)
+        self.core.toggle("apple/apple-notes", "hermes", False)
+        exp = self.core.blueprint_export()
+        bp = exp["blueprint"]
+        self.assertEqual(bp["version"], 2)
+        self.assertIn({"tool": "claude", "skill": "apple/apple-notes"}, bp["links"])
+        self.assertIn("apple-notes", bp["skills_disabled"])
+
+    def test_apply_dry_run_then_real(self) -> None:
+        bp = {
+            "version": 2,
+            "links": [
+                {"tool": "claude", "skill": "apple/apple-notes"},
+                {"tool": "zcode", "skill": "apple/apple-notes"},  # absent dir — created
+            ],
+            "skills_disabled": ["arxiv"],
+        }
+        dry = self.core.blueprint_apply(bp, dry_run=True)
+        self.assertTrue(dry["dry_run"])
+        self.assertEqual(dry["plan"]["counts"]["links"], 2)
+        self.assertEqual(dry["plan"]["counts"]["skills_disabled"], 1)
+        # nothing happened yet
+        self.assertFalse((self.fx.claude / "apple-notes").exists())
+        real = self.core.blueprint_apply(bp)
+        self.assertEqual(real["applied"]["links"], 2)
+        self.assertEqual(real["applied"]["skills_disabled"], 1)
+        self.assertTrue((self.fx.claude / "apple-notes").is_symlink())
+        self.assertTrue((self.fx.zcode / "apple-notes").is_symlink())
+        self.assertIn("arxiv", pa.parse_disabled((self.fx.home / "config.yaml").read_text()))
+        # idempotent: second apply has an empty plan
+        again = self.core.blueprint_apply(bp, dry_run=True)
+        self.assertEqual(again["plan"]["counts"]["links"], 0)
+        self.assertEqual(again["plan"]["counts"]["skills_disabled"], 0)
+
+    def test_apply_is_additive_only(self) -> None:
+        # pre-existing link NOT in the blueprint must survive
+        self.core.toggle("creative/architecture-diagram", "claude", True)
+        bp = {"version": 2, "links": [{"tool": "codex", "skill": "apple/apple-notes"}], "skills_disabled": []}
+        r = self.core.blueprint_apply(bp)
+        self.assertEqual(r["applied"]["links"], 1)
+        self.assertTrue((self.fx.claude / "architecture-diagram").is_symlink())  # untouched
+
+    def test_apply_refusals_reported(self) -> None:
+        bp = {
+            "version": 2,
+            "links": [
+                {"tool": "ghost", "skill": "apple/apple-notes"},
+                {"tool": "claude", "skill": "nope/nope"},
+                {"tool": "grok", "skill": "productivity/airtable"},  # unmanaged-dir at target
+            ],
+            "skills_disabled": ["not-a-skill"],
+        }
+        r = self.core.blueprint_apply(bp)
+        self.assertEqual(r["applied"]["links"], 0)
+        self.assertEqual(len(r["refused"]), 4)
+
+    def test_apply_invalid_blueprint(self) -> None:
+        for bad in (None, {}, {"version": 1}, {"version": 2, "links": "x", "skills_disabled": []}):
+            r = call(self.core.blueprint_apply, bad, True)
+            self.assertFalse(r["ok"])
+            self.assertEqual(r["code"], "invalid-blueprint")
+
+
 class ConfigToolsTests(unittest.TestCase):
     def setUp(self) -> None:
         self.fx = Fixture()

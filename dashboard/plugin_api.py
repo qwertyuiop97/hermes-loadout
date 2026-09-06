@@ -1497,6 +1497,118 @@ class SkillsToggleCore:
                 "aside": str(aside) if aside else None,
             }
 
+    # -- v3-2: machine blueprint (additive-only, dry-run first) -----------------
+
+    def blueprint_export(self) -> dict:
+        """The machine's full link map + hermes-off set as a portable JSON
+        shape (superset of presets)."""
+        st = self.state()
+        links = []
+        for sk in st["skills"]:
+            for tool_id, w in sk["tools"].items():
+                if tool_id != "hermes" and w["state"] == "enabled":
+                    links.append({"tool": tool_id, "skill": sk["id"]})
+        return {
+            "ok": True,
+            "blueprint": {
+                "version": 2,
+                "generated_by": f"skills-toggle {PLUGIN_VERSION}",
+                "links": links,
+                "skills_disabled": sorted(self._disabled_set()),
+            },
+            "counts": {"links": len(links), "skills_disabled": len(self._disabled_set())},
+        }
+
+    def blueprint_apply(self, blueprint: object, dry_run: bool = False) -> dict:
+        """Apply a machine blueprint ADDITIVELY (owner decision): creates
+        missing links and adds skills.disabled entries. Nothing is ever
+        removed or unlinked; refusals are reported per row."""
+        with self._lock:
+            if (
+                not isinstance(blueprint, dict)
+                or blueprint.get("version") != 2
+                or not isinstance(blueprint.get("links"), list)
+                or not isinstance(blueprint.get("skills_disabled"), list)
+            ):
+                raise SkillsToggleError(
+                    "blueprint must be {version: 2, links: [{tool, skill}], skills_disabled: [names]}",
+                    "invalid-blueprint",
+                )
+            if not isinstance(dry_run, bool):
+                dry_run = False
+            skills = self._scan_skills()
+            disabled_now = self._disabled_set()
+            link_plan = []
+            disable_plan = []
+            refused = []
+            for row in blueprint["links"]:
+                if not isinstance(row, dict):
+                    refused.append({"row": row, "error": "malformed row"})
+                    continue
+                tool_id, skill_id = row.get("tool"), row.get("skill")
+                if tool_id not in self.tools or tool_id == "hermes":
+                    refused.append({"row": row, "error": f"unknown tool {tool_id!r}"})
+                    continue
+                if skill_id not in skills:
+                    refused.append({"row": row, "error": f"unknown skill {skill_id!r}"})
+                    continue
+                tool_dir = self.tool_dir(tool_id)
+                if tool_dir is None:
+                    refused.append({"row": row, "error": "tool has no dir configured"})
+                    continue
+                link = tool_dir / skills[skill_id]["name"]
+                state = self._one_state(skills[skill_id], tool_id, disabled_now)["state"]
+                if state == "enabled":
+                    continue  # already satisfied — not part of the plan
+                if state in ("foreign-link", "unmanaged-dir"):
+                    refused.append({"row": row, "error": f"{state} at target — manual resolution required"})
+                    continue
+                link_plan.append({"tool": tool_id, "skill": skill_id, "reason": state})
+            for name in blueprint["skills_disabled"]:
+                if not isinstance(name, str) or name not in {sk["name"] for sk in skills.values()}:
+                    refused.append({"row": name, "error": f"unknown skill {name!r}"})
+                    continue
+                if name not in disabled_now:
+                    disable_plan.append(name)
+            plan = {
+                "links": link_plan,
+                "skills_disabled": disable_plan,
+                "refused": refused,
+                "counts": {
+                    "links": len(link_plan),
+                    "skills_disabled": len(disable_plan),
+                    "refused": len(refused),
+                },
+            }
+            if dry_run:
+                return {"ok": True, "dry_run": True, "plan": plan}
+            results = []
+            by_tool: dict = {}
+            for row in link_plan:
+                by_tool.setdefault(row["tool"], []).append(row["skill"])
+            for tool_id, skill_ids in by_tool.items():
+                for sid in skill_ids:
+                    try:
+                        res = self.toggle(sid, tool_id, True)
+                        results.append({"skill": sid, "tool": tool_id, "ok": True, "action": res["action"]})
+                    except SkillsToggleError as exc:
+                        results.append({"skill": sid, "tool": tool_id, "ok": False, "error": str(exc)})
+            for name in disable_plan:
+                try:
+                    self._hermes_toggle(name, False)
+                    results.append({"skill": name, "tool": "hermes", "ok": True, "action": "config-updated"})
+                except SkillsToggleError as exc:
+                    results.append({"skill": name, "tool": "hermes", "ok": False, "error": str(exc)})
+            self._log(action="blueprint-apply", planned=len(link_plan), disabled=len(disable_plan))
+            return {
+                "ok": True,
+                "applied": {"links": sum(1 for r in results if r["ok"] and r["tool"] != "hermes"),
+                            "skills_disabled": sum(1 for r in results if r["ok"] and r["tool"] == "hermes"),
+                            "failed": sum(1 for r in results if not r["ok"])},
+                "results": results,
+                "refused": refused,
+            }
+
     # -- v3-6: backup browser + restore ----------------------------------------
 
     _BACKUP_PATTERNS = (
@@ -2196,6 +2308,18 @@ if APIRouter is not None:
     @router.post("/mcp/remove")
     async def mcp_remove(body: dict) -> dict:
         return _call(get_mcp_core().remove_from_claude, body.get("name"), body.get("force", False))
+
+    @router.get("/blueprint/export")
+    async def blueprint_export() -> dict:
+        return get_core().blueprint_export()
+
+    @router.post("/blueprint/apply")
+    async def blueprint_apply(body: dict) -> dict:
+        return _call(
+            get_core().blueprint_apply,
+            body.get("blueprint"),
+            bool(body.get("dry_run", False)),
+        )
 
     @router.get("/backups")
     async def list_backups() -> dict:
