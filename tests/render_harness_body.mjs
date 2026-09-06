@@ -78,6 +78,17 @@ const channel = {
   notifications: [],
   navigations: [],
   invalidated: [],
+  mcpState: {
+    ok: true,
+    rows: [
+      { name: 'chrome-devtools', enabled: true, definition: {}, writers: { claude: 'enabled' } },
+      { name: 'docs', enabled: true, definition: {}, writers: { claude: 'drifted' } },
+      { name: 'weather', enabled: false, definition: {}, writers: { claude: 'missing' } }
+    ],
+    foreign: [{ name: 'drifted-server', keys: ['command'] }],
+    counts: { catalog: 3, foreign: 1 },
+    writers: { claude: { label: 'Claude Desktop', path: '/tmp/claude.json', present: true } }
+  },
   restCalls: [],
   driftList: {
     ok: true,
@@ -128,7 +139,7 @@ plugin.register(ctx)
 // ---- contract assertions ------------------------------------------------------
 ok(plugin.id === 'skills-toggle', 'plugin.id matches folder name')
 ok(plugin.defaultEnabled === false, 'desktop half ships opt-in (defaultEnabled: false)')
-ok(channel.registry.length === 5, `registers 5 contributions (got ${channel.registry.length})`)
+ok(channel.registry.length === 6, `registers 6 contributions (got ${channel.registry.length})`)
 const paneC = channel.registry.find(c => c.area === 'panes')
 const pageC = channel.registry.find(c => c.area === 'routes')
 const palC = channel.registry.find(c => c.area === 'palette' && c.data.label === 'Skills: toggle…')
@@ -138,6 +149,8 @@ ok(!!paneC && paneC.data && paneC.data.placement === 'right' && paneC.data.width
 ok(!!pageC && pageC.data && pageC.data.path === '/skills-toggle', 'page contribution: /skills-toggle route')
 ok(!!palC, 'palette command "Skills: toggle…" registered')
 ok(!!palReport, 'palette command "Skills: health report" registered')
+const palMcp = channel.registry.find(c => c.area === 'palette' && c.data.label === 'MCP: toggle…')
+ok(!!palMcp, 'palette command "MCP: toggle…" registered')
 ok(!!chipC && typeof chipC.render === 'function', 'statusbar health chip registered')
 const chipHtml = renderToString(chipC.render())
 ok(chipHtml.includes('1 broken'), 'health chip surfaces broken count from /diff')
@@ -190,6 +203,19 @@ ok(html.includes('No drift detected') === false || true, 'drift view renders wit
 ok(html.includes('Use Hermes'), 'drift view offers the Use-Hermes push action')
 ok(html.includes('architecture-diagram'), 'drift view lists the drifted skill name')
 storage.delete('viewFilter')
+
+// MCP tab (pre-seeded via storage, like a returning user)
+storage.set('paneTab', 'mcp')
+html = render()
+ok(html.includes('MCP servers'), 'MCP tab renders the server list')
+ok(html.includes('chrome-devtools') && html.includes('weather'), 'catalog rows render')
+ok((html.match(/role=\"switch\"/g) || []).length === 6, '6 MCP switches (3 servers × Hermes + Claude)')
+ok(html.includes('drifted'), 'drifted badge renders for the drifted server')
+ok(html.includes('>sync<'), 'sync action offered on drifted rows')
+ok(html.includes('not in the Hermes catalog'), 'foreign servers noted and never touched')
+storage.delete('paneTab')
+html = render()
+ok(html.includes('Search skills'), 'default tab is still Skills')
 
 // tool filter pre-seeded → bulk buttons appear for that tool
 storage.set('toolFilter', 'claude')

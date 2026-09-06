@@ -245,6 +245,26 @@ Stable surface: `SkillsToggleCore` (`.state .detail .diff .toggle .toggle_bulk
 `PLUGIN_ID`, `PLUGIN_VERSION`. The FastAPI `router` (when fastapi is present)
 mounts the same operations at `/api/plugins/skills-toggle/…`.
 
+## MCP switchboard (v2.2)
+
+The pane's **MCP** tab applies the same source-of-truth model to MCP servers:
+the `mcp_servers` map in Hermes' `config.yaml` is the catalog, and the tab
+mirrors entries into **Claude Desktop** (`claude_desktop_config.json`, resolved
+macOS → Linux → Windows `%APPDATA%`).
+
+- **Hermes switch** — flips the entry's `enabled:` flag (surgical edit, timestamped backup, re-parse self-check). This is Hermes' own on/off.
+- **Claude switch** — ON syncs the catalog entry (universal keys only: `command`, `args`, `env`, `url`, `headers`; hermes-only keys like `enabled` are stripped); OFF removes the entry. Configs that drifted from the catalog require an explicit confirm (the old copy is kept in a timestamped backup either way).
+- **Foreign servers** (present in Claude Desktop but not in the Hermes catalog) are listed and **never touched**.
+- Claude Desktop reloads its config on window focus/restart — flip, then focus Claude.
+
+## MCP core API (sibling-safe)
+
+`McpCore` joins the stable surface: `new McpCore(home, claude_desktop_config?, log_path?)` with
+`.catalog() .mcp_state() .toggle_hermes(name, enabled) .sync_to_claude(name)
+.remove_from_claude(name, force?)`, plus the standalone helpers
+`parse_mcp_servers(text)` and `set_mcp_server_enabled(text, name, enabled)`.
+Same rules as the skills core: stdlib-only, explicit paths, `{ok}` envelopes.
+
 ## Troubleshooting
 
 **The pane renders but shows "Skills backend unavailable" with `404 … Headless backend (hermes serve): web UI disabled`.**
