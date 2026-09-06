@@ -94,6 +94,8 @@ __all__ = [
     "set_mcp_server_enabled",
     "parse_codex_mcp",
     "codex_server_block",
+    "same_path",
+    "is_inside",
 ]
 
 # ---------------------------------------------------------------------------
