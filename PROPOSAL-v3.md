@@ -1,7 +1,11 @@
 # PROPOSAL-v3.md — skills-toggle v3 (proposal only, awaiting approval)
 
-Status: DRAFT for owner review. No code in this document. Nothing here starts
-until you approve (wholesale, or by striking items).
+Status: **APPROVED 2026-09-06** — ship 1, 2, 4, 5, 6 first, then 3, 7, 8.
+Owner decisions on the four questions: blueprint apply is ADDITIVE-ONLY
+(removals stay manual); watch mode = native notifications when unfocused with
+per-class toggles; MCP Codex/OpenCode proceeds on the spike without a
+go/no-go stop. No code was in this document; implementation follows the order
+below (this file stays the record of what was approved).
 
 ## Positioning
 
