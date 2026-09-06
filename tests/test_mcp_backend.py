@@ -232,7 +232,7 @@ class CodexWriterTests(unittest.TestCase):
 
     def test_codex_state_on_missing_file(self) -> None:
         self.codex.unlink()
-        mcp = McpCore(self.fx.home, claude_desktop_config=self.fx.claude, log_path=None, codex_config=self.tmp / "nope.toml")
+        mcp = McpCore(self.fx.home, claude_desktop_config=self.fx.claude, log_path=None, codex_config=self.fx.tmp / "nope.toml")
         st = mcp.mcp_state()
         self.assertFalse(st["writers"]["codex"]["present"])
 
