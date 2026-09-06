@@ -76,7 +76,10 @@ DEFAULT_TOOLS: dict = {
 
 DESCRIPTION_TRUNC = 160
 CACHE_TTL_SECONDS = 2.0
-_SKILL_ID_RE = re.compile(r"^[^/\s]+/[^/\s]+$")
+# First-pass shape check only: exactly one '/', no empty/NUL segments. Spaces
+# and unicode are legal in skill dir names. The real traversal boundary is the
+# allowlist membership check against the scanned skills tree.
+_SKILL_ID_RE = re.compile(r"^[^/\0]+/[^/\0]+$")
 
 # ---------------------------------------------------------------------------
 # Path helpers
@@ -199,9 +202,11 @@ _RE_LIST_ITEM = re.compile(r"^(\s*)-\s*(.+)$")
 
 
 def _split_flow(inner: str) -> list[str]:
+    """Split a flow-sequence/map body on top-level commas (bracket-aware)."""
     parts: list[str] = []
     buf = ""
     quote = None
+    depth = 0
     for ch in inner:
         if quote:
             buf += ch
@@ -210,7 +215,13 @@ def _split_flow(inner: str) -> list[str]:
         elif ch in ("'", '"'):
             quote = ch
             buf += ch
-        elif ch == ",":
+        elif ch in "[{":
+            depth += 1
+            buf += ch
+        elif ch in "]}":
+            depth -= 1
+            buf += ch
+        elif ch == "," and depth == 0:
             parts.append(buf)
             buf = ""
         else:
@@ -329,6 +340,14 @@ def set_disabled_member(text: str, name: str, *, add: bool) -> str:
     Raises ConfigEditError when the resulting file would not re-parse to the
     intended membership (self-check).
     """
+    if "\r\n" in text:
+        lf = text.replace("\r\n", "\n")
+        out = _set_disabled_member_lf(lf, name, add=add)
+        return out.replace("\n", "\r\n")
+    return _set_disabled_member_lf(text, name, add=add)
+
+
+def _set_disabled_member_lf(text: str, name: str, *, add: bool) -> str:
     quoted = json.dumps(name)  # double-quoted, escapes unicode safely
     lines = text.splitlines()
     skills_idx, tail = _find_top_skills(lines)
@@ -396,17 +415,17 @@ def set_disabled_member(text: str, name: str, *, add: bool) -> str:
         return text
 
     if add and not names:
-        # empty disabled: — add the first item
-        insert_at = dis_idx + 1
-        while insert_at < len(lines) and (not lines[insert_at].strip()):
-            insert_at += 1
-        new_lines = lines[:insert_at]
+        # empty, null, or bare `disabled:` — replace the line itself so a
+        # scalar like `null` can't orphan the new item below it.
+        new_lines = lines[:dis_idx]
+        new_lines.append(f"{dis_indent}disabled:")
         new_lines.append(f"{dis_indent}  - {quoted}")
-        new_lines.extend(lines[insert_at:])
+        new_lines.extend(lines[dis_idx + 1 :])
     elif add:
         last_item_line = items[-1][0]
+        item_pad = " " * item_indent if item_indent > 0 else dis_indent + "  "
         new_lines = lines[: last_item_line + 1]
-        new_lines.append(f"{dis_indent}  - {quoted}")
+        new_lines.append(f"{item_pad}- {quoted}")
         new_lines.extend(lines[last_item_line + 1 :])
     else:  # remove
         drop = {idx for idx, n in items if n == name}
@@ -447,6 +466,9 @@ class SkillsToggleCore:
     def __init__(self, home: Path, tools: dict, log_path: Path | None = None):
         self.home = home
         self.skills_root = home / "skills"
+        # macOS /var → /private/var and similar symlinks: containment checks
+        # must compare fully-resolved paths.
+        self.skills_root_resolved = self.skills_root.resolve()
         self.config_path = home / "config.yaml"
         self.tools = tools  # id -> {label, dir?, special?, present-cache}
         self.log_path = log_path
@@ -580,6 +602,8 @@ class SkillsToggleCore:
             raise SkillsToggleError(
                 f"invalid skill id {skill_id!r} — expected 'category/name' from the skills index", "invalid-skill"
             )
+        if any(seg in (".", "..") for seg in skill_id.split("/")):
+            raise SkillsToggleError(f"invalid skill id {skill_id!r} — path segments may not be '.' or '..'", "invalid-skill")
         if skill_id not in self._scan_skills():
             raise SkillsToggleError(
                 f"unknown skill {skill_id!r} — not present under {self.skills_root}", "unknown-skill"
@@ -618,7 +642,9 @@ class SkillsToggleCore:
             unlinked = 0
             for sid, skill in sorted(skills.items()):
                 states = self._tool_states(skill, disabled)
-                linked_any = any(v["state"] == "enabled" for v in states.values())
+                # "unlinked" is about consumer symlinks — hermes' config state
+                # is a separate axis and must not mask a missing link.
+                linked_any = any(v["state"] == "enabled" for tid, v in states.items() if tid != "hermes")
                 if not linked_any:
                     unlinked += 1
                 desc = skill["description"]
@@ -678,7 +704,7 @@ class SkillsToggleCore:
         unlinked = []
         for entry in payload["skills"]:
             states = entry["tools"]
-            if all(v["state"] != "enabled" for v in states.values()):
+            if all(v["state"] != "enabled" for tid, v in states.items() if tid != "hermes"):
                 unlinked.append(entry["id"])
         broken: list[dict] = []
         foreign: list[dict] = []
@@ -698,7 +724,7 @@ class SkillsToggleCore:
                     resolved = base.resolve()
                     if not resolved.exists():
                         broken.append({"tool": tool_id, "name": entry.name, "target": target})
-                    elif self.skills_root not in resolved.parents:
+                    elif self.skills_root_resolved not in resolved.parents:
                         foreign.append({"tool": tool_id, "name": entry.name, "target": target})
                 elif entry.is_dir() and entry.name in {s["name"] for s in skills.values()}:
                     unmanaged.append({"tool": tool_id, "name": entry.name})
@@ -788,13 +814,25 @@ class SkillsToggleCore:
                 )
             created_dir = False
             if not tool_dir.is_dir():
-                tool_dir.mkdir(parents=True, exist_ok=True)
+                if tool_dir.exists():
+                    raise SkillsToggleError(
+                        f"{tool_dir} exists but is not a directory — refusing to replace it", "not-a-dir"
+                    )
+                try:
+                    tool_dir.mkdir(parents=True, exist_ok=True)
+                except OSError as exc:
+                    raise SkillsToggleError(f"cannot create {tool_dir}: {exc}", "mkdir-failed") from exc
                 created_dir = True
                 self._log(action="create-tool-dir", tool=tool_id, dir=str(tool_dir))
             if state == "broken-link":
                 link.unlink()
             os.symlink(str(skill_dir_resolved), str(link))
-            action = ("created-dir+linked" if created_dir else "repaired-link") if state == "broken-link" else ("created-dir+linked" if created_dir else "linked")
+            if created_dir:
+                action = "created-dir+linked"
+            elif state == "broken-link":
+                action = "repaired-link"
+            else:
+                action = "linked"
             return action, {"state": "enabled", "target": str(skill_dir_resolved)}
 
         # disabling
@@ -804,7 +842,7 @@ class SkillsToggleCore:
             # broken links are only removed when they point inside our skills tree
             if state == "broken-link":
                 base = Path(target) if os.path.isabs(target) else (link.parent / target)
-                if self.skills_root not in base.resolve().parents:
+                if self.skills_root_resolved not in base.resolve().parents:
                     raise SkillsToggleError(
                         f"{link} points at {target} which is outside the skills tree — refusing", "foreign-link"
                     )
@@ -872,30 +910,40 @@ class SkillsToggleCore:
             diff = self.diff()
             fixed: list[dict] = []
             unfixable: list[dict] = []
+            skills = self._scan_skills()
+            by_name = {s["name"]: sid for sid, s in skills.items()}
             for item in diff["broken"]:
-                tool_dir = self.tool_dir(item["tool"])
-                if tool_dir is None:
-                    unfixable.append({**item, "reason": "tool dir not configured"})
-                    continue
-                link = tool_dir / item["name"]
-                target = item["target"]
-                base = Path(target) if os.path.isabs(target) else (link.parent / target)
-                resolved = base.resolve()
-                try:
-                    rel = resolved.relative_to(self.skills_root)
-                except ValueError:
-                    unfixable.append({**item, "reason": "target outside skills tree"})
-                    continue
-                if len(rel.parts) != 2:
-                    unfixable.append({**item, "reason": "target is not <category>/<name>"})
-                    continue
-                sid = f"{rel.parts[0]}/{rel.parts[1]}"
+                # Map the link back to a skill by NAME (the link name is the
+                # skill name by convention) — the stale target may point at a
+                # moved or deleted skill, which is exactly why it's broken.
+                sid = by_name.get(item["name"])
+                if sid is None:
+                    # fallback: stale target inside the tree, e.g. renamed category
+                    tool_dir = self.tool_dir(item["tool"])
+                    if tool_dir is None:
+                        unfixable.append({**item, "reason": "tool dir not configured"})
+                        continue
+                    link = tool_dir / item["name"]
+                    target = item["target"]
+                    base = Path(target) if os.path.isabs(target) else (link.parent / target)
+                    resolved = base.resolve()
+                    try:
+                        rel = resolved.relative_to(self.skills_root)
+                    except ValueError:
+                        unfixable.append({**item, "reason": "no skill with this name; target outside skills tree"})
+                        continue
+                    if len(rel.parts) != 2:
+                        unfixable.append({**item, "reason": "target is not <category>/<name>"})
+                        continue
+                    sid = f"{rel.parts[0]}/{rel.parts[1]}"
+                    if sid not in skills:
+                        unfixable.append({**item, "reason": f"target {sid} does not exist anymore"})
+                        continue
                 try:
                     res = self.repair(sid, item["tool"])
                     fixed.append({"skill": sid, "tool": item["tool"], "state": res.get("state")})
                 except SkillsToggleError as exc:
                     unfixable.append({**item, "reason": str(exc)})
-                del skill_id
             return {"ok": True, "fixed": fixed, "unfixable": unfixable}
 
     def ensure_tool_dir(self, tool_id: object) -> dict:
@@ -907,7 +955,12 @@ class SkillsToggleCore:
             raise SkillsToggleError(f"tool {tool_id} has no target dir configured", "no-dir")
         if tool_dir.is_dir():
             return {"ok": True, "tool": tool_id, "dir": str(tool_dir), "created": False}
-        tool_dir.mkdir(parents=True, exist_ok=True)
+        if tool_dir.exists():
+            raise SkillsToggleError(f"{tool_dir} exists but is not a directory — refusing to replace it", "not-a-dir")
+        try:
+            tool_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise SkillsToggleError(f"cannot create {tool_dir}: {exc}", "mkdir-failed") from exc
         self._log(action="create-tool-dir", tool=tool_id, dir=str(tool_dir))
         self.invalidate()
         return {"ok": True, "tool": tool_id, "dir": str(tool_dir), "created": True}
@@ -969,6 +1022,7 @@ def load_tools_config(home: Path) -> dict:
 
 _CORE: SkillsToggleCore | None = None
 _CORE_SIG: tuple | None = None
+_CORE_FROZEN = False
 
 
 def _core_signature() -> tuple:
@@ -978,6 +1032,8 @@ def _core_signature() -> tuple:
 
 def get_core() -> SkillsToggleCore:
     global _CORE, _CORE_SIG
+    if _CORE_FROZEN and _CORE is not None:
+        return _CORE
     sig = _core_signature()
     if _CORE is None or sig != _CORE_SIG:
         _CORE = SkillsToggleCore.build_default()
@@ -985,10 +1041,16 @@ def get_core() -> SkillsToggleCore:
     return _CORE
 
 
-def set_core_for_testing(core: SkillsToggleCore) -> None:
-    global _CORE, _CORE_SIG
+def set_core_for_testing(core: SkillsToggleCore | None) -> None:
+    global _CORE, _CORE_SIG, _CORE_FROZEN
+    if core is None:
+        _CORE = None
+        _CORE_SIG = None
+        _CORE_FROZEN = False
+        return
     _CORE = core
     _CORE_SIG = ("test", id(core))
+    _CORE_FROZEN = True
 
 
 # ---------------------------------------------------------------------------
