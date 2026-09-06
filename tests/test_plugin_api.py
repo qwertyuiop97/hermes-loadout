@@ -459,6 +459,38 @@ class FixtureTest(unittest.TestCase):
         self.assertEqual(r["code"], "not-a-dir")
         self.assertTrue(bogus.is_file())  # untouched
 
+    def test_matrix_every_tool_link_unlink_repair_absent_dir(self) -> None:
+        """The README matrix, executed literally: for EACH link tool — link,
+        unlink, repair, and absent-dir create-dir-and-link."""
+        core = self.fx.core
+        link_tools = ["claude", "codex", "opencode", "grok", "zcode"]
+        sid = "creative/architecture-diagram"  # no pre-existing conflicts in the fixture
+        skill_dir = (self.fx.home / "skills" / "creative" / "architecture-diagram").resolve()
+        for tool in link_tools:
+            absent = core.tool_dir(tool) is not None and not core.tool_dir(tool).is_dir()
+            # link (from absent dir if needed, or plain)
+            r = core.toggle(sid, tool, True)
+            self.assertTrue(r["ok"], f"{tool}: {r}")
+            self.assertEqual(r["state"], "enabled", tool)
+            if absent:
+                self.assertEqual(r["action"], "created-dir+linked", tool)
+                self.assertTrue(core.tool_dir(tool).is_dir(), tool)
+            link = core.tool_dir(tool) / "architecture-diagram"
+            self.assertTrue(link.is_symlink(), tool)
+            self.assertEqual(Path(os.readlink(link)).resolve(), skill_dir, tool)
+            # repair (healthy → noop)
+            self.assertEqual(core.repair(sid, tool)["action"], "noop", tool)
+            # unlink
+            r = core.toggle(sid, tool, False)
+            self.assertEqual((r["action"], r["state"]), ("unlinked", "missing"), tool)
+            self.assertFalse(link.exists(), tool)
+            # repair from broken: recreate as a stale inside-tree link
+            os.symlink(self.fx.home / "skills" / "apple" / "vanished-skill", link)
+            r = core.repair(sid, tool)
+            self.assertEqual((r["state"], r["action"]), ("enabled", "repaired-link"), tool)
+            core.toggle(sid, tool, False)  # leave clean state
+            self.assertEqual(self.skill_entry(core.state(), sid)["tools"][tool]["state"], "missing")
+
 class ConfigEditorTests(unittest.TestCase):
     """The surgical skills.disabled editor across config shapes."""
 
