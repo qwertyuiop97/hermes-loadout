@@ -81,9 +81,9 @@ const channel = {
   mcpState: {
     ok: true,
     rows: [
-      { name: 'chrome-devtools', enabled: true, definition: {}, writers: { claude: 'enabled' } },
-      { name: 'docs', enabled: true, definition: {}, writers: { claude: 'drifted' } },
-      { name: 'weather', enabled: false, definition: {}, writers: { claude: 'missing' } }
+      { name: 'chrome-devtools', enabled: true, definition: {}, writers: { claude: 'enabled', codex: 'enabled' } },
+      { name: 'docs', enabled: true, definition: {}, writers: { claude: 'drifted', codex: 'missing' } },
+      { name: 'weather', enabled: false, definition: {}, writers: { claude: 'missing', codex: 'missing' } }
     ],
     foreign: [{ name: 'drifted-server', keys: ['command'] }],
     counts: { catalog: 3, foreign: 1 },
@@ -211,7 +211,7 @@ palMcp.data.run()
 html = render()
 ok(html.includes('MCP servers'), 'MCP tab renders the server list after palette run')
 ok(html.includes('chrome-devtools') && html.includes('weather'), 'catalog rows render')
-ok((html.match(/role=\"switch\"/g) || []).length === 6, '6 MCP switches (3 servers × Hermes + Claude)')
+ok((html.match(/role=\"switch\"/g) || []).length === 9, '9 MCP switches (3 servers × Hermes + Claude + Codex)')
 ok(html.includes('drifted'), 'drifted badge renders for the drifted server')
 ok(html.includes('>sync<'), 'sync action offered on drifted rows')
 ok(html.includes('not in the Hermes catalog'), 'foreign servers noted and never touched')
