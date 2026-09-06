@@ -205,18 +205,21 @@ ok(html.includes('Use Hermes'), 'drift view offers the Use-Hermes push action')
 ok(html.includes('architecture-diagram'), 'drift view lists the drifted skill name')
 storage.delete('viewFilter')
 
-// MCP tab (pre-seeded via storage, like a returning user)
-storage.set('paneTab', 'mcp')
+// MCP tab — driven through the palette command like a real user (live atom
+// switch works even when the page is already mounted)
+palMcp.data.run()
 html = render()
-ok(html.includes('MCP servers'), 'MCP tab renders the server list')
+ok(html.includes('MCP servers'), 'MCP tab renders the server list after palette run')
 ok(html.includes('chrome-devtools') && html.includes('weather'), 'catalog rows render')
 ok((html.match(/role=\"switch\"/g) || []).length === 6, '6 MCP switches (3 servers × Hermes + Claude)')
 ok(html.includes('drifted'), 'drifted badge renders for the drifted server')
 ok(html.includes('>sync<'), 'sync action offered on drifted rows')
 ok(html.includes('not in the Hermes catalog'), 'foreign servers noted and never touched')
-storage.delete('paneTab')
+// palette Skills command switches back live
+const palOpenCmd = channel.registry.find(c => c.area === 'palette' && c.data.label === 'Skills: toggle…')
+palOpenCmd.data.run()
 html = render()
-ok(html.includes('Search skills'), 'default tab is still Skills')
+ok(html.includes('Search skills'), 'palette Skills command switches the tab back live')
 
 // tool filter pre-seeded → bulk buttons appear for that tool
 storage.set('toolFilter', 'claude')

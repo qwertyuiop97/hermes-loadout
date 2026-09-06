@@ -85,6 +85,16 @@ export function usePluginI18n(id) {
   }
 }
 
+export const atom = initial => {
+  const a = {
+    get: () => ((S().atomStore = S().atomStore || new Map()).get(a) ?? initial),
+    set: v => {
+      ;(S().atomStore = S().atomStore || new Map()).set(a, v)
+    }
+  }
+  return a
+}
+export const useValue = a => (typeof a === 'function' ? a() : a.get())
 export const PANES_AREA = 'panes'
 export const ROUTES_AREA = 'routes'
 export const PALETTE_AREA = 'palette'

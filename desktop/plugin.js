@@ -48,6 +48,8 @@ import {
   useMutation,
   useQueryClient,
   usePluginI18n,
+  atom,
+  useValue,
   PANES_AREA,
   ROUTES_AREA,
   PALETTE_AREA,
@@ -61,6 +63,7 @@ const STATE_KEY = [ID, 'state']
 const DIFF_KEY = [ID, 'diff']
 const DRIFT_KEY = [ID, 'drift']
 const MCP_KEY = [ID, 'mcp']
+const paneTabAtom = atom(storeGet('paneTab', 'skills'))
 
 // ctx captured at register() so helpers outside components can use storage.
 let pluginCtx = null
@@ -1894,8 +1897,11 @@ function McpPane() {
 
 function PaneRoot() {
   const t = usePluginI18n(ID)
-  const [tab, setTab] = useState(() => storeGet('paneTab', 'skills'))
-  useEffect(() => storeSet('paneTab', tab), [tab])
+  const tab = useValue(paneTabAtom)
+  const setTab = name => {
+    paneTabAtom.set(name)
+    storeSet('paneTab', name)
+  }
   return jsxs('div', {
     className: 'flex h-full min-w-0 flex-col',
     children: [
@@ -2100,7 +2106,11 @@ export default {
           label: 'Skills: toggle…',
           keywords: ['skills', 'toggle', 'sync', 'claude', 'codex', 'opencode', 'grok', 'zcode'],
           detail: () => 'Enable or disable skills per tool',
-          run: () => host.navigate('/skills-toggle')
+          run: () => {
+            paneTabAtom.set('skills')
+            storeSet('paneTab', 'skills')
+            host.navigate('/skills-toggle')
+          }
         }
       },
       {
@@ -2112,6 +2122,7 @@ export default {
           keywords: ['mcp', 'servers', 'claude desktop', 'toggle'],
           detail: () => 'Enable or disable MCP servers per app',
           run: () => {
+            paneTabAtom.set('mcp')
             storeSet('paneTab', 'mcp')
             host.navigate('/skills-toggle')
           }
