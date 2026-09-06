@@ -32,6 +32,7 @@ import {
   cn,
   Button,
   Badge,
+  Input,
   Switch,
   StatusDot,
   EmptyState,
@@ -49,7 +50,8 @@ import {
   usePluginI18n,
   PANES_AREA,
   ROUTES_AREA,
-  PALETTE_AREA
+  PALETTE_AREA,
+  STATUSBAR_AREAS
 } from '@hermes/plugin-sdk'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
@@ -213,7 +215,7 @@ function ToolCell({ skill, tool, st, onToggle, onRepair, busy }) {
 // Skill row
 // ---------------------------------------------------------------------------
 
-function SkillRow({ skill, tools, view, activeTool, onToggle, onRepair, busy, layout }) {
+function SkillRow({ skill, tools, view, activeTool, onToggle, onRepair, onRowAll, onRowNone, busy, layout }) {
   const t = usePluginI18n(ID)
   const hermes = skill.tools.hermes
   const hermesOff = hermes && hermes.state === 'disabled'
@@ -243,7 +245,23 @@ function SkillRow({ skill, tools, view, activeTool, onToggle, onRepair, busy, la
                 children: jsx(Badge, { variant: 'muted', size: 'xs', children: t('hermesOffBadge') })
               })
             : null,
-          jsx('span', { className: 'ml-auto shrink-0 text-[0.625rem] text-muted-foreground', children: skill.category })
+          jsxs('span', { className: 'ml-auto flex shrink-0 items-center gap-1', children: [
+            jsx('span', { className: 'text-[0.625rem] text-muted-foreground', children: skill.category }),
+            jsx(Tip, {
+              label: t('rowAllTip'),
+              children: jsx(Button, {
+                variant: 'ghost', size: 'xs', className: 'h-4 px-1 text-[0.625rem]', disabled: busy,
+                onClick: () => onRowAll(skill), children: t('rowAll')
+              })
+            }),
+            jsx(Tip, {
+              label: t('rowNoneTip'),
+              children: jsx(Button, {
+                variant: 'ghost', size: 'xs', className: 'h-4 px-1 text-[0.625rem]', disabled: busy,
+                onClick: () => onRowNone(skill), children: t('rowNone')
+              })
+            })
+          ] })
         ]
       }),
       layout !== 'narrow' && skill.description
@@ -290,6 +308,8 @@ function CategoryGroup({
   onToggle,
   onRepair,
   onBulk,
+  onRowAll,
+  onRowNone,
   busy,
   layout
 }) {
@@ -346,6 +366,8 @@ function CategoryGroup({
               activeTool: activeTool,
               onToggle: onToggle,
               onRepair: onRepair,
+              onRowAll: onRowAll,
+              onRowNone: onRowNone,
               busy: busy,
               layout: layout
             },
@@ -429,6 +451,247 @@ function ToolFilter({ tools, active, onChange, layout }) {
 }
 
 // ---------------------------------------------------------------------------
+// v2 — presets (D20/D21), arrival + auto-link machinery (D22/D23), undo (D29)
+// ---------------------------------------------------------------------------
+
+const BUILT_IN_PRESETS = [
+  { id: 'coding', label: 'Coding', catRe: /(software|devops|web|autonomous|delegating|coding)/i },
+  { id: 'writing', label: 'Writing', catRe: /(creative|note-taking|email|research)/i },
+  { id: 'minimal', label: 'Minimal', disableAll: true }
+]
+
+function getAutoLinkPrefs() {
+  try {
+    return JSON.parse(storeGet('autoLink', '{}')) || {}
+  } catch (_err) {
+    return {}
+  }
+}
+
+function setAutoLinkPrefs(prefs) {
+  storeSet('autoLink', JSON.stringify(prefs || {}))
+}
+
+function markSkillsSeen(ids) {
+  let seen = []
+  try {
+    seen = JSON.parse(storeGet('seenSkills', '[]')) || []
+  } catch (_err) {
+    seen = []
+  }
+  const set = new Set(seen)
+  for (const id of ids) set.add(id)
+  storeSet('seenSkills', JSON.stringify(Array.from(set)))
+}
+
+// Health chip for the status bar — always mounted, cheap polling.
+function HealthChip() {
+  const diffQuery = useQuery({
+    queryKey: DIFF_KEY,
+    queryFn: () => (pluginCtx ? pluginCtx.rest('/diff') : Promise.reject(new Error('no backend'))),
+    staleTime: 30000,
+    refetchInterval: 60000,
+    refetchOnWindowFocus: false,
+    retry: 0
+  })
+  const diff = diffQuery && diffQuery.data
+  const broken = diff && diff.ok ? diff.counts.broken : 0
+  const unlinked = diff && diff.ok ? diff.counts.unlinked : 0
+  if (diffQuery.isPending || (!broken && !unlinked)) {
+    return jsx('button', {
+      type: 'button',
+      className: 'inline-flex h-full items-center gap-1 px-1.5 text-[0.6875rem] text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover)',
+      onClick: () => host.navigate('/skills-toggle'),
+      children: jsx(StatusDot, { tone: 'good' })
+    })
+  }
+  return jsx(Badge, {
+    variant: broken ? 'warn' : 'outline',
+    size: 'xs',
+    children: jsx('button', {
+      type: 'button',
+      className: 'inline-flex cursor-pointer items-center gap-1',
+      onClick: () => host.navigate('/skills-toggle'),
+      children: broken ? `${broken} broken` : `${unlinked} unlinked`
+    })
+  })
+}
+
+// Setup / onboarding panel — create tool dirs, add custom tools, manage
+// auto-link prefs, and find copies to adopt. Purely user-initiated (opt-in).
+function SetupPanel({ tools, onClose, onEnsureDir, onAddTool, busy, autoLink, onAutoLink, adopt, onScanAdopt, onAdopt }) {
+  const t = usePluginI18n(ID)
+  const [label, setLabel] = useState('')
+  const [dir, setDir] = useState('')
+  const linkTools = tools.filter(tool => tool.special !== 'config')
+
+  return jsxs('div', {
+    className: 'mx-3 mb-2 rounded-md border border-(--ui-stroke-secondary) p-2 text-xs',
+    children: [
+      jsxs('div', { className: 'flex items-center gap-2', children: [
+        jsx('span', { className: 'font-medium', children: t('setupTitle') }),
+        jsx('span', { className: 'ml-auto' }),
+        jsx(Button, { variant: 'ghost', size: 'xs', onClick: onClose, children: t('close') })
+      ] }),
+      jsx('div', { className: 'mt-1 text-muted-foreground', children: t('setupDesc') }),
+      jsxs('div', { className: 'mt-2 flex flex-col gap-1', children: linkTools.map(tool =>
+        jsxs('div', { className: 'flex items-center gap-2', children: [
+          jsx(StatusDot, { tone: tool.present ? 'good' : 'muted' }),
+          jsx('span', { className: 'w-20 shrink-0 truncate', children: tool.label }),
+          jsx('span', { className: 'min-w-0 flex-1 truncate text-muted-foreground', children: tool.dir || '' }),
+          tool.present
+            ? jsx(Badge, { variant: 'success', size: 'xs', children: t('present') })
+            : jsx(Button, {
+                variant: 'secondary', size: 'xs', disabled: busy,
+                onClick: () => onEnsureDir(tool), children: t('createDir')
+              })
+        ] }, tool.id)
+      ) }),
+      jsxs('div', { className: 'mt-2', children: [
+        jsx('div', { className: 'mb-1 text-muted-foreground', children: t('addTool') }),
+        jsxs('div', { className: 'flex items-center gap-1', children: [
+          jsx(Input, {
+            value: label,
+            onChange: setLabel,
+            placeholder: t('toolLabel'),
+            className: 'h-6 w-24 text-xs'
+          }),
+          jsx(Input, {
+            value: dir,
+            onChange: setDir,
+            placeholder: t('toolDir'),
+            className: 'h-6 min-w-0 flex-1 text-xs'
+          }),
+          jsx(Button, {
+            variant: 'secondary', size: 'xs', disabled: busy || !label.trim() || !dir.trim(),
+            onClick: () => { onAddTool(label, dir); setLabel(''); setDir('') },
+            children: t('add')
+          })
+        ] })
+      ] }),
+      jsxs('div', { className: 'mt-2', children: [
+        jsx('div', { className: 'mb-1 text-muted-foreground', children: t('autoLinkDesc') }),
+        jsxs('div', { className: 'flex flex-wrap gap-1', children: linkTools.map(tool =>
+          jsx('button', {
+            type: 'button',
+            onClick: () => onAutoLink(tool.id),
+            className: cn(
+              'rounded-[4px] px-1.5 py-0.5 text-[0.6875rem] transition-colors',
+              autoLink[tool.id]
+                ? 'bg-primary/10 font-medium text-primary'
+                : 'text-muted-foreground hover:bg-(--chrome-action-hover) hover:text-foreground'
+            ),
+            children: autoLink[tool.id] ? `⚡ ${tool.label}` : tool.label
+          }, tool.id)
+        ) })
+      ] }),
+      jsxs('div', { className: 'mt-2 flex items-center gap-2', children: [
+        jsx(Button, {
+          variant: 'secondary', size: 'xs', disabled: busy,
+          onClick: onScanAdopt,
+          children: t('adoptScan')
+        }),
+        adopt && adopt.ok
+          ? jsx('span', { className: 'text-muted-foreground', children: t('adoptCounts', adopt.counts.adoptable, adopt.counts.drifted) })
+          : null,
+        adopt && adopt.ok && adopt.counts.adoptable > 0
+          ? jsx(Button, {
+              variant: 'secondary', size: 'xs', disabled: busy,
+              onClick: () => onAdopt(adopt),
+              children: t('adoptAll')
+            })
+          : null
+      ] })
+    ]
+  })
+}
+
+// Arrival banner — new skills detected since last visit. Never auto-enables
+// unless a tool has an explicit auto-link preference (D22/D23).
+function ArrivalBanner({ arrivals, tools, autoLink, onLink, onDismiss, onAutoLink, busy }) {
+  const t = usePluginI18n(ID)
+  const [selected, setSelected] = useState(() => new Set())
+  const linkTools = tools.filter(tool => tool.special !== 'config')
+  const toggleSel = id => {
+    setSelected(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+  const sample = arrivals.slice(0, 3).join(', ')
+  return jsxs('div', {
+    className: 'mx-3 mb-2 rounded-md border border-(--ui-stroke-secondary) bg-background p-2 text-xs',
+    children: [
+      jsxs('div', { className: 'flex items-center gap-2', children: [
+        jsx(StatusDot, { tone: 'good' }),
+        jsx('span', { className: 'font-medium', children: t('arrivalsTitle', arrivals.length) }),
+        jsx(Button, {
+          variant: 'ghost', size: 'xs', className: 'ml-auto', disabled: busy,
+          onClick: onDismiss, children: t('dismiss')
+        })
+      ] }),
+      jsx('div', { className: 'mt-0.5 truncate text-muted-foreground', children: sample }),
+      jsxs('div', { className: 'mt-1.5 flex flex-wrap items-center gap-1', children: [
+        linkTools.map(tool =>
+          jsxs('span', { className: 'inline-flex items-center gap-1', children: [
+            jsx('button', {
+              type: 'button',
+              onClick: () => toggleSel(tool.id),
+              className: cn(
+                'rounded-[4px] px-1.5 py-0.5 text-[0.6875rem] transition-colors',
+                selected.has(tool.id)
+                  ? 'bg-primary/10 font-medium text-primary'
+                  : 'text-muted-foreground hover:bg-(--chrome-action-hover) hover:text-foreground'
+              ),
+              children: tool.label
+            }),
+            jsx(Tip, {
+              label: t('alwaysAuto'),
+              children: jsx('button', {
+                type: 'button',
+                onClick: () => onAutoLink(tool.id),
+                className: cn(
+                  'rounded-[4px] px-1 py-0.5 text-[0.625rem] transition-colors',
+                  autoLink[tool.id]
+                    ? 'bg-primary/10 font-medium text-primary'
+                    : 'text-muted-foreground hover:bg-(--chrome-action-hover) hover:text-foreground'
+                ),
+                children: '⚡'
+              })
+            })
+          ] }, tool.id)
+        ),
+        jsx(Button, {
+          variant: 'secondary', size: 'xs', className: 'ml-auto',
+          disabled: busy || selected.size === 0,
+          onClick: () => onLink(Array.from(selected)),
+          children: t('linkChecked', arrivals.length)
+        })
+      ] })
+    ]
+  })
+}
+
+// Undo banner — 30 s window over the last bulk/preset/arrival action (D29).
+function UndoBanner({ undo, onUndo, busy }) {
+  const t = usePluginI18n(ID)
+  if (!undo) return null
+  return jsxs('div', {
+    className: 'mx-3 mb-2 flex items-center gap-2 rounded-md border border-(--ui-stroke-secondary) bg-background px-2 py-1 text-xs',
+    children: [
+      jsx('span', { className: 'text-muted-foreground', children: t('undoAvail', undo.count) }),
+      jsx(Button, {
+        variant: 'secondary', size: 'xs', className: 'ml-auto', disabled: busy,
+        onClick: onUndo, children: t('undo')
+      })
+    ]
+  })
+}
+
+
+// ---------------------------------------------------------------------------
 // Main pane
 // ---------------------------------------------------------------------------
 
@@ -443,9 +706,24 @@ function SkillsPane() {
   const [activeTool, setActiveTool] = useState(() => storeGet('toolFilter', 'all'))
   const [view, setView] = useState(() => storeGet('viewFilter', 'all'))
   const [confirm, setConfirm] = useState(null)
+  const [arrivals, setArrivals] = useState([])
+  const [showSetup, setShowSetup] = useState(() => storeGet('setupDismissed', false) !== true)
+  const [undo, setUndo] = useState(null)
+  const [autoLink, setAutoLinkState] = useState(() => getAutoLinkPrefs())
+  const [adopt, setAdopt] = useState(null)
+  const [showPresetImport, setShowPresetImport] = useState(false)
+  const [presetText, setPresetText] = useState('')
+  const [taskBusy, setTaskBusy] = useState(false)
 
   useEffect(() => storeSet('toolFilter', activeTool), [activeTool])
   useEffect(() => storeSet('viewFilter', view), [view])
+
+  // -- undo window (D29) ---------------------------------------------------
+  useEffect(() => {
+    if (!undo) return undefined
+    const timer = setTimeout(() => setUndo(null), Math.max(0, undo.expires - Date.now()))
+    return () => clearTimeout(timer)
+  }, [undo])
 
   const stateQuery = useQuery({
     queryKey: STATE_KEY,
@@ -563,11 +841,20 @@ function SkillsPane() {
 
   // -- handlers -----------------------------------------------------------
 
-  const busy =
-    toggleMutation.isPending ||
-    repairMutation.isPending ||
-    repairAllMutation.isPending ||
-    bulkMutation.isPending
+  const onEnsureDir = tool => {
+    setTaskBusy(true)
+    pluginCtx
+      .rest('/ensure-tool-dir', { method: 'POST', body: { tool: tool.id } })
+      .then(res => {
+        if (res && res.ok) host.notify({ kind: 'success', message: t('dirCreated', tool.label) })
+        else host.notify({ kind: 'error', message: res && res.error ? res.error : t('toolAddFailed') })
+      })
+      .catch(err => host.notifyError(err, t('toolAddFailed')))
+      .finally(() => {
+        setTaskBusy(false)
+        qc.invalidateQueries({ queryKey: STATE_KEY })
+      })
+  }
 
   const onToggle = useCallback(
     (skill, tool, enabled) => {
@@ -612,8 +899,374 @@ function SkillsPane() {
   // -- derived view ---------------------------------------------------------
 
   const skills = state && state.ok && Array.isArray(state.skills) ? state.skills : []
+  const linkTools = tools.filter(tool => tool.special !== 'config')
+  const busy = taskBusy || toggleMutation.isPending || repairMutation.isPending || repairAllMutation.isPending || bulkMutation.isPending
+
+  // -- arrivals (D22) + auto-link (D23) --------------------------------------
+  const arrivalsRef = useRef(false)
+  useEffect(() => {
+    if (!state || !state.ok || !Array.isArray(state.skills)) return
+    if (arrivalsRef.current) return
+    arrivalsRef.current = true
+    const ids = state.skills.map(s => s.id)
+    const rawSeen = storeGet('seenSkills', null)
+    if (rawSeen === null) {
+      // first ever load: adopt the current snapshot silently — never prompt
+      // about pre-existing skills (opt-in constraint)
+      markSkillsSeen(ids)
+      return
+    }
+    let seen
+    try {
+      seen = new Set(JSON.parse(rawSeen) || [])
+    } catch (_err) {
+      seen = new Set(ids)
+    }
+    const fresh = ids.filter(id => !seen.has(id))
+    if (fresh.length) setArrivals(fresh)
+  }, [state])
+
+  const autoLinkRef = useRef(false)
+  useEffect(() => {
+    if (!arrivals.length || !state || !state.ok) return
+    const prefs = getAutoLinkPrefs()
+    const autoTools = linkTools.filter(tool => prefs[tool.id] && tool.present !== false)
+    if (!autoTools.length || autoLinkRef.current) return
+    autoLinkRef.current = true
+    const byId = new Map(skills.map(s => [s.id, s]))
+    const valid = arrivals.filter(id => byId.has(id))
+    ;(async () => {
+      let changed = 0
+      for (const tool of autoTools) {
+        try {
+          const res = await pluginCtx.rest('/toggle-bulk', {
+            method: 'POST',
+            body: { skills: valid, tool: tool.id, enabled: true }
+          })
+          if (res && res.ok) changed += res.changed || 0
+        } catch (_err) {
+          /* per-tool failure surfaces via the next invalidate + toast below */
+        }
+      }
+      markSkillsSeen(arrivals)
+      setArrivals([])
+      autoLinkRef.current = false
+      if (changed) host.notify({ kind: 'success', message: t('toastAutoLinked', changed) })
+      qc.invalidateQueries({ queryKey: STATE_KEY })
+      qc.invalidateQueries({ queryKey: DIFF_KEY })
+    })()
+  }, [arrivals, state, linkTools, skills, t, qc])
+
+  // -- imperative bulk runner with undo capture ------------------------------
+  // entries: [{ tool, ids, enabled }]; undoActions: [{ skill, tool, enabled }]
+  // carrying the RESTORE polarity captured before the change.
+  const runBulkEntries = useCallback(
+    async (entries, undoActions) => {
+      setTaskBusy(true)
+      let changed = 0
+      let failed = 0
+      try {
+        for (const entry of entries) {
+          if (!entry.ids.length) continue
+          try {
+            const res = await pluginCtx.rest('/toggle-bulk', {
+              method: 'POST',
+              body: { skills: entry.ids, tool: entry.tool, enabled: entry.enabled }
+            })
+            if (res && res.ok) {
+              changed += res.changed || 0
+              failed += res.failed || 0
+            } else {
+              failed += entry.ids.length
+            }
+          } catch (_err) {
+            failed += entry.ids.length
+          }
+        }
+      } finally {
+        setTaskBusy(false)
+        qc.invalidateQueries({ queryKey: STATE_KEY })
+        qc.invalidateQueries({ queryKey: DIFF_KEY })
+      }
+      if (undoActions && undoActions.length) {
+        setUndo({ actions: undoActions, count: undoActions.length, expires: Date.now() + 30000 })
+      }
+      host.notify({
+        kind: failed ? 'error' : 'success',
+        message: failed ? t('toastBulk', changed, failed) : t('toastBulkDone', changed)
+      })
+      return changed
+    },
+    [qc, t]
+  )
+
+  const onUndo = useCallback(() => {
+    if (!undo) return
+    const byKey = new Map()
+    for (const action of undo.actions) {
+      const key = `${action.tool}|${action.enabled}`
+      const entry = byKey.get(key) || { tool: action.tool, enabled: action.enabled, ids: [] }
+      entry.ids.push(action.skill)
+      byKey.set(key, entry)
+    }
+    setUndo(null)
+    runBulkEntries(Array.from(byKey.values()))
+  }, [undo, runBulkEntries])
+
+  // -- presets (D20/D21) ------------------------------------------------------
+  const captureEnableUndo = (ids, tool) => {
+    const byId = new Map(skills.map(s => [s.id, s]))
+    const undoActions = []
+    for (const id of ids) {
+      const s = byId.get(id)
+      const st = s && s.tools[tool] ? s.tools[tool].state : 'missing'
+      if (st !== 'enabled') undoActions.push({ skill: id, tool: tool, enabled: false })
+    }
+    return undoActions
+  }
+
+  const applyEnablePreset = preset => {
+    const ids = skills
+      .filter(s => preset.catRe && preset.catRe.test(s.category))
+      .map(s => s.id)
+    const targets = linkTools.filter(tool => tool.present !== false)
+    if (!ids.length || !targets.length) {
+      host.notify({ kind: 'info', message: t('presetNoop') })
+      return
+    }
+    const sample = ids.slice(0, 5).join(', ')
+    setConfirm({
+      title: t('presetApplyTitle', preset.label),
+      description: t('presetApplyDesc', ids.length, targets.length, sample),
+      confirmLabel: t('applyPreset'),
+      destructive: false,
+      action: () => {
+        const undoActions = []
+        const entries = targets.map(tool => {
+          undoActions.push(...captureEnableUndo(ids, tool.id))
+          return { tool: tool.id, ids: ids, enabled: true }
+        })
+        runBulkEntries(entries, undoActions)
+      }
+    })
+  }
+
+  const applyMinimalPreset = () => {
+    const byId = new Map(skills.map(s => [s.id, s]))
+    const entries = []
+    const undoActions = []
+    let total = 0
+    for (const tool of linkTools) {
+      if (tool.present === false) continue
+      const ids = skills
+        .filter(s => s.tools[tool.id] && s.tools[tool.id].state === 'enabled')
+        .map(s => s.id)
+      if (!ids.length) continue
+      total += ids.length
+      for (const id of ids) undoActions.push({ skill: id, tool: tool.id, enabled: true })
+      entries.push({ tool: tool.id, ids: ids, enabled: false })
+    }
+    if (!total) {
+      host.notify({ kind: 'info', message: t('presetNoop') })
+      return
+    }
+    setConfirm({
+      title: t('minimalTitle'),
+      description: t('minimalDesc', total),
+      confirmLabel: t('applyPreset'),
+      destructive: true,
+      action: () => runBulkEntries(entries, undoActions)
+    })
+  }
+
+  const importPreset = () => {
+    let parsed
+    try {
+      parsed = JSON.parse(presetText)
+      if (!parsed || parsed.version !== 1 || !Array.isArray(parsed.skills)) throw new Error('bad shape')
+    } catch (_err) {
+      host.notify({ kind: 'error', message: t('invalidPreset') })
+      return
+    }
+    const known = new Set(skills.map(s => s.id))
+    const ids = parsed.skills.filter(id => known.has(id))
+    const skipped = parsed.skills.length - ids.length
+    const knownTools = new Set(linkTools.map(tool => tool.id))
+    const toolIds = (Array.isArray(parsed.tools) ? parsed.tools : []).filter(id => knownTools.has(id))
+    const targets = linkTools.filter(tool => toolIds.includes(tool.id) && tool.present !== false)
+    if (!ids.length || !targets.length) {
+      host.notify({ kind: 'error', message: t('invalidPreset') })
+      return
+    }
+    const sample = ids.slice(0, 5).join(', ')
+    setConfirm({
+      title: t('presetApplyTitle', String(parsed.name || 'preset')),
+      description: t('presetImportDesc', ids.length, targets.length, skipped, sample),
+      confirmLabel: t('applyPreset'),
+      destructive: false,
+      action: () => {
+        const undoActions = []
+        const entries = targets.map(tool => {
+          undoActions.push(...captureEnableUndo(ids, tool.id))
+          return { tool: tool.id, ids: ids, enabled: true }
+        })
+        runBulkEntries(entries, undoActions)
+        setPresetText('')
+        setShowPresetImport(false)
+      }
+    })
+  }
+
+  const exportPreset = async () => {
+    const ids = skills
+      .filter(s => linkTools.some(tool => s.tools[tool.id] && s.tools[tool.id].state === 'enabled'))
+      .map(s => s.id)
+    const payload = {
+      version: 1,
+      name: 'my-skills',
+      skills: ids,
+      tools: linkTools.map(tool => tool.id)
+    }
+    const text = JSON.stringify(payload, null, 2)
+    try {
+      if (pluginCtx && pluginCtx.os && typeof pluginCtx.os.writeClipboard === 'function') {
+        const okDone = await pluginCtx.os.writeClipboard(text)
+        host.notify({ kind: okDone ? 'success' : 'error', message: okDone ? t('copied') : t('copyFailed') })
+        return
+      }
+    } catch (_err) {
+      /* fall through to error toast */
+    }
+    host.notify({ kind: 'error', message: t('copyFailed') })
+  }
+
+  // -- setup / adoption (D26, #10) --------------------------------------------
+  const onAddTool = (label, dir) => {
+    setTaskBusy(true)
+    pluginCtx
+      .rest('/config/tools', {
+        method: 'POST',
+        body: { id: label.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 32), label: label, dir: dir }
+      })
+      .then(res => {
+        if (res && res.ok) host.notify({ kind: 'success', message: t('toolAdded', label) })
+        else host.notify({ kind: 'error', message: res && res.error ? res.error : t('toolAddFailed') })
+      })
+      .catch(err => host.notifyError(err, t('toolAddFailed')))
+      .finally(() => {
+        setTaskBusy(false)
+        qc.invalidateQueries({ queryKey: STATE_KEY })
+      })
+  }
+
+  const onScanAdopt = () => {
+    setTaskBusy(true)
+    pluginCtx
+      .rest('/import/scan')
+      .then(res => setAdopt(res))
+      .catch(err => host.notifyError(err, t('adoptFailed')))
+      .finally(() => setTaskBusy(false))
+  }
+
+  const onAdopt = scanResult => {
+    const targets = scanResult.tools.filter(tool => tool.adoptable > 0)
+    const sample = targets
+      .flatMap(tool => tool.entries.filter(e => e.kind === 'unmanaged-skill').slice(0, 2).map(e => `${tool.tool}/${e.name}`))
+      .slice(0, 5)
+      .join(', ')
+    setConfirm({
+      title: t('adoptConfirmTitle'),
+      description: t('adoptConfirmDesc', scanResult.counts.adoptable, sample),
+      confirmLabel: t('adoptAll'),
+      destructive: false,
+      action: () => {
+        setTaskBusy(true)
+        ;(async () => {
+          let adopted = 0
+          for (const target of targets) {
+            try {
+              const res = await pluginCtx.rest('/import/apply', {
+                method: 'POST',
+                body: {
+                  tool: target.tool,
+                  names: target.entries.filter(e => e.kind === 'unmanaged-skill' && !e.conflict).map(e => e.name)
+                }
+              })
+              if (res && res.ok) adopted += res.adopted || 0
+            } catch (_err) {
+              /* reported per-run by the summary toast */
+            }
+          }
+          host.notify({ kind: 'success', message: t('adoptDone', adopted) })
+        })().finally(() => {
+          setTaskBusy(false)
+          qc.invalidateQueries({ queryKey: STATE_KEY })
+          qc.invalidateQueries({ queryKey: DIFF_KEY })
+        })
+      }
+    })
+  }
+
+  const onArrivalLink = toolIds => {
+    const byId = new Map(skills.map(s => [s.id, s]))
+    const undoActions = []
+    const entries = toolIds
+      .filter(id => linkTools.some(tool => tool.id === id))
+      .map(toolId => {
+        undoActions.push(...captureEnableUndo(arrivals, toolId))
+        return { tool: toolId, ids: arrivals.slice(), enabled: true }
+      })
+    markSkillsSeen(arrivals)
+    setArrivals([])
+    runBulkEntries(entries, undoActions)
+  }
+
+  const onArrivalDismiss = () => {
+    markSkillsSeen(arrivals)
+    setArrivals([])
+  }
+
+  const onToggleAutoLink = toolId => {
+    const prefs = getAutoLinkPrefs()
+    if (prefs[toolId]) delete prefs[toolId]
+    else prefs[toolId] = true
+    setAutoLinkPrefs(prefs)
+    setAutoLinkState({ ...prefs })
+  }
+
+  // per-skill all/none across every present link tool (#5)
+  const onRowAll = useCallback(
+    skill => {
+      const targets = linkTools.filter(tool => tool.present !== false)
+      const undoActions = []
+      const entries = targets.map(tool => {
+        undoActions.push(...captureEnableUndo([skill.id], tool.id))
+        return { tool: tool.id, ids: [skill.id], enabled: true }
+      })
+      runBulkEntries(entries, undoActions)
+    },
+    [linkTools, captureEnableUndo, runBulkEntries]
+  )
+
+  const onRowNone = useCallback(
+    skill => {
+      const entries = []
+      const undoActions = []
+      for (const tool of linkTools) {
+        if (tool.present === false) continue
+        const st = skill.tools[tool.id]
+        if (st && (st.state === 'enabled' || st.state === 'broken-link')) {
+          undoActions.push({ skill: skill.id, tool: tool.id, enabled: true })
+          entries.push({ tool: tool.id, ids: [skill.id], enabled: false })
+        }
+      }
+      runBulkEntries(entries, undoActions)
+    },
+    [linkTools, runBulkEntries]
+  )
 
   const filtered = useMemo(() => {
+
     const q = searchQuery.trim().toLowerCase()
     const groups = new Map()
     for (const skill of skills) {
@@ -646,6 +1299,12 @@ function SkillsPane() {
               diff: diff,
               onRepairAll: onRepairAll,
               busy: busy
+            }),
+            jsx(Button, {
+              variant: 'ghost',
+              size: 'xs',
+              onClick: () => setShowSetup(v => !v),
+              children: t('setup')
             }),
             jsx(Button, {
               variant: 'ghost',
@@ -738,6 +1397,8 @@ function SkillsPane() {
             onToggle: onToggle,
             onRepair: onRepair,
             onBulk: onBulk,
+            onRowAll: onRowAll,
+            onRowNone: onRowNone,
             busy: busy,
             layout: layout
           },
@@ -747,12 +1408,113 @@ function SkillsPane() {
     })
   }
 
+  const allAbsent = linkTools.length > 0 && linkTools.every(tool => tool.present === false)
+
   return jsxs('div', {
     ref: rootRef,
     className: 'flex h-full min-w-0 flex-col text-sm',
     children: [
       header,
+      showSetup
+        ? jsx(SetupPanel, {
+            tools: tools,
+            onClose: () => {
+              setShowSetup(false)
+              storeSet('setupDismissed', true)
+            },
+            onEnsureDir: onEnsureDir,
+            onAddTool: onAddTool,
+            busy: busy,
+            autoLink: autoLink,
+            onAutoLink: onToggleAutoLink,
+            adopt: adopt,
+            onScanAdopt: onScanAdopt,
+            onAdopt: onAdopt
+          })
+        : null,
+      arrivals.length
+        ? jsx(ArrivalBanner, {
+            arrivals: arrivals,
+            tools: tools,
+            autoLink: autoLink,
+            onLink: onArrivalLink,
+            onDismiss: onArrivalDismiss,
+            onAutoLink: onToggleAutoLink,
+            busy: busy
+          })
+        : null,
+      jsx(UndoBanner, { undo: undo, onUndo: onUndo, busy: busy }),
+      jsxs('div', {
+        className: 'flex flex-wrap items-center gap-1 px-3 pb-2',
+        children: [
+          jsx('span', { className: 'mr-1 text-[0.625rem] uppercase tracking-wider text-muted-foreground', children: t('presets') }),
+          BUILT_IN_PRESETS.map(preset =>
+            jsx(
+              'button',
+              {
+                type: 'button',
+                onClick: () => (preset.disableAll ? applyMinimalPreset() : applyEnablePreset(preset)),
+                disabled: busy,
+                className: cn(
+                  'rounded-[4px] border border-(--ui-stroke-secondary) px-1.5 py-0.5 text-[0.6875rem] transition-colors',
+                  'text-muted-foreground hover:bg-(--chrome-action-hover) hover:text-foreground'
+                ),
+                children: preset.label
+              },
+              preset.id
+            )
+          ),
+          jsx('button', {
+            type: 'button',
+            onClick: () => setShowPresetImport(v => !v),
+            disabled: busy,
+            className: 'rounded-[4px] border border-(--ui-stroke-secondary) px-1.5 py-0.5 text-[0.6875rem] text-muted-foreground transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground',
+            children: t('presetImport')
+          }),
+          jsx('button', {
+            type: 'button',
+            onClick: exportPreset,
+            disabled: busy,
+            className: 'rounded-[4px] border border-(--ui-stroke-secondary) px-1.5 py-0.5 text-[0.6875rem] text-muted-foreground transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground',
+            children: t('copyPreset')
+          })
+        ]
+      }),
+      showPresetImport
+        ? jsxs('div', {
+            className: 'mx-3 mb-2 rounded-md border border-(--ui-stroke-secondary) p-2 text-xs',
+            children: [
+              jsx('div', { className: 'mb-1 text-muted-foreground', children: t('pasteHint') }),
+              jsx(Input, {
+                value: presetText,
+                onChange: setPresetText,
+                placeholder: '{"version": 1, "name": "…", "skills": ["…"], "tools": ["…"]}',
+                className: 'h-6 w-full text-xs'
+              }),
+              jsx('div', { className: 'mt-1 flex justify-end' }),
+              jsx(Button, {
+                variant: 'secondary',
+                size: 'xs',
+                disabled: busy || !presetText.trim(),
+                onClick: importPreset,
+                children: t('applyPreset')
+              })
+            ]
+          })
+        : null,
       jsx(ScrollArea, { className: 'min-h-0 flex-1', children: body }),
+      allAbsent && !showSetup && state && state.ok
+        ? jsxs('div', {
+            className: 'mx-3 mb-3 flex items-center gap-2 rounded-md border border-(--ui-stroke-secondary) px-2 py-1.5 text-xs',
+            children: [
+              jsx('span', { className: 'text-muted-foreground', children: t('setupNudge') }),
+              jsx(Button, {
+                variant: 'secondary', size: 'xs', className: 'ml-auto',
+                onClick: () => setShowSetup(true), children: t('setup')
+              })
+            ]
+          })
+        : null,
       jsx(ConfirmDialog, {
         open: !!confirm,
         onClose: () => setConfirm(null),
@@ -810,6 +1572,7 @@ export default {
         toastRepaired: 'Link repaired',
         toastRepairedAll: (fixed, unfixable) => `Repaired ${fixed} link(s), ${unfixable} left alone`,
         toastBulk: (changed, failed) => `Toggled ${changed} skill(s), ${failed} failed`,
+        toastBulkDone: n => `Applied ${n} change(s)`,
         toggleFailed: 'Toggle failed — change rolled back',
         repairFailed: 'Repair failed',
         bulkFailed: 'Bulk toggle failed',
@@ -832,7 +1595,54 @@ export default {
         fix: 'fix',
         brokenLinkTip: 'Symlink points at nothing — fix it or toggle to recreate',
         foreignLinkTip: 'Symlink points outside the skills tree — resolve it manually (never touched automatically)',
-        unmanagedDirTip: 'A real directory sits here (not a symlink) — never touched automatically'
+        unmanagedDirTip: 'A real directory sits here (not a symlink) — never touched automatically',
+        setup: 'Setup',
+        close: 'Close',
+        setupTitle: 'Set up your tools',
+        setupDesc: 'Create skills folders for each coding tool so skills can be linked into them. Nothing is linked until you flip a switch.',
+        setupNudge: 'No tool skills folders found yet — set up tools to start linking.',
+        createDir: 'Create',
+        present: 'ready',
+        addTool: 'Add a custom tool (writes skills-toggle.json)',
+        toolLabel: 'Label',
+        toolDir: '~/path/to/skills',
+        add: 'Add',
+        toolAdded: label => `${label} added`,
+        toolAddFailed: 'Could not save the tool',
+        dirCreated: label => `Created skills folder for ${label}`,
+        autoLinkDesc: 'Auto-link: new skills are linked automatically (opt-in per tool)',
+        adoptScan: 'Find copies to adopt',
+        adoptCounts: (a, d) => `${a} adoptable copies, ${d} drifted`,
+        adoptAll: 'Adopt…',
+        adoptConfirmTitle: 'Adopt copies into Hermes?',
+        adoptConfirmDesc: (n, sample) => `Copies each skill into ~/.hermes/skills/imported/, keeps the original as a timestamped backup, and replaces it with a symlink. ${n} candidate(s), e.g. ${sample}`,
+        adoptDone: n => `Adopted ${n} skill(s)`,
+        adoptFailed: 'Adoption scan failed',
+        arrivalsTitle: n => `${n} new skill(s) found`,
+        dismiss: 'Ignore',
+        alwaysAuto: 'Auto-link new skills for this tool (opt-in)',
+        linkChecked: n => `Link ${n} skill(s)`,
+        toastAutoLinked: n => `Auto-linked ${n} new skill(s)`,
+        undoAvail: n => `${n} change(s) applied`,
+        undo: 'Undo',
+        presets: 'Presets',
+        presetApplyTitle: name => `Apply preset "${name}"?`,
+        presetApplyDesc: (n, m, sample) => `Enables ${n} skills across ${m} tool(s) — additive only, nothing is turned off. Examples: ${sample}…`,
+        presetImportDesc: (n, m, skipped, sample) => `Enables ${n} known skills across ${m} tool(s) (${skipped} unknown skipped). Examples: ${sample}…`,
+        presetNoop: 'Nothing to apply for this preset',
+        applyPreset: 'Apply',
+        minimalTitle: 'Unlink every tool?',
+        minimalDesc: n => `Removes ${n} consumer link(s). Sources stay in Hermes; Undo restores them for 30 seconds.`,
+        presetImport: 'Import…',
+        pasteHint: 'Paste a shared preset JSON:',
+        copyPreset: 'Copy current',
+        copied: 'Preset JSON copied to clipboard',
+        copyFailed: 'Clipboard unavailable in this context',
+        invalidPreset: 'Invalid preset JSON (need version 1, skills array)',
+        rowAll: 'all',
+        rowNone: 'none',
+        rowAllTip: 'Link this skill into every tool',
+        rowNoneTip: 'Unlink this skill from every tool'
       }
     })
 
@@ -860,6 +1670,23 @@ export default {
           detail: () => 'Enable or disable skills per tool',
           run: () => host.navigate('/skills-toggle')
         }
+      },
+      {
+        id: 'report',
+        area: PALETTE_AREA,
+        data: {
+          id: 'skills-toggle.report',
+          label: 'Skills: health report',
+          keywords: ['skills', 'health', 'broken', 'diff', 'repair'],
+          detail: () => 'Broken links, unlinked skills, drift',
+          run: () => host.navigate('/skills-toggle')
+        }
+      },
+      {
+        id: 'chip',
+        area: STATUSBAR_AREAS.right,
+        order: 140,
+        render: () => jsx(HealthChip, {})
       }
     ])
   }
