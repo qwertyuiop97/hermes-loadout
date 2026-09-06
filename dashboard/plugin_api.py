@@ -58,7 +58,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 PLUGIN_ID = "skills-toggle"
-PLUGIN_VERSION = "1.0.0"
+PLUGIN_VERSION = "2.0.0"
 
 # ---------------------------------------------------------------------------
 # Tool map: defaults (overridable via <hermes_home>/skills-toggle.json)
