@@ -1,0 +1,18 @@
+# skills-toggle — agent-plugin manifest (the agent half of a unified package).
+# The desktop half lives in desktop/plugin.js (loaded by the Hermes desktop app);
+# the backend routes live in dashboard/plugin_api.py (mounted at
+# /api/plugins/skills-toggle/ when this plugin is in `plugins.enabled`).
+name: skills-toggle
+version: "1.0.0"
+description: >-
+  Skills on/off control — Hermes desktop pane that toggles ~/.hermes/skills
+  symlinks across Claude, Codex, OpenCode, Grok, ZCode, and Hermes itself
+  (skills.disabled), with repair, diff, and bulk actions. Hermes stays the
+  single source of truth.
+metadata:
+  author: qwertyuiop97
+  license: MIT
+  homepage: https://github.com/qwertyuiop97/skills-toggle
+  surfaces:
+    - desktop-pane
+    - dashboard-api
