@@ -525,7 +525,7 @@ function HealthChip() {
 // Drift view (#11, D31) — same-name skills whose tool copy differs from the
 // Hermes source. "Use Hermes" backs up the tool copy (never deletes) and
 // swaps in the canonical symlink.
-function DriftPanel({ drift, tools, onPush, busy }) {
+function DriftPanel({ drift, tools, onPush, onPull, onKeepBoth, busy }) {
   const t = usePluginI18n(ID)
   if (!drift || !drift.ok) {
     return jsx(EmptyState, { title: t('errorTitle'), description: t('adoptFailed') })
@@ -549,10 +549,26 @@ function DriftPanel({ drift, tools, onPush, busy }) {
                 className: 'text-muted-foreground',
                 children: (toolById.get(item.tool) || { label: item.tool }).label
               }),
-              jsx(Button, {
-                variant: 'secondary', size: 'xs', className: 'ml-auto', disabled: busy,
-                onClick: () => onPush(item), children: t('useHermes')
-              })
+              jsxs('span', { className: 'ml-auto inline-flex items-center gap-1', children: [
+                jsx(Button, {
+                  variant: 'secondary', size: 'xs', disabled: busy,
+                  onClick: () => onPush(item), children: t('useHermes')
+                }),
+                jsx(Tip, {
+                  label: t('useToolCopyTip'),
+                  children: jsx(Button, {
+                    variant: 'ghost', size: 'xs', disabled: busy,
+                    onClick: () => onPull(item), children: t('useToolCopy')
+                  })
+                }),
+                jsx(Tip, {
+                  label: t('keepBothTip'),
+                  children: jsx(Button, {
+                    variant: 'ghost', size: 'xs', disabled: busy,
+                    onClick: () => onKeepBoth(item), children: t('keepBoth')
+                  })
+                })
+              ] })
             ] })
           ]
         },
@@ -1071,15 +1087,42 @@ function SkillsPane() {
   const onUndo = useCallback(() => {
     if (!undo) return
     const byKey = new Map()
+    const reverts = []
     for (const action of undo.actions) {
+      if (action.kind && action.kind !== 'toggle') {
+        reverts.push(action)
+        continue
+      }
       const key = `${action.tool}|${action.enabled}`
       const entry = byKey.get(key) || { tool: action.tool, enabled: action.enabled, ids: [] }
       entry.ids.push(action.skill)
       byKey.set(key, entry)
     }
     setUndo(null)
-    runBulkEntries(Array.from(byKey.values()))
-  }, [undo, runBulkEntries])
+    setTaskBusy(true)
+    ;(async () => {
+      const entries = Array.from(byKey.values())
+      for (const action of reverts) {
+        const path =
+          action.kind === 'revert-push'
+            ? '/conflict/revert-push'
+            : action.kind === 'revert-pull'
+              ? '/conflict/revert-pull'
+              : '/conflict/revert-adopt'
+        try {
+          await pluginCtx.rest(path, { method: 'POST', body: action })
+        } catch (_err) {
+          host.notify({ kind: 'error', message: t('undoFailed') })
+        }
+      }
+      if (entries.length) await runBulkEntries(entries)
+    })().finally(() => {
+      setTaskBusy(false)
+      qc.invalidateQueries({ queryKey: STATE_KEY })
+      qc.invalidateQueries({ queryKey: DIFF_KEY })
+      qc.invalidateQueries({ queryKey: DRIFT_KEY })
+    })
+  }, [undo, runBulkEntries, qc, t])
 
   // -- presets (D20/D21) ------------------------------------------------------
   const captureEnableUndo = (ids, tool) => {
@@ -1319,8 +1362,17 @@ function SkillsPane() {
         pluginCtx
           .rest('/import/apply', { method: 'POST', body: { tool: toolScan.tool, names: names } })
           .then(res => {
-            if (res && res.ok) host.notify({ kind: 'success', message: t('adoptDone', res.adopted || 0) })
-            else host.notify({ kind: 'error', message: res && res.error ? res.error : t('adoptFailed') })
+            if (res && res.ok) {
+              host.notify({ kind: 'success', message: t('adoptDone', res.adopted || 0) })
+              const undoActions = (res.results || [])
+                .filter(x => x.ok && x.backup)
+                .map(x => ({ kind: 'revert-adopt', tool: toolScan.tool, name: x.name, tool_backup: x.backup, skill: x.skill }))
+              if (undoActions.length) {
+                setUndo({ actions: undoActions, count: undoActions.length, expires: Date.now() + 30000 })
+              }
+            } else {
+              host.notify({ kind: 'error', message: res && res.error ? res.error : t('adoptFailed') })
+            }
           })
           .catch(err => host.notifyError(err, t('adoptFailed')))
           .finally(() => {
@@ -1333,6 +1385,27 @@ function SkillsPane() {
     })
   }
 
+  const runConflictAction = (path, payload, successKey) => {
+    setTaskBusy(true)
+    return pluginCtx
+      .rest(path, { method: 'POST', body: payload })
+      .then(res => {
+        if (res && res.ok) host.notify({ kind: 'success', message: t(successKey, payload.name) })
+        else host.notify({ kind: 'error', message: res && res.error ? res.error : t('pushFailed') })
+        return res
+      })
+      .catch(err => {
+        host.notifyError(err, t('pushFailed'))
+        return null
+      })
+      .finally(() => {
+        setTaskBusy(false)
+        qc.invalidateQueries({ queryKey: STATE_KEY })
+        qc.invalidateQueries({ queryKey: DIFF_KEY })
+        qc.invalidateQueries({ queryKey: DRIFT_KEY })
+      })
+  }
+
   const onPushDrift = item => {
     setConfirm({
       title: t('useHermesTitle', item.name),
@@ -1340,20 +1413,58 @@ function SkillsPane() {
       confirmLabel: t('useHermes'),
       destructive: false,
       action: () => {
-        setTaskBusy(true)
-        pluginCtx
-          .rest('/drift/push', { method: 'POST', body: { tool: item.tool, name: item.name } })
-          .then(res => {
-            if (res && res.ok) host.notify({ kind: 'success', message: t('pushDone', item.name) })
-            else host.notify({ kind: 'error', message: res && res.error ? res.error : t('pushFailed') })
-          })
-          .catch(err => host.notifyError(err, t('pushFailed')))
-          .finally(() => {
-            setTaskBusy(false)
-            qc.invalidateQueries({ queryKey: STATE_KEY })
-            qc.invalidateQueries({ queryKey: DIFF_KEY })
-            qc.invalidateQueries({ queryKey: DRIFT_KEY })
-          })
+        runConflictAction('/drift/push', { tool: item.tool, name: item.name }, 'pushDone').then(res => {
+          if (res && res.ok && res.tool_backup) {
+            setUndo({
+              actions: [{ kind: 'revert-push', tool: item.tool, name: item.name, tool_backup: res.tool_backup }],
+              count: 1,
+              expires: Date.now() + 30000
+            })
+          }
+        })
+      }
+    })
+  }
+
+  const onPullDrift = item => {
+    setConfirm({
+      title: t('useToolCopyTitle', item.name, item.tool),
+      description: t('useToolCopyDesc'),
+      confirmLabel: t('useToolCopy'),
+      destructive: true,
+      action: () => {
+        runConflictAction('/conflict/pull', { tool: item.tool, name: item.name }, 'pullDone').then(res => {
+          if (res && res.ok) {
+            setUndo({
+              actions: [{
+                kind: 'revert-pull', tool: item.tool, name: item.name,
+                hermes_backup: res.hermes_backup, tool_backup: res.tool_backup
+              }],
+              count: 1,
+              expires: Date.now() + 30000
+            })
+          }
+        })
+      }
+    })
+  }
+
+  const onKeepBothDrift = item => {
+    setConfirm({
+      title: t('keepBothTitle', item.name),
+      description: t('keepBothDesc'),
+      confirmLabel: t('keepBoth'),
+      destructive: false,
+      action: () => {
+        runConflictAction('/conflict/keep-both', { tool: item.tool, name: item.name }, 'keepBothDone').then(res => {
+          if (res && res.ok) {
+            setUndo({
+              actions: [{ kind: 'revert-adopt', tool: item.tool, name: item.name, tool_backup: res.tool_backup, skill: res.skill }],
+              count: 1,
+              expires: Date.now() + 30000
+            })
+          }
+        })
       }
     })
   }
@@ -1529,7 +1640,14 @@ function SkillsPane() {
       })
     })
   } else if (view === 'drift') {
-    body = jsx(DriftPanel, { drift: drift, tools: tools, onPush: onPushDrift, busy: busy })
+    body = jsx(DriftPanel, {
+      drift: drift,
+      tools: tools,
+      onPush: onPushDrift,
+      onPull: onPullDrift,
+      onKeepBoth: onKeepBothDrift,
+      busy: busy
+    })
   } else if (state && state.ok && !state.skills_root_exists) {
     body = jsx(EmptyState, { title: t('noRootTitle'), description: t('noRootDesc') })
   } else if (skills.length === 0) {
@@ -2074,6 +2192,17 @@ export default {
         driftEmpty: 'No drift detected',
         driftDesc: 'Same-name skills whose tool copy differs from the Hermes source. "Use Hermes" backs up the tool copy and swaps in the canonical symlink — the original is never deleted.',
         useHermes: 'Use Hermes',
+        useToolCopy: 'Use tool copy',
+        useToolCopyTip: 'Make the tool copy the canonical Hermes source (originals backed up)',
+        useToolCopyTitle: (name, tool) => `Use the tool copy of "${name}" (${tool})?`,
+        useToolCopyDesc: 'The Hermes source is backed up (dotted, inside its category), the tool copy becomes canonical, and the tool links to it.',
+        pullDone: name => `"${name}" replaced by the tool copy`,
+        keepBoth: 'Keep both',
+        keepBothTip: 'Adopt the tool copy under a separate name',
+        keepBothTitle: name => `Keep both copies of "${name}"?`,
+        keepBothDesc: 'The tool copy is adopted into the skills tree under its own name and the tool links to it. Nothing is overwritten.',
+        keepBothDone: name => `"${name}" kept as a separate skill`,
+        undoFailed: 'Part of the undo failed — check the Setup panel backups',
         useHermesTip: 'Back up the tool copy and link the Hermes version',
         useHermesTitle: name => 'Use the Hermes copy of "' + name + '"?',
         useHermesDesc: tool => 'The ' + tool + ' copy is moved aside to a timestamped backup and replaced with a symlink to the Hermes source.',
