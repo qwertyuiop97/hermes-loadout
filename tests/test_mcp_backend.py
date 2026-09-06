@@ -77,6 +77,40 @@ class ParseTests(unittest.TestCase):
         self.assertFalse(weather["enabled"])
         self.assertEqual(weather["definition"]["env"], {"API_KEY": "sk-test-123"})
 
+    def test_parse_edge_cases(self) -> None:
+        text = (
+            "mcp_servers:\n"
+            "  # a comment first\n"
+            "  url-server:\n"
+            "    enabled: true\n"
+            "    url: https://example.com/mcp?v=1#frag\n"
+            "    headers:\n"
+            "      Authorization: Bearer abc # trailing comment stripped\n"
+            "  quoted:\n"
+            "    command: \"/bin/do a # thing\"\n"
+            "    args:\n"
+            "      - \"x # y\"\n"
+            "  colon-value:\n"
+            "    command: npx\n"
+            "    env:\n"
+            "      TOKEN: a:b:c\n"
+        )
+        parsed = pa.parse_mcp_servers(text)
+        u = parsed["url-server"]["definition"]
+        assert u["url"] == "https://example.com/mcp?v=1#frag"
+        assert u["headers"]["Authorization"] == "Bearer abc"
+        assert parsed["quoted"]["definition"]["command"] == "/bin/do a # thing"
+        assert parsed["quoted"]["definition"]["args"] == ["x # y"]
+        assert parsed["colon-value"]["definition"]["env"]["TOKEN"] == "a:b:c"
+        # edit round-trip preserves tricky content
+        out = pa.set_mcp_server_enabled(text, "url-server", False)
+        p3 = pa.parse_mcp_servers(out)
+        assert p3["url-server"]["enabled"] is False
+        assert p3["url-server"]["definition"]["url"] == "https://example.com/mcp?v=1#frag"
+        assert p3["url-server"]["definition"]["headers"]["Authorization"] == "Bearer abc"
+        assert p3["quoted"]["definition"]["args"] == ["x # y"]
+        assert p3["colon-value"]["definition"]["env"]["TOKEN"] == "a:b:c"
+
     def test_parse_no_block_and_garbage(self) -> None:
         self.assertEqual(pa.parse_mcp_servers("model: x\n"), {})
         self.assertEqual(pa.parse_mcp_servers(""), {})
@@ -190,6 +224,14 @@ class McpCoreTests(unittest.TestCase):
             self.fail("expected error")
         except SkillsToggleError as exc:
             self.assertEqual(exc.code, "unknown-server")
+
+    def test_env_values_redacted_in_state(self) -> None:
+        st = self.mcp.mcp_state()
+        row = next(r for r in st["rows"] if r["name"] == "weather")
+        self.assertEqual(row["definition"]["env"], ["API_KEY"])  # key names only
+        # but the writer still applies real values
+        self.mcp.sync_to_claude("weather")
+        self.assertEqual(self._claude_servers()["weather"]["env"], {"API_KEY": "sk-test-123"})
 
     def test_state_on_missing_claude_file(self) -> None:
         self.fx.claude.unlink()

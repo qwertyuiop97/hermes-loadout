@@ -1446,17 +1446,20 @@ def parse_mcp_servers(text: str) -> dict:
                     out[current]["definition"][key] = _coerce_scalar(value)
                 current_def_key = None
             continue
-        # deeper lines belong to the last def key (args list, env map)
-        if current_def_key == "args":
-            m = _RE_LIST_ITEM.match(ln)
-            if m:
-                out[current]["definition"].setdefault("args", []).append(_yaml_unquote(m.group(2)))
-        elif current_def_key == "env":
-            m = re.match(r"^([^:#]+):\s*(.*)$", stripped)
-            if m:
-                out[current]["definition"].setdefault("env", {})[
-                    _yaml_unquote(m.group(1).strip())
-                ] = _coerce_scalar(m.group(2))
+        # deeper lines belong to the last def key — a list (args) or a map
+        # (env, headers, …), discovered from the first child line
+        if current_def_key is not None:
+            m_list = _RE_LIST_ITEM.match(ln)
+            if m_list:
+                out[current]["definition"].setdefault(current_def_key, []).append(
+                    _yaml_unquote(m_list.group(2))
+                )
+            else:
+                m_kv = re.match(r"^([^:#]+):\s*(.*)$", stripped)
+                if m_kv:
+                    container = out[current]["definition"].setdefault(current_def_key, {})
+                    if isinstance(container, dict):
+                        container[_yaml_unquote(m_kv.group(1).strip())] = _coerce_scalar(m_kv.group(2))
     return {k: v for k, v in out.items() if v["definition"] or not v["enabled"]}
 
 
@@ -1503,11 +1506,19 @@ def set_mcp_server_enabled(text: str, name: str, enabled: bool) -> str:
         lines[enabled_line] = re.sub(r"enabled:\s*.*$", f"enabled: {flag}", lines[enabled_line])
     else:
         lines.insert(entry_start + 1, f"{pad}enabled: {flag}")
-    new_text = "\n".join(lines) + ("\n" if not text.endswith("\n\n") or True else "")
+    new_text = "\n".join(lines) + "\n"
     got = parse_mcp_servers(new_text)
     if name not in got or bool(got[name]["enabled"]) != enabled:
         raise ConfigEditError(f"self-check failed editing mcp_servers.{name}.enabled")
     return new_text
+
+
+def _redact_env(definition: dict) -> dict:
+    """env values never leave the gateway: the pane sees key names only."""
+    redacted = dict(definition)
+    if isinstance(redacted.get("env"), dict):
+        redacted["env"] = sorted(redacted["env"].keys())
+    return redacted
 
 
 def _claude_projection(definition: dict) -> dict:
@@ -1613,7 +1624,8 @@ class McpCore:
                 {
                     "name": name,
                     "enabled": c["enabled"],
-                    "definition": c["definition"],
+                    # env VALUES are secrets — the payload carries key names only
+                    "definition": _redact_env(c["definition"]),
                     "writers": {"claude": claude_state},
                 }
             )
