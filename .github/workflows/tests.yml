@@ -1,0 +1,40 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Backend core round-trips
+        run: python3 -m unittest discover -s tests -p 'test_plugin_api.py' -v
+      - name: Backend v2 (import/drift/config)
+        run: python3 -m unittest discover -s tests -p 'test_v2_backend.py' -v
+      - name: HTTP route round-trips (fastapi + httpx)
+        run: |
+          python3 -m pip install --quiet fastapi httpx
+          python3 -m unittest discover -s tests -p 'test_routes_http.py' -v
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: SDK-constraint static checks
+        run: python3 tests/check_frontend.py
+        # SDK cross-check degrades to a warning when the hermes source tree
+        # isn't present (CI); all other checks are hard failures.
+      - name: Render harness (real React renderToString)
+        run: ./tests/run_render_harness.sh
