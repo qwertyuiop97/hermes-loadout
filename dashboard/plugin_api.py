@@ -47,6 +47,7 @@ file exports ``router`` inside the gateway process.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import re
@@ -965,6 +966,254 @@ class SkillsToggleCore:
         self.invalidate()
         return {"ok": True, "tool": tool_id, "dir": str(tool_dir), "created": True}
 
+    # -- v2: import / adoption / drift ---------------------------------------
+
+    @staticmethod
+    def _hash_file(path: Path) -> str:
+        try:
+            return hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            return ""
+
+    def _classify_entry(self, entry: Path, skills: dict) -> dict | None:
+        """Classify one entry in a tool skills dir for the import/drift views."""
+        try:
+            if entry.is_symlink():
+                target = os.readlink(entry)
+                base = Path(target) if os.path.isabs(target) else (entry.parent / target)
+                resolved = base.resolve()
+                if not resolved.exists():
+                    return {"name": entry.name, "kind": "broken-link", "target": target}
+                inside = self.skills_root_resolved in resolved.parents
+                sid = next(
+                    (s for s in skills.values() if s["dir"].resolve() == resolved), None
+                )
+                if inside and sid:
+                    return {
+                        "name": entry.name,
+                        "kind": "managed",
+                        "skill_id": f"{sid['category']}/{sid['name']}",
+                        "target": target,
+                    }
+                if inside:
+                    return {"name": entry.name, "kind": "managed-mismatch", "target": target}
+                return {"name": entry.name, "kind": "foreign-link", "target": target}
+            if entry.is_dir():
+                skill_md = entry / "SKILL.md"
+                if skill_md.is_file():
+                    _, description = parse_skill_markdown(
+                        skill_md.read_text(encoding="utf-8", errors="replace")[:8192]
+                    )
+                    info = {
+                        "name": entry.name,
+                        "kind": "unmanaged-skill",
+                        "path": str(entry),
+                        "description": description.strip()[:DESCRIPTION_TRUNC],
+                        "hash": self._hash_file(skill_md),
+                        "mtime": entry.stat().st_mtime,
+                    }
+                    existing = next(
+                        (s for s in skills.values() if s["name"] == entry.name), None
+                    )
+                    if existing:
+                        info["conflict"] = True
+                        info["skill_id"] = f"{existing['category']}/{existing['name']}"
+                        info["hermes_hash"] = self._hash_file(existing["dir"] / "SKILL.md")
+                        info["drifted"] = info["hash"] != info["hermes_hash"]
+                    return info
+                return {"name": entry.name, "kind": "unmanaged-dir", "path": str(entry)}
+            return None
+        except OSError:
+            return None
+
+    def import_scan(self) -> dict:
+        skills = self._scan_skills()
+        per_tool = []
+        for tool_id in self.tools:
+            if tool_id == "hermes":
+                continue
+            tool_dir = self.tool_dir(tool_id)
+            if tool_dir is None or not tool_dir.is_dir():
+                per_tool.append({"tool": tool_id, "present": False, "entries": []})
+                continue
+            entries = []
+            try:
+                children = sorted(tool_dir.iterdir())
+            except OSError:
+                children = []
+            for entry in children:
+                info = self._classify_entry(entry, skills)
+                if info:
+                    entries.append(info)
+            per_tool.append(
+                {
+                    "tool": tool_id,
+                    "present": True,
+                    "dir": str(tool_dir),
+                    "entries": entries,
+                    "adoptable": sum(1 for e in entries if e["kind"] == "unmanaged-skill"),
+                    "drifted": sum(1 for e in entries if e.get("drifted")),
+                }
+            )
+        adoptable = sum(t.get("adoptable", 0) for t in per_tool)
+        drifted = sum(t.get("drifted", 0) for t in per_tool)
+        return {"ok": True, "tools": per_tool, "counts": {"adoptable": adoptable, "drifted": drifted}}
+
+    def import_apply(self, tool_id: object, names: object, category: str = "imported") -> dict:
+        """Adopt unmanaged skills: copy into the skills tree, then replace the
+        tool's real dir with a symlink — the original is PRESERVED as a
+        timestamped `<name>.skills-toggle-backup-<ts>` sibling (never deleted)."""
+        tool_id = self._validate_tool(tool_id)
+        if tool_id == "hermes":
+            raise SkillsToggleError("hermes has no importable dir", "no-dir")
+        if not isinstance(names, list) or not names:
+            raise SkillsToggleError("'names' must be a non-empty list", "invalid-body")
+        if not isinstance(category, str) or not re.match(r"^[^/\0]+$", category) or category in (".", ".."):
+            raise SkillsToggleError(f"invalid category {category!r}", "invalid-category")
+        skills = self._scan_skills()
+        tool_dir = self.tool_dir(tool_id)
+        if tool_dir is None or not tool_dir.is_dir():
+            raise SkillsToggleError(f"tool dir for {tool_id} is missing", "absent-dir")
+
+        # validate every requested name against a fresh classification; a name
+        # that already exists anywhere in the tree is a CONFLICT — adopting it
+        # would create a duplicate-named skill, so refuse (the drift flow is
+        # the resolution path), never merge.
+        tree_names = {s["name"] for s in skills.values()}
+        adoptable = {
+            e["name"]: e
+            for e in (
+                self._classify_entry(p, skills) for p in sorted(tool_dir.iterdir())
+            )
+            if e and e["kind"] == "unmanaged-skill"
+        }
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        results = []
+        for name in names:
+            if not isinstance(name, str) or name not in adoptable:
+                results.append({"name": name, "ok": False, "error": "not an adoptable skill dir"})
+                continue
+            if name in tree_names:
+                results.append(
+                    {
+                        "name": name,
+                        "ok": False,
+                        "error": "a skill with this name already exists in the skills tree — resolve via drift push instead",
+                        "conflict": True,
+                    }
+                )
+                continue
+            dest_dir = self.skills_root / category
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            dest = dest_dir / name
+            if dest.exists():
+                results.append({"name": name, "ok": False, "error": f"destination {dest} already exists"})
+                continue
+            src = tool_dir / name
+            try:
+                shutil.copytree(src, dest, symlinks=True)
+            except OSError as exc:
+                results.append({"name": name, "ok": False, "error": f"copy failed: {exc}"})
+                continue
+            backup = tool_dir / f"{name}.skills-toggle-backup-{stamp}"
+            try:
+                os.rename(src, backup)
+                os.symlink(str(dest.resolve()), str(tool_dir / name))
+            except OSError as exc:
+                # roll the copy back out of the tree rather than half-adopt
+                shutil.rmtree(dest, ignore_errors=True)
+                results.append({"name": name, "ok": False, "error": f"link swap failed: {exc}"})
+                continue
+            self._log(action="import", tool=tool_id, skill=f"{category}/{name}", backup=str(backup))
+            results.append(
+                {"name": name, "ok": True, "skill": f"{category}/{name}", "backup": str(backup)}
+            )
+        self.invalidate()
+        changed = sum(1 for r in results if r["ok"])
+        return {"ok": True, "tool": tool_id, "results": results, "adopted": changed, "failed": len(results) - changed}
+
+    def drift(self) -> dict:
+        """Same-name skills where the tool's copy differs from the Hermes source."""
+        skills = self._scan_skills()
+        by_name = {}
+        for s in skills.values():
+            by_name.setdefault(s["name"], s)
+        items = []
+        for tool_id in self.tools:
+            if tool_id == "hermes":
+                continue
+            tool_dir = self.tool_dir(tool_id)
+            if tool_dir is None or not tool_dir.is_dir():
+                continue
+            try:
+                children = sorted(tool_dir.iterdir())
+            except OSError:
+                continue
+            for entry in children:
+                if entry.is_symlink() or not entry.is_dir():
+                    continue
+                skill_md = entry / "SKILL.md"
+                if not skill_md.is_file():
+                    continue
+                existing = by_name.get(entry.name)
+                if not existing:
+                    continue
+                external_hash = self._hash_file(skill_md)
+                hermes_hash = self._hash_file(existing["dir"] / "SKILL.md")
+                if external_hash == hermes_hash:
+                    continue
+                items.append(
+                    {
+                        "tool": tool_id,
+                        "name": entry.name,
+                        "skill_id": f"{existing['category']}/{existing['name']}",
+                        "external_path": str(entry),
+                        "hermes_path": str(existing["dir"]),
+                        "external_hash": external_hash,
+                        "hermes_hash": hermes_hash,
+                        "external_mtime": entry.stat().st_mtime,
+                        "hermes_mtime": (existing["dir"] / "SKILL.md").stat().st_mtime,
+                    }
+                )
+        return {"ok": True, "drifted": items, "count": len(items)}
+
+    # -- v2: custom tool config ------------------------------------------------
+
+    def set_tool(self, tool_id: object, label: object, dir_str: object) -> dict:
+        """Add or override a tool target dir in <hermes_home>/skills-toggle.json
+        (timestamped backup first). Hermes itself is config-backed and locked."""
+        if (
+            not isinstance(tool_id, str)
+            or not re.match(r"^[a-z0-9-]{1,32}$", tool_id)
+            or tool_id == "hermes"
+        ):
+            raise SkillsToggleError(f"invalid tool id {tool_id!r}", "invalid-tool-id")
+        if not isinstance(label, str) or not label.strip() or len(label) > 40:
+            raise SkillsToggleError("'label' must be a 1-40 char string", "invalid-label")
+        if not isinstance(dir_str, str) or not dir_str.strip() or "\0" in dir_str:
+            raise SkillsToggleError("'dir' must be a non-empty path string", "invalid-dir")
+        cfg_path = user_config_path(self.home)
+        data = {}
+        if cfg_path.is_file():
+            try:
+                data = json.loads(cfg_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                data = {}
+        backup = None
+        if cfg_path.is_file():
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            backup_path = cfg_path.with_name(f"{cfg_path.name}.bak.skills-toggle.{stamp}")
+            shutil.copy2(cfg_path, backup_path)
+            backup = str(backup_path)
+        tools = data.setdefault("tools", {})
+        tools[tool_id] = {"label": label.strip(), "dir": dir_str.strip()}
+        cfg_path.parent.mkdir(parents=True, exist_ok=True)
+        cfg_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        self._log(action="config-tools", tool=tool_id, dir=str(dir_str), backup=backup)
+        self.invalidate()
+        reset_core()  # tool map is loaded at core build time — rebuild singleton
+        return {"ok": True, "tool": tool_id, "label": label.strip(), "dir": str(expand_path(dir_str)), "backup": backup}
+
     def health(self) -> dict:
         return {
             "ok": True,
@@ -1053,6 +1302,15 @@ def set_core_for_testing(core: SkillsToggleCore | None) -> None:
     _CORE_FROZEN = True
 
 
+def reset_core() -> None:
+    """Force the singleton to rebuild on next get_core() (after config writes
+    that change the tool map, which is loaded at core build time)."""
+    global _CORE, _CORE_SIG, _CORE_FROZEN
+    _CORE = None
+    _CORE_SIG = None
+    _CORE_FROZEN = False
+
+
 # ---------------------------------------------------------------------------
 # FastAPI route layer (mounted at /api/plugins/skills-toggle/)
 # ---------------------------------------------------------------------------
@@ -1107,6 +1365,22 @@ if APIRouter is not None:
     @router.post("/ensure-tool-dir")
     async def ensure_tool_dir(body: dict) -> dict:
         return _call(get_core().ensure_tool_dir, body.get("tool"))
+
+    @router.get("/import/scan")
+    async def import_scan() -> dict:
+        return _call(get_core().import_scan)
+
+    @router.post("/import/apply")
+    async def import_apply(body: dict) -> dict:
+        return _call(get_core().import_apply, body.get("tool"), body.get("names"), body.get("category", "imported"))
+
+    @router.get("/drift")
+    async def drift() -> dict:
+        return _call(get_core().drift)
+
+    @router.post("/config/tools")
+    async def config_tools(body: dict) -> dict:
+        return _call(get_core().set_tool, body.get("id"), body.get("label"), body.get("dir"))
 
 
 else:  # pragma: no cover — non-gateway import (tests); keep attribute defined

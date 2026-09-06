@@ -126,6 +126,31 @@ class RouteRoundTrip(unittest.TestCase):
         r = self.client.post("/api/plugins/skills-toggle/ensure-tool-dir", json={"tool": "hermes"})
         self.assertFalse(r.json()["ok"])
 
+    def test_import_scan_apply_and_drift_and_config(self) -> None:
+        base = "/api/plugins/skills-toggle"
+        # create an adoptable copy in codex
+        local = self.fx.codex / "http-local-skill"
+        local.mkdir()
+        (local / "SKILL.md").write_text(
+            "---\nname: http-local-skill\ndescription: via http\n---\nbody", encoding="utf-8"
+        )
+        r = self.client.get(f"{base}/import/scan")
+        body = r.json()
+        self.assertTrue(body["ok"])
+        codex = next(t for t in body["tools"] if t["tool"] == "codex")
+        self.assertIn("http-local-skill", [e["name"] for e in codex["entries"]])
+        r = self.client.post(f"{base}/import/apply", json={"tool": "codex", "names": ["http-local-skill"]})
+        self.assertEqual(r.json()["adopted"], 1)
+        self.assertTrue((self.fx.home / "skills" / "imported" / "http-local-skill" / "SKILL.md").is_file())
+        # drift route answers
+        r = self.client.get(f"{base}/drift")
+        self.assertTrue(r.json()["ok"])
+        # config tools route: valid + invalid
+        r = self.client.post(f"{base}/config/tools", json={"id": "cursor", "label": "Cursor", "dir": "~/cursor-skills"})
+        self.assertTrue(r.json()["ok"])
+        r = self.client.post(f"{base}/config/tools", json={"id": "hermes", "label": "X", "dir": "~/y"})
+        self.assertFalse(r.json()["ok"])
+
     def test_mutations_logged_over_http(self) -> None:
         self.client.post("/api/plugins/skills-toggle/toggle", json={"skill": "apple/apple-notes", "tool": "codex", "enabled": True})
         log = self.fx.tmp / "data" / "mutations.log"
