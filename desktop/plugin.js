@@ -59,6 +59,7 @@ import { jsx, jsxs } from 'react/jsx-runtime'
 const ID = 'skills-toggle'
 const STATE_KEY = [ID, 'state']
 const DIFF_KEY = [ID, 'diff']
+const DRIFT_KEY = [ID, 'drift']
 
 // ctx captured at register() so helpers outside components can use storage.
 let pluginCtx = null
@@ -517,9 +518,50 @@ function HealthChip() {
   })
 }
 
+// Drift view (#11, D31) — same-name skills whose tool copy differs from the
+// Hermes source. "Use Hermes" backs up the tool copy (never deletes) and
+// swaps in the canonical symlink.
+function DriftPanel({ drift, tools, onPush, busy }) {
+  const t = usePluginI18n(ID)
+  if (!drift || !drift.ok) {
+    return jsx(EmptyState, { title: t('errorTitle'), description: t('adoptFailed') })
+  }
+  if (!drift.count) {
+    return jsx(EmptyState, { title: t('driftEmpty'), description: t('driftDesc') })
+  }
+  const toolById = new Map(tools.map(x => [x.id, x]))
+  return jsxs('div', {
+    className: 'flex flex-col gap-2 px-3 pb-4',
+    children: [
+      jsx('div', { className: 'px-1 text-xs text-muted-foreground', children: t('driftDesc') }),
+      drift.drifted.map(item =>
+        jsxs('div', {
+          className: 'rounded-md border border-(--ui-stroke-secondary) p-2 text-xs',
+          children: [
+            jsxs('div', { className: 'flex items-center gap-1.5', children: [
+              jsx(StatusDot, { tone: 'warn' }),
+              jsx('span', { className: 'font-medium', children: item.name }),
+              jsx('span', {
+                className: 'text-muted-foreground',
+                children: (toolById.get(item.tool) || { label: item.tool }).label
+              }),
+              jsx(Button, {
+                variant: 'secondary', size: 'xs', className: 'ml-auto', disabled: busy,
+                onClick: () => onPush(item), children: t('useHermes')
+              })
+            ] })
+          ]
+        },
+        item.tool + '/' + item.name
+      )
+      )
+    ]
+  })
+}
+
 // Setup / onboarding panel — create tool dirs, add custom tools, manage
 // auto-link prefs, and find copies to adopt. Purely user-initiated (opt-in).
-function SetupPanel({ tools, onClose, onEnsureDir, onAddTool, busy, autoLink, onAutoLink, adopt, onScanAdopt, onAdopt }) {
+function SetupPanel({ tools, onClose, onEnsureDir, onAddTool, busy, autoLink, onAutoLink, adopt, onScanAdopt, onAdoptTool }) {
   const t = usePluginI18n(ID)
   const [label, setLabel] = useState('')
   const [dir, setDir] = useState('')
@@ -585,21 +627,33 @@ function SetupPanel({ tools, onClose, onEnsureDir, onAddTool, busy, autoLink, on
           }, tool.id)
         ) })
       ] }),
-      jsxs('div', { className: 'mt-2 flex items-center gap-2', children: [
+      jsxs('div', { className: 'mt-2', children: [
         jsx(Button, {
           variant: 'secondary', size: 'xs', disabled: busy,
           onClick: onScanAdopt,
           children: t('adoptScan')
         }),
         adopt && adopt.ok
-          ? jsx('span', { className: 'text-muted-foreground', children: t('adoptCounts', adopt.counts.adoptable, adopt.counts.drifted) })
-          : null,
-        adopt && adopt.ok && adopt.counts.adoptable > 0
-          ? jsx(Button, {
-              variant: 'secondary', size: 'xs', disabled: busy,
-              onClick: () => onAdopt(adopt),
-              children: t('adoptAll')
-            })
+          ? jsxs('div', { className: 'mt-1 flex flex-col gap-1', children: [
+              adopt.tools
+                .filter(x => x.present && (x.adoptable > 0 || x.drifted > 0))
+                .map(x =>
+                  jsxs('div', { className: 'flex items-center gap-2', children: [
+                    jsx('span', { className: 'w-20 shrink-0 truncate', children: (tools.find(t2 => t2.id === x.tool) || { label: x.tool }).label }),
+                    jsx('span', { className: 'min-w-0 flex-1 truncate text-muted-foreground', children: t('adoptToolCount', x.adoptable, x.drifted) }),
+                    x.adoptable > 0
+                      ? jsx(Button, {
+                          variant: 'secondary', size: 'xs', disabled: busy,
+                          onClick: () => onAdoptTool(x),
+                          children: t('adoptAll')
+                        })
+                      : null
+                  ] }, x.tool)
+                ),
+              adopt.counts.adoptable === 0 && adopt.counts.drifted === 0
+                ? jsx('span', { className: 'text-muted-foreground', children: t('adoptNone') })
+                : null
+            ] })
           : null
       ] })
     ]
@@ -741,9 +795,18 @@ function SkillsPane() {
     refetchOnWindowFocus: false,
     retry: 1
   })
+  const driftQuery = useQuery({
+    queryKey: DRIFT_KEY,
+    queryFn: () => (pluginCtx ? pluginCtx.rest('/drift') : Promise.reject(new Error('no backend'))),
+    staleTime: 30000,
+    refetchInterval: 60000,
+    refetchOnWindowFocus: false,
+    retry: 0
+  })
 
   const state = stateQuery.data
   const diff = diffQuery.data
+  const drift = driftQuery.data
   const tools = state && state.ok ? state.tools : []
   const toolsRef = useRef(tools)
   toolsRef.current = tools
@@ -987,6 +1050,7 @@ function SkillsPane() {
         setTaskBusy(false)
         qc.invalidateQueries({ queryKey: STATE_KEY })
         qc.invalidateQueries({ queryKey: DIFF_KEY })
+        qc.invalidateQueries({ queryKey: DRIFT_KEY })
       }
       if (undoActions && undoActions.length) {
         setUndo({ actions: undoActions, count: undoActions.length, expires: Date.now() + 30000 })
@@ -1207,6 +1271,64 @@ function SkillsPane() {
     })
   }
 
+  const onAdoptTool = toolScan => {
+    const names = toolScan.entries
+      .filter(e => e.kind === 'unmanaged-skill' && !e.conflict)
+      .map(e => e.name)
+    if (!names.length) {
+      host.notify({ kind: 'info', message: t('presetNoop') })
+      return
+    }
+    const sample = names.slice(0, 5).join(', ')
+    setConfirm({
+      title: t('adoptConfirmTitle'),
+      description: t('adoptConfirmDesc', names.length, sample),
+      confirmLabel: t('adoptAll'),
+      destructive: false,
+      action: () => {
+        setTaskBusy(true)
+        pluginCtx
+          .rest('/import/apply', { method: 'POST', body: { tool: toolScan.tool, names: names } })
+          .then(res => {
+            if (res && res.ok) host.notify({ kind: 'success', message: t('adoptDone', res.adopted || 0) })
+            else host.notify({ kind: 'error', message: res && res.error ? res.error : t('adoptFailed') })
+          })
+          .catch(err => host.notifyError(err, t('adoptFailed')))
+          .finally(() => {
+            setTaskBusy(false)
+            qc.invalidateQueries({ queryKey: STATE_KEY })
+            qc.invalidateQueries({ queryKey: DIFF_KEY })
+            onScanAdopt()
+          })
+      }
+    })
+  }
+
+  const onPushDrift = item => {
+    setConfirm({
+      title: t('useHermesTitle', item.name),
+      description: t('useHermesDesc', item.tool),
+      confirmLabel: t('useHermes'),
+      destructive: false,
+      action: () => {
+        setTaskBusy(true)
+        pluginCtx
+          .rest('/drift/push', { method: 'POST', body: { tool: item.tool, name: item.name } })
+          .then(res => {
+            if (res && res.ok) host.notify({ kind: 'success', message: t('pushDone', item.name) })
+            else host.notify({ kind: 'error', message: res && res.error ? res.error : t('pushFailed') })
+          })
+          .catch(err => host.notifyError(err, t('pushFailed')))
+          .finally(() => {
+            setTaskBusy(false)
+            qc.invalidateQueries({ queryKey: STATE_KEY })
+            qc.invalidateQueries({ queryKey: DIFF_KEY })
+            qc.invalidateQueries({ queryKey: DRIFT_KEY })
+          })
+      }
+    })
+  }
+
   const onArrivalLink = toolIds => {
     const byId = new Map(skills.map(s => [s.id, s]))
     const undoActions = []
@@ -1331,7 +1453,8 @@ function SkillsPane() {
         options: [
           { id: 'all', label: t('viewAll') },
           { id: 'issues', label: t('viewIssues') },
-          { id: 'off', label: t('viewOff') }
+          { id: 'off', label: t('viewOff') },
+          { id: 'drift', label: t('viewDrift') }
         ],
         value: view,
         onChange: setView
@@ -1376,6 +1499,8 @@ function SkillsPane() {
         ]
       })
     })
+  } else if (view === 'drift') {
+    body = jsx(DriftPanel, { drift: drift, tools: tools, onPush: onPushDrift, busy: busy })
   } else if (state && state.ok && !state.skills_root_exists) {
     body = jsx(EmptyState, { title: t('noRootTitle'), description: t('noRootDesc') })
   } else if (skills.length === 0) {
@@ -1429,7 +1554,7 @@ function SkillsPane() {
             onAutoLink: onToggleAutoLink,
             adopt: adopt,
             onScanAdopt: onScanAdopt,
-            onAdopt: onAdopt
+            onAdoptTool: onAdoptTool
           })
         : null,
       arrivals.length
@@ -1642,7 +1767,18 @@ export default {
         rowAll: 'all',
         rowNone: 'none',
         rowAllTip: 'Link this skill into every tool',
-        rowNoneTip: 'Unlink this skill from every tool'
+        rowNoneTip: 'Unlink this skill from every tool',
+        viewDrift: 'Drift',
+        driftEmpty: 'No drift detected',
+        driftDesc: 'Same-name skills whose tool copy differs from the Hermes source. "Use Hermes" backs up the tool copy and swaps in the canonical symlink — the original is never deleted.',
+        useHermes: 'Use Hermes',
+        useHermesTip: 'Back up the tool copy and link the Hermes version',
+        useHermesTitle: name => 'Use the Hermes copy of "' + name + '"?',
+        useHermesDesc: tool => 'The ' + tool + ' copy is moved aside to a timestamped backup and replaced with a symlink to the Hermes source.',
+        pushDone: name => '"' + name + '" now links to the Hermes source',
+        pushFailed: 'Drift push failed — the original was restored',
+        adoptToolCount: (a, d) => a + ' adoptable, ' + d + ' drifted',
+        adoptNone: 'No adoptable copies or drift found.'
       }
     })
 

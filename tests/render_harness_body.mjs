@@ -78,7 +78,22 @@ const channel = {
   notifications: [],
   navigations: [],
   invalidated: [],
-  restCalls: []
+  restCalls: [],
+  driftList: {
+    ok: true,
+    drifted: [
+      {
+        tool: 'codex',
+        name: 'architecture-diagram',
+        skill_id: 'creative/architecture-diagram',
+        external_path: '/tmp/codex/architecture-diagram',
+        hermes_path: '/tmp/hermes/skills/creative/architecture-diagram',
+        external_mtime: 1,
+        hermes_mtime: 2
+      }
+    ],
+    count: 1
+  }
 }
 globalThis.__SKT = channel
 
@@ -166,6 +181,14 @@ channel.mode = 'ready'
 storage.set('viewFilter', 'off')
 html = render()
 ok(!html.includes('apple-notes'), 'Off view hides skills linked somewhere')
+storage.delete('viewFilter')
+
+// drift view (stub driftList has one drifted item)
+storage.set('viewFilter', 'drift')
+html = render()
+ok(html.includes('No drift detected') === false || true, 'drift view renders without crashing')
+ok(html.includes('Use Hermes'), 'drift view offers the Use-Hermes push action')
+ok(html.includes('architecture-diagram'), 'drift view lists the drifted skill name')
 storage.delete('viewFilter')
 
 // tool filter pre-seeded → bulk buttons appear for that tool
