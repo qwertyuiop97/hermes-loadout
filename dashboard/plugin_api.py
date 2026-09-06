@@ -89,6 +89,9 @@ __all__ = [
     "user_config_path",
     "get_core",
     "reset_core",
+    "McpCore",
+    "parse_mcp_servers",
+    "set_mcp_server_enabled",
 ]
 
 # ---------------------------------------------------------------------------
@@ -1366,6 +1369,353 @@ def load_tools_config(home: Path) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# v2.2 — MCP switchboard core (Q1a: Hermes catalog + Claude Desktop writer)
+# Hermes config.yaml `mcp_servers` is the source of truth; entries carry an
+# `enabled:` flag (Hermes' own on/off). Claude Desktop mirrors entries into
+# its claude_desktop_config.json `mcpServers` map (presence = enabled).
+# ---------------------------------------------------------------------------
+
+CLAUDE_DESKTOP_CONFIG_CANDIDATES = [
+    "~/Library/Application Support/Claude/claude_desktop_config.json",  # macOS
+    "~/.config/Claude/claude_desktop_config.json",  # Linux
+    "${APPDATA:-~/AppData/Roaming}/Claude/claude_desktop_config.json",  # Windows
+]
+_MCP_UNIVERSAL_KEYS = ("command", "args", "env", "url", "headers")
+
+
+def _coerce_scalar(value: str):
+    v = _yaml_unquote(value)
+    if v in ("true", "True"):
+        return True
+    if v in ("false", "False"):
+        return False
+    if re.match(r"^-?\d+$", v):
+        return int(v)
+    return v
+
+
+def parse_mcp_servers(text: str) -> dict:
+    """Tolerant parse of the `mcp_servers:` block: {name: {enabled, definition}}.
+
+    definition keeps the universal MCP keys (command, args, env, url, headers)
+    plus any other scalars found; enabled defaults to True (hermes treats a
+    missing flag as enabled)."""
+    lines = text.splitlines()
+    start = None
+    for i, ln in enumerate(lines):
+        if re.match(r"^mcp_servers:\s*(#.*)?$", ln):
+            start = i
+            break
+    if start is None:
+        return {}
+    out: dict = {}
+    current = None
+    current_def_key = None
+    base_indent = None
+    for j in range(start + 1, len(lines)):
+        ln = lines[j]
+        if ln[:1].strip() and not ln.startswith((" ", "\t")):
+            break  # next top-level key
+        if not ln.strip() or ln.strip().startswith("#"):
+            continue
+        indent = len(ln) - len(ln.lstrip(" "))
+        stripped = ln.strip()
+        if base_indent is None:
+            base_indent = indent
+        if indent == base_indent:
+            m = re.match(r"^([^:#]+):\s*(.*)$", stripped)
+            if m:
+                current = _yaml_unquote(m.group(1).strip())
+                out[current] = {"enabled": True, "definition": {}}
+                current_def_key = None
+            continue
+        if current is None:
+            continue
+        if indent == base_indent + 2:
+            m = re.match(r"^([^:#]+):\s*(.*)$", stripped)
+            if not m:
+                continue
+            key = _yaml_unquote(m.group(1).strip())
+            value = m.group(2).strip()
+            if value == "":
+                current_def_key = key  # nested map/list (e.g. env:, args:)
+            else:
+                if key == "enabled":
+                    out[current]["enabled"] = bool(_coerce_scalar(value))
+                else:
+                    out[current]["definition"][key] = _coerce_scalar(value)
+                current_def_key = None
+            continue
+        # deeper lines belong to the last def key (args list, env map)
+        if current_def_key == "args":
+            m = _RE_LIST_ITEM.match(ln)
+            if m:
+                out[current]["definition"].setdefault("args", []).append(_yaml_unquote(m.group(2)))
+        elif current_def_key == "env":
+            m = re.match(r"^([^:#]+):\s*(.*)$", stripped)
+            if m:
+                out[current]["definition"].setdefault("env", {})[
+                    _yaml_unquote(m.group(1).strip())
+                ] = _coerce_scalar(m.group(2))
+    return {k: v for k, v in out.items() if v["definition"] or not v["enabled"]}
+
+
+def set_mcp_server_enabled(text: str, name: str, enabled: bool) -> str:
+    """Surgically flip `enabled:` for one mcp_servers entry (insert the flag
+    as the entry's first key when missing). Self-checks by re-parse."""
+    lines = text.splitlines()
+    start = None
+    for i, ln in enumerate(lines):
+        if re.match(r"^mcp_servers:\s*(#.*)?$", ln):
+            start = i
+            break
+    if start is None:
+        raise ConfigEditError("no mcp_servers block in config")
+    base_indent = None
+    entry_start = None
+    entry_end = len(lines)
+    enabled_line = None
+    for j in range(start + 1, len(lines)):
+        ln = lines[j]
+        if ln[:1].strip() and not ln.startswith((" ", "\t")):
+            entry_end = j
+            break
+        if not ln.strip() or ln.strip().startswith("#"):
+            continue
+        indent = len(ln) - len(ln.lstrip(" "))
+        if base_indent is None:
+            base_indent = indent
+        if indent == base_indent:
+            key = ln.strip().split(":", 1)[0]
+            if _yaml_unquote(key) == name:
+                entry_start = j
+            elif entry_start is not None:
+                entry_end = j
+                break
+            continue
+        if entry_start is not None and indent == base_indent + 2 and ln.strip().startswith("enabled:"):
+            enabled_line = j
+    if entry_start is None:
+        raise ConfigEditError(f"no mcp_servers entry named {name!r}")
+    pad = " " * (base_indent + 2)
+    flag = "true" if enabled else "false"
+    if enabled_line is not None:
+        lines[enabled_line] = re.sub(r"enabled:\s*.*$", f"enabled: {flag}", lines[enabled_line])
+    else:
+        lines.insert(entry_start + 1, f"{pad}enabled: {flag}")
+    new_text = "\n".join(lines) + ("\n" if not text.endswith("\n\n") or True else "")
+    got = parse_mcp_servers(new_text)
+    if name not in got or bool(got[name]["enabled"]) != enabled:
+        raise ConfigEditError(f"self-check failed editing mcp_servers.{name}.enabled")
+    return new_text
+
+
+def _claude_projection(definition: dict) -> dict:
+    """Catalog definition -> the keys Claude Desktop understands."""
+    return {k: v for k, v in definition.items() if k in _MCP_UNIVERSAL_KEYS}
+
+
+class McpCore:
+    """MCP switchboard operations. Same construction pattern as
+    SkillsToggleCore: explicit paths, stdlib-only, JSON-able results."""
+
+    def __init__(self, home: Path, claude_desktop_config: Path | None = None, log_path: Path | None = None):
+        self.home = home
+        self.config_path = home / "config.yaml"
+        self.claude_config = claude_desktop_config or self._default_claude_config()
+        self.log_path = log_path
+        self._lock = threading.RLock()
+
+    def _default_claude_config(self) -> Path | None:
+        for candidate in CLAUDE_DESKTOP_CONFIG_CANDIDATES:
+            try:
+                expanded = expand_path(candidate)
+            except ValueError:
+                continue
+            if expanded.is_file():
+                return expanded
+        return expand_path(CLAUDE_DESKTOP_CONFIG_CANDIDATES[0])
+
+    def _log(self, **rec: object) -> None:
+        if not self.log_path:
+            return
+        rec.setdefault("ts", datetime.now(timezone.utc).isoformat(timespec="seconds"))
+        try:
+            self.log_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.log_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        except OSError:
+            pass
+
+    def _backup(self, path: Path) -> str | None:
+        if not path.is_file():
+            return None
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        backup = path.with_name(f"{path.name}.bak.skills-toggle.{stamp}")
+        n = 1
+        while backup.exists():
+            backup = path.with_name(f"{path.name}.bak.skills-toggle.{stamp}-{n}")
+            n += 1
+        shutil.copy2(path, backup)
+        return str(backup)
+
+    # -- catalog ------------------------------------------------------------
+
+    def catalog(self) -> dict:
+        try:
+            text = self.config_path.read_text(encoding="utf-8") if self.config_path.is_file() else ""
+        except OSError:
+            text = ""
+        parsed = parse_mcp_servers(text)
+        catalog = []
+        for name in sorted(parsed):
+            catalog.append(
+                {
+                    "name": name,
+                    "enabled": bool(parsed[name]["enabled"]),
+                    "definition": parsed[name]["definition"],
+                    "projection": _claude_projection(parsed[name]["definition"]),
+                }
+            )
+        return {"ok": True, "catalog": catalog, "count": len(catalog)}
+
+    # -- claude side ----------------------------------------------------------
+
+    def _read_claude(self) -> tuple[dict, str]:
+        if self.claude_config is None or not self.claude_config.is_file():
+            return {}, ""
+        try:
+            text = self.claude_config.read_text(encoding="utf-8")
+            return json.loads(text), text
+        except (OSError, json.JSONDecodeError):
+            return {}, ""
+
+    def mcp_state(self) -> dict:
+        cat = self.catalog()
+        claude, _raw = self._read_claude()
+        servers = claude.get("mcpServers") if isinstance(claude, dict) else None
+        servers = servers if isinstance(servers, dict) else {}
+        projection_by_name = {c["name"]: c["projection"] for c in cat["catalog"]}
+        foreign = []
+        for name, definition in servers.items():
+            if name not in projection_by_name:
+                foreign.append({"name": name, "keys": sorted(definition.keys()) if isinstance(definition, dict) else []})
+        rows = []
+        for c in cat["catalog"]:
+            name = c["name"]
+            if name not in servers:
+                claude_state = "missing"
+            elif servers[name] == c["projection"]:
+                claude_state = "enabled"
+            else:
+                claude_state = "drifted"
+            rows.append(
+                {
+                    "name": name,
+                    "enabled": c["enabled"],
+                    "definition": c["definition"],
+                    "writers": {"claude": claude_state},
+                }
+            )
+        return {
+            "ok": True,
+            "rows": rows,
+            "foreign": foreign,
+            "counts": {"catalog": len(rows), "foreign": len(foreign)},
+            "writers": {
+                "claude": {
+                    "label": "Claude Desktop",
+                    "path": str(self.claude_config) if self.claude_config else None,
+                    "present": bool(self.claude_config and self.claude_config.is_file()),
+                }
+            },
+        }
+
+    def toggle_hermes(self, name: object, enabled: object) -> dict:
+        with self._lock:
+            if not isinstance(name, str) or not name.strip():
+                raise SkillsToggleError("invalid server name", "invalid-name")
+            if not isinstance(enabled, bool):
+                raise SkillsToggleError("'enabled' must be a boolean", "invalid-body")
+            if not self.config_path.is_file():
+                raise SkillsToggleError("config.yaml not found", "config-unreadable")
+            try:
+                text = self.config_path.read_text(encoding="utf-8")
+            except OSError as exc:
+                raise SkillsToggleError(f"cannot read {self.config_path}: {exc}", "config-unreadable") from exc
+            current = parse_mcp_servers(text)
+            if name not in current:
+                raise SkillsToggleError(f"unknown MCP server {name!r} in the catalog", "unknown-server")
+            if bool(current[name]["enabled"]) == enabled:
+                return {"ok": True, "name": name, "enabled": enabled, "action": "noop"}
+            backup = self._backup(self.config_path)
+            try:
+                new_text = set_mcp_server_enabled(text, name, enabled)
+            except ConfigEditError as exc:
+                raise SkillsToggleError(f"config.yaml edit refused: {exc}", "config-edit") from exc
+            self.config_path.write_text(new_text, encoding="utf-8")
+            self._log(action="mcp-toggle", server=name, enabled=enabled, backup=backup)
+            return {"ok": True, "name": name, "enabled": enabled, "action": "config-updated", "backup": backup}
+
+    def sync_to_claude(self, name: object) -> dict:
+        with self._lock:
+            return self._write_claude(name, create=True)
+
+    def remove_from_claude(self, name: object, force: object = False) -> dict:
+        with self._lock:
+            if not isinstance(force, bool):
+                force = False
+            return self._write_claude(name, create=False, force=force)
+
+    def _write_claude(self, name: object, create: bool, force: bool = False) -> dict:
+        if not isinstance(name, str) or not name.strip():
+            raise SkillsToggleError("invalid server name", "invalid-name")
+        cat = self.catalog()
+        entry = next((c for c in cat["catalog"] if c["name"] == name), None)
+        claude, raw = self._read_claude()
+        servers = claude.get("mcpServers") if isinstance(claude, dict) and isinstance(claude.get("mcpServers"), dict) else {}
+        if create and entry is None:
+            raise SkillsToggleError(f"unknown MCP server {name!r} in the catalog", "unknown-server")
+        if not create and name not in servers:
+            return {"ok": True, "name": name, "action": "noop", "state": "missing"}
+        if not create and entry is None:
+            # present in Claude but not in the catalog: foreign, never touched
+            raise SkillsToggleError(f"{name!r} is not in the Hermes catalog — refusing to remove", "unknown-server")
+        if not create and servers[name] != entry["projection"] and not force:
+            raise SkillsToggleError(
+                f"Claude's copy of {name!r} differs from the catalog — pass force to overwrite", "drifted"
+            )
+        if self.claude_config is None:
+            raise SkillsToggleError("no Claude Desktop config path resolved", "no-writer")
+        backup = self._backup(self.claude_config)
+        if raw == "" or not claude:
+            doc = {"mcpServers": servers}
+        else:
+            doc = claude if isinstance(claude, dict) else {"mcpServers": servers}
+        if create:
+            doc["mcpServers"] = {**servers, name: entry["projection"]}
+            action = "updated" if name in servers else "created"
+        else:
+            remaining = {k: v for k, v in servers.items() if k != name}
+            doc["mcpServers"] = remaining
+            action = "removed"
+        self.claude_config.parent.mkdir(parents=True, exist_ok=True)
+        self.claude_config.write_text(json.dumps(doc, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        self._log(action=f"mcp-{action}", server=name, writer="claude", backup=backup)
+        return {
+            "ok": True,
+            "name": name,
+            "writer": "claude",
+            "action": action,
+            "state": "enabled" if create else "missing",
+            "backup": backup,
+        }
+
+    def health(self) -> dict:
+        return {"ok": True, "catalog": self.catalog()["count"], "writer": "claude"}
+
+
+# ---------------------------------------------------------------------------
 # Singleton for the route layer
 # ---------------------------------------------------------------------------
 
@@ -1388,6 +1738,17 @@ def get_core() -> SkillsToggleCore:
         _CORE = SkillsToggleCore.build_default()
         _CORE_SIG = sig
     return _CORE
+
+
+_MCP_CORE: "McpCore | None" = None
+
+
+def get_mcp_core() -> "McpCore":
+    global _MCP_CORE
+    if _MCP_CORE is None:
+        home = hermes_home()
+        _MCP_CORE = McpCore(home, log_path=Path(__file__).resolve().parent.parent / "data" / "mutations.log")
+    return _MCP_CORE
 
 
 def set_core_for_testing(core: SkillsToggleCore | None) -> None:
@@ -1481,6 +1842,22 @@ if APIRouter is not None:
     @router.post("/config/tools")
     async def config_tools(body: dict) -> dict:
         return _call(get_core().set_tool, body.get("id"), body.get("label"), body.get("dir"))
+
+    @router.get("/mcp/state")
+    async def mcp_state() -> dict:
+        return _call(get_mcp_core().mcp_state)
+
+    @router.post("/mcp/toggle")
+    async def mcp_toggle(body: dict) -> dict:
+        return _call(get_mcp_core().toggle_hermes, body.get("name"), body.get("enabled"))
+
+    @router.post("/mcp/sync")
+    async def mcp_sync(body: dict) -> dict:
+        return _call(get_mcp_core().sync_to_claude, body.get("name"))
+
+    @router.post("/mcp/remove")
+    async def mcp_remove(body: dict) -> dict:
+        return _call(get_mcp_core().remove_from_claude, body.get("name"), body.get("force", False))
 
     @router.post("/drift/push")
     async def drift_push(body: dict) -> dict:
