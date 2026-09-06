@@ -40,3 +40,4 @@ One line per material decision: what + why. Newest last.
 - **D36 — Q3 resolved (b):** ship without a demo GIF.
 - **D37 — Q4 resolved (a):** presets remain local built-ins + shareable file format (as shipped); no community feed.
 - **D38 — Q5 resolved (b):** dual-gate stays notice-only (the pane's gateway-restart remedy), no core-side change.
+- **D39 — version drift fix:** the 2.1.0 bump missed `plugin.yaml` (only the code constant changed), so the two manifests disagreed after the v2.1 increment. Both now bump together in the same commit; caught during the MCP-tab version bump.

@@ -58,7 +58,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 PLUGIN_ID = "skills-toggle"
-PLUGIN_VERSION = "2.1.0"
+PLUGIN_VERSION = "2.2.0"
 
 # ---------------------------------------------------------------------------
 # Stable core API (v2) — consumed by the desktop pane's backend mount AND by
