@@ -232,3 +232,15 @@ Then hit **Retry** in the pane (the pane detects this exact failure and shows th
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## v2 — what's new
+
+- **Responsive pane** — the pane measures its own width (ResizeObserver): 2-column tool grid and scrollable filters under 360 px, 3-column above. Usable at the default 320 px dock width.
+- **Onboarding / Setup panel** — when no tool skills folders exist, the pane offers one-click folder creation, custom-tool addition (written to `skills-toggle.json` with backups), per-tool **auto-link** opt-in, and a "Find copies to adopt" scanner.
+- **New-skill prompt** — skills added under the Hermes tree since your last visit trigger one banner: pick tools, link, or ignore. Silent on first run (nothing is ever enabled unprompted). The ⚡ chip on any tool opts that tool into auto-linking future arrivals.
+- **Health chip + ⌘K report** — statusbar badge shows broken/unlinked counts; two palette commands ("Skills: toggle…", "Skills: health report").
+- **Bulk everywhere** — per-skill "all / none" (link into every tool at once), per-category bulk for the selected tool, built-in presets (Coding / Writing / Minimal), preset import (paste JSON) and copy-current-as-JSON export.
+- **Undo** — every bulk/preset/arrival action shows an in-pane Undo banner for 30 s that restores the previous states through the same safety-checked toggles.
+- **Adoption & drift** — `GET /import/scan` classifies every tool dir (managed / broken / foreign / adoptable copies / drifted hashes); `POST /import/apply` adopts a copy (into `imported/`, original preserved as a timestamped backup, symlink swapped in, same-name conflicts refused); `GET /drift` lists same-name skills whose SKILL.md hashes differ from the Hermes source.
+
+Preset file format (v1): `{"version": 1, "name": "…", "skills": ["category/name", …], "tools": ["claude", …]}` — applying is additive; unknown ids are skipped and reported.
