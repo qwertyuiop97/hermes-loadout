@@ -1,5 +1,7 @@
 # skills-toggle
 
+[![tests](https://github.com/qwertyuiop97/skills-toggle/actions/workflows/tests.yml/badge.svg)](https://github.com/qwertyuiop97/skills-toggle/actions/workflows/tests.yml)
+
 A Hermes desktop plugin that makes **Hermes the source of truth for your skills
 across every coding tool**. A native pane inside the Hermes desktop app lists
 every skill under `~/.hermes/skills/<category>/<name>/SKILL.md` and gives you a
@@ -56,6 +58,8 @@ Or with the Hermes CLI:
 ```bash
 hermes plugins install qwertyuiop97/skills-toggle
 ```
+
+Or one click in the desktop app: [Install in Hermes](hermes://plugin/install?repo=qwertyuiop97/skills-toggle) (deep links always ask before installing).
 
 ## Enable gates (both halves are opt-in by design)
 
