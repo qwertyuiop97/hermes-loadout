@@ -213,10 +213,11 @@ class DriftPushTests(unittest.TestCase):
         # hermes
         r = call(self.core.drift_push, "hermes", "architecture-diagram")
         self.assertFalse(r["ok"])
-        # real dir without SKILL.md is untouched
-        plain = self.fx.codex / "plain-dir"
+        # real dir without SKILL.md is untouched (name must exist in tree to
+        # reach this check — apple-notes does)
+        plain = self.fx.codex / "apple-notes"
         plain.mkdir()
-        r = call(self.core.drift_push, "codex", "plain-dir")
+        r = call(self.core.drift_push, "codex", "apple-notes")
         self.assertFalse(r["ok"])
         self.assertEqual(r["code"], "unmanaged-dir")
         self.assertTrue(plain.is_dir() and not plain.is_symlink())
