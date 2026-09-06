@@ -13,7 +13,6 @@ A sibling app imports this module directly, so:
 from __future__ import annotations
 
 import ast
-import builtins
 import importlib.util
 import json
 import os
@@ -26,7 +25,26 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 MODULE = REPO / "dashboard" / "plugin_api.py"
 
-STDLIB = set(sys.stdlib_module_names)  # py3.10+
+# py3.10+ has sys.stdlib_module_names; older interpreters fall back to a
+# curated superset of the stdlib top-levels this test could plausibly see.
+if hasattr(sys, "stdlib_module_names"):
+    STDLIB = set(sys.stdlib_module_names)
+else:  # pragma: no cover — only exercised on py3.9
+    STDLIB = set(sys.builtin_module_names) | {
+        "__future__", "abc", "argparse", "ast", "asyncio", "base64", "builtins",
+        "collections", "contextlib", "copy", "csv", "ctypes", "dataclasses",
+        "datetime", "decimal", "difflib", "email", "enum", "fcntl", "fnmatch",
+        "functools", "gc", "getpass", "glob", "gzip", "hashlib", "heapq",
+        "html", "http", "importlib", "inspect", "io", "ipaddress", "itertools",
+        "json", "logging", "math", "mimetypes", "mmap", "multiprocessing",
+        "numbers", "operator", "os", "pathlib", "pickle", "platform", "pprint",
+        "queue", "random", "re", "readline", "resource", "runpy", "secrets",
+        "select", "shutil", "signal", "site", "socket", "sqlite3", "ssl",
+        "stat", "string", "struct", "subprocess", "sys", "tarfile", "tempfile",
+        "termios", "textwrap", "threading", "time", "traceback", "types",
+        "typing", "unicodedata", "unittest", "urllib", "uuid", "warnings",
+        "weakref", "webbrowser", "xml", "zipfile", "zlib",
+    }
 
 
 def _module_tree():
