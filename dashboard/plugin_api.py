@@ -92,6 +92,8 @@ __all__ = [
     "McpCore",
     "parse_mcp_servers",
     "set_mcp_server_enabled",
+    "parse_codex_mcp",
+    "codex_server_block",
 ]
 
 # ---------------------------------------------------------------------------
@@ -1808,6 +1810,108 @@ def load_tools_config(home: Path) -> dict:
 # its claude_desktop_config.json `mcpServers` map (presence = enabled).
 # ---------------------------------------------------------------------------
 
+CODEX_CONFIG_CANDIDATES = ["~/.codex/config.toml"]
+
+
+def _toml_scalar(value: str):
+    v = value.strip()
+    if v in ("true", "false"):
+        return v == "true"
+    if len(v) >= 2 and v[0] == '"' and v[-1] == '"':
+        return json.loads(v)
+    if v.startswith("[") and v.endswith("]"):
+        inner = v[1:-1].strip()
+        if not inner:
+            return []
+        return [json.loads(item.strip()) for item in inner.split(",") if item.strip()]
+    return v
+
+
+def parse_codex_mcp(text: str) -> dict:
+    """Line-based parse of [mcp_servers.<name>] tables (+ sub-tables like env)
+    from a codex config.toml. {name: {enabled, definition}} — enabled defaults
+    to True; a native `enabled = false` flag is honored."""
+    out: dict = {}
+    current = None
+    current_sub = None
+    for raw in text.splitlines():
+        ln = raw.strip()
+        if not ln or ln.startswith("#"):
+            continue
+        m = re.match(r"^\[mcp_servers\.(.+)\]$", ln)
+        if m:
+            key = m.group(1).strip().strip('"')
+            if "." in key:
+                current, current_sub = key.split(".", 1)
+                out.setdefault(current, {"enabled": True, "definition": {}})
+                out[current]["definition"].setdefault(current_sub, {})
+            else:
+                current = key
+                current_sub = None
+                out.setdefault(current, {"enabled": True, "definition": {}})
+            continue
+        if current is None or ln.startswith("["):
+            if ln.startswith("["):
+                current, current_sub = None, None  # left the mcp_servers area
+            continue
+        m = re.match(r"^([^=]+?)\s*=\s*(.*)$", ln)
+        if not m:
+            continue
+        key = m.group(1).strip().strip('"')
+        value = _toml_scalar(m.group(2))
+        if current_sub:
+            out[current]["definition"].setdefault(current_sub, {})[key] = value
+        elif key == "enabled":
+            out[current]["enabled"] = bool(value)
+        else:
+            out[current]["definition"][key] = value
+    return out
+
+
+def _toml_string(value: str) -> str:
+    return json.dumps(str(value))  # basic string; close enough for our values
+
+
+def codex_server_block(name: str, projection: dict) -> str:
+    """Render one [mcp_servers.<name>] block (universal keys only)."""
+    safe_name = name.replace('"', '')
+    lines = [f"[mcp_servers.{safe_name}]"]
+    for key in ("command", "url", "headers"):
+        if key in projection:
+            lines.append(f"{key} = {_toml_string(projection[key])}")
+    if "args" in projection:
+        lines.append(f"args = [{', '.join(_toml_string(a) for a in projection['args'])}]")
+    lines.append("")
+    if isinstance(projection.get("env"), dict) and projection["env"]:
+        lines.append(f"[mcp_servers.{safe_name}.env]")
+        for k, v in projection["env"].items():
+            lines.append(f"{k} = {_toml_string(v)}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def _remove_codex_block(text: str, name: str) -> str:
+    """Delete the [mcp_servers.<name>] block and its sub-tables."""
+    safe = name.replace('"', '')
+    lines = text.splitlines()
+    out = []
+    skipping = False
+    for ln in lines:
+        stripped = ln.strip()
+        m = re.match(r"^\[mcp_servers\.(.+)\]$", stripped)
+        if m:
+            key = m.group(1).strip().strip('"')
+            is_ours = key == safe or key.split(".", 1)[0] == safe
+            skipping = is_ours
+            if skipping:
+                continue
+        if skipping and stripped.startswith("["):
+            skipping = False  # reached an unrelated table
+        if not skipping:
+            out.append(ln)
+    return "\n".join(out) + ("\n" if text.endswith("\n") else "")
+
+
 CLAUDE_DESKTOP_CONFIG_CANDIDATES = [
     "~/Library/Application Support/Claude/claude_desktop_config.json",  # macOS
     "~/.config/Claude/claude_desktop_config.json",  # Linux
@@ -1963,12 +2067,23 @@ class McpCore:
     """MCP switchboard operations. Same construction pattern as
     SkillsToggleCore: explicit paths, stdlib-only, JSON-able results."""
 
-    def __init__(self, home: Path, claude_desktop_config: Path | None = None, log_path: Path | None = None):
+    def __init__(self, home: Path, claude_desktop_config: Path | None = None, log_path: Path | None = None, codex_config: Path | None = None):
         self.home = home
         self.config_path = home / "config.yaml"
         self.claude_config = claude_desktop_config or self._default_claude_config()
+        self.codex_config = codex_config or self._default_codex_config()
         self.log_path = log_path
         self._lock = threading.RLock()
+
+    def _default_codex_config(self) -> Path | None:
+        for candidate in CODEX_CONFIG_CANDIDATES:
+            try:
+                expanded = expand_path(candidate)
+            except ValueError:
+                continue
+            if expanded.is_file():
+                return expanded
+        return None
 
     def _default_claude_config(self) -> Path | None:
         for candidate in CLAUDE_DESKTOP_CONFIG_CANDIDATES:
@@ -2034,11 +2149,64 @@ class McpCore:
         except (OSError, json.JSONDecodeError):
             return {}, ""
 
+    def _read_codex(self) -> tuple[dict, str]:
+        if self.codex_config is None or not self.codex_config.is_file():
+            return {}, ""
+        try:
+            text = self.codex_config.read_text(encoding="utf-8")
+            return parse_codex_mcp(text), text
+        except OSError:
+            return {}, ""
+
+    def _write_codex(self, name: object, create: bool, force: bool = False) -> dict:
+        if not isinstance(name, str) or not name.strip():
+            raise SkillsToggleError("invalid server name", "invalid-name")
+        if self.codex_config is None:
+            raise SkillsToggleError("no codex config path resolved", "no-writer")
+        cat = self.catalog()
+        entry = next((c for c in cat["catalog"] if c["name"] == name), None)
+        codex, raw = self._read_codex()
+        if create and entry is None:
+            raise SkillsToggleError(f"unknown MCP server {name!r} in the catalog", "unknown-server")
+        if not create and name not in codex:
+            return {"ok": True, "name": name, "action": "noop", "state": "missing"}
+        if not create and entry is None:
+            raise SkillsToggleError(f"{name!r} is not in the Hermes catalog — refusing to remove", "unknown-server")
+        if not create and (codex[name]["definition"] != entry["projection"]) and not force:
+            raise SkillsToggleError(
+                f"Codex's copy of {name!r} differs from the catalog — pass force to overwrite", "drifted"
+            )
+        backup = self._backup(self.codex_config)
+        if create:
+            base = _remove_codex_block(raw, name) if name in codex else raw
+            new_text = (base.rstrip("\n") + "\n\n" if base.strip() else "") + codex_server_block(name, entry["projection"])
+            action = "updated" if name in codex else "created"
+            state = "enabled"
+        else:
+            new_text = _remove_codex_block(raw, name)
+            action = "removed"
+            state = "missing"
+        self.codex_config.write_text(new_text, encoding="utf-8")
+        self._log(action=f"mcp-codex-{action}", server=name, backup=backup)
+        return {"ok": True, "name": name, "writer": "codex", "action": action, "state": state, "backup": backup}
+
+    def sync_to_codex(self, name: object) -> dict:
+        with self._lock:
+            return self._write_codex(name, create=True)
+
+    def remove_from_codex(self, name: object, force: object = False) -> dict:
+        with self._lock:
+            if not isinstance(force, bool):
+                force = False
+            return self._write_codex(name, create=False, force=force)
+
     def mcp_state(self) -> dict:
         cat = self.catalog()
         claude, _raw = self._read_claude()
         servers = claude.get("mcpServers") if isinstance(claude, dict) else None
         servers = servers if isinstance(servers, dict) else {}
+        codex_servers, _codex_raw = self._read_codex()
+        codex_servers = codex_servers if codex_servers else None
         projection_by_name = {c["name"]: c["projection"] for c in cat["catalog"]}
         foreign = []
         for name, definition in servers.items():
@@ -2053,13 +2221,21 @@ class McpCore:
                 claude_state = "enabled"
             else:
                 claude_state = "drifted"
+            codex_state = "missing"
+            if codex_servers is not None and name in codex_servers:
+                if not codex_servers[name]["definition"]:
+                    codex_state = "missing"
+                elif codex_servers[name]["definition"] == c["projection"]:
+                    codex_state = "enabled" if codex_servers[name]["enabled"] else "missing"
+                else:
+                    codex_state = "drifted"
             rows.append(
                 {
                     "name": name,
                     "enabled": c["enabled"],
                     # env VALUES are secrets — the payload carries key names only
                     "definition": _redact_env(c["definition"]),
-                    "writers": {"claude": claude_state},
+                    "writers": {"claude": claude_state, "codex": codex_state},
                 }
             )
         return {
@@ -2072,7 +2248,12 @@ class McpCore:
                     "label": "Claude Desktop",
                     "path": str(self.claude_config) if self.claude_config else None,
                     "present": bool(self.claude_config and self.claude_config.is_file()),
-                }
+                },
+                "codex": {
+                    "label": "Codex",
+                    "path": str(self.codex_config) if self.codex_config else None,
+                    "present": bool(self.codex_config and self.codex_config.is_file()),
+                },
             },
         }
 
@@ -2308,6 +2489,14 @@ if APIRouter is not None:
     @router.post("/mcp/remove")
     async def mcp_remove(body: dict) -> dict:
         return _call(get_mcp_core().remove_from_claude, body.get("name"), body.get("force", False))
+
+    @router.post("/mcp/codex/sync")
+    async def mcp_codex_sync(body: dict) -> dict:
+        return _call(get_mcp_core().sync_to_codex, body.get("name"))
+
+    @router.post("/mcp/codex/remove")
+    async def mcp_codex_remove(body: dict) -> dict:
+        return _call(get_mcp_core().remove_from_codex, body.get("name"), body.get("force", False))
 
     @router.get("/blueprint/export")
     async def blueprint_export() -> dict:

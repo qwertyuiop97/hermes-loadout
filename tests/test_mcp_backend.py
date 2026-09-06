@@ -136,6 +136,107 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(pa.parse_mcp_servers(CONFIG)["weather"]["enabled"], False)
 
 
+CODEX_TOML = """# codex config
+[desktop]
+mode = "steps"
+
+[mcp_servers.node_repl]
+command = "/bin/node_repl"
+args = ["--serve"]
+startup_timeout_sec = 120
+
+[mcp_servers.node_repl.env]
+NODE_ENV = "production"
+
+[mcp_servers.computer-use]
+command = "./cu"
+enabled = false
+
+[mcp_servers.docs]
+command = "node"
+args = ["docs-server.js"]
+
+[agents]
+max_depth = 2 # trailing section
+"""
+
+
+class CodexWriterTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.fx = McpFixture()
+        self.codex = self.fx.tmp / "codex" / "config.toml"
+        self.codex.parent.mkdir(parents=True, exist_ok=True)
+        self.codex.write_text(CODEX_TOML, encoding="utf-8")
+        self.mcp = McpCore(self.fx.home, claude_desktop_config=self.fx.claude, log_path=None, codex_config=self.codex)
+
+    def tearDown(self) -> None:
+        self.fx.cleanup()
+
+    def test_parse_codex_mcp(self) -> None:
+        parsed = pa.parse_codex_mcp(CODEX_TOML)
+        self.assertEqual(sorted(parsed), ["computer-use", "docs", "node_repl"])
+        self.assertTrue(parsed["node_repl"]["enabled"])
+        self.assertEqual(parsed["node_repl"]["definition"]["command"], "/bin/node_repl")
+        self.assertEqual(parsed["node_repl"]["definition"]["args"], ["--serve"])
+        self.assertEqual(parsed["node_repl"]["definition"]["env"]["NODE_ENV"], "production")
+        self.assertFalse(parsed["computer-use"]["enabled"])
+        self.assertIn("max_depth = 2", self.codex.read_text())
+
+    def test_state_includes_codex_writer(self) -> None:
+        st = self.mcp.mcp_state()
+        rows = {r["name"]: r for r in st["rows"]}
+        # docs matches the catalog entry command/args -> enabled
+        self.assertEqual(rows["docs"]["writers"]["codex"], "enabled")
+        # chrome-devtools is in the catalog but not in codex
+        self.assertEqual(rows["chrome-devtools"]["writers"]["codex"], "missing")
+        self.assertEqual(st["writers"]["codex"]["present"], True)
+
+    def test_sync_appends_block_and_preserves_rest(self) -> None:
+        r = self.mcp.sync_to_codex("chrome-devtools")
+        self.assertEqual(r["action"], "created")
+        text = self.codex.read_text()
+        parsed = pa.parse_codex_mcp(text)
+        self.assertEqual(parsed["chrome-devtools"]["definition"]["command"], "npx")
+        # unrelated tables untouched
+        self.assertIn("[desktop]", text)
+        self.assertIn("max_depth = 2", text)
+        self.assertIn("# codex config", text)
+        self.assertTrue(list(self.codex.parent.glob("config.toml.bak.skills-toggle.*")))
+
+    def test_sync_update_replaces_block(self) -> None:
+        r = self.mcp.sync_to_codex("docs")
+        self.assertEqual(r["action"], "updated")
+        text = self.codex.read_text()
+        self.assertEqual(text.count("[mcp_servers.docs]"), 1)
+        parsed = pa.parse_codex_mcp(text)
+        self.assertEqual(parsed["docs"]["definition"], {"command": "node", "args": ["docs-server.js"]})
+        # node_repl env sub-table untouched
+        self.assertEqual(pa.parse_codex_mcp(text)["node_repl"]["definition"]["env"]["NODE_ENV"], "production")
+
+    def test_remove_drifted_refusal_and_force(self) -> None:
+        # node_repl differs from any catalog entry -> foreign (not in catalog)
+        try:
+            self.mcp.remove_from_codex("node_repl")
+            self.fail("expected error")
+        except SkillsToggleError as exc:
+            self.assertEqual(exc.code, "unknown-server")
+        self.assertIn("[mcp_servers.node_repl]", self.codex.read_text())
+        # remove docs (managed) -> block gone, rest intact
+        r = self.mcp.remove_from_codex("docs")
+        self.assertEqual(r["action"], "removed")
+        text = self.codex.read_text()
+        self.assertNotIn("[mcp_servers.docs]", text)
+        self.assertIn("[mcp_servers.node_repl]", text)
+        # noop on missing
+        self.assertEqual(self.mcp.remove_from_codex("docs")["action"], "noop")
+
+    def test_codex_state_on_missing_file(self) -> None:
+        self.codex.unlink()
+        mcp = McpCore(self.fx.home, claude_desktop_config=self.fx.claude, log_path=None, codex_config=self.tmp / "nope.toml")
+        st = mcp.mcp_state()
+        self.assertFalse(st["writers"]["codex"]["present"])
+
+
 class McpCoreTests(unittest.TestCase):
     def setUp(self) -> None:
         self.fx = McpFixture()
