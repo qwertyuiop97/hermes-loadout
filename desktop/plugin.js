@@ -552,13 +552,13 @@ function SetupPanel({ tools, onClose, onEnsureDir, onAddTool, busy, autoLink, on
         jsxs('div', { className: 'flex items-center gap-1', children: [
           jsx(Input, {
             value: label,
-            onChange: setLabel,
+            onChange: e => setLabel(e && e.target ? e.target.value : e),
             placeholder: t('toolLabel'),
             className: 'h-6 w-24 text-xs'
           }),
           jsx(Input, {
             value: dir,
-            onChange: setDir,
+            onChange: e => setDir(e && e.target ? e.target.value : e),
             placeholder: t('toolDir'),
             className: 'h-6 min-w-0 flex-1 text-xs'
           }),
@@ -903,11 +903,11 @@ function SkillsPane() {
   const busy = taskBusy || toggleMutation.isPending || repairMutation.isPending || repairAllMutation.isPending || bulkMutation.isPending
 
   // -- arrivals (D22) + auto-link (D23) --------------------------------------
-  const arrivalsRef = useRef(false)
+  // Diff EVERY snapshot against the persisted seen-set (no once-guard): a
+  // skill dropped while the pane is open must still prompt. Merging dedupes
+  // until the arrival is linked or dismissed (which is what marks it seen).
   useEffect(() => {
     if (!state || !state.ok || !Array.isArray(state.skills)) return
-    if (arrivalsRef.current) return
-    arrivalsRef.current = true
     const ids = state.skills.map(s => s.id)
     const rawSeen = storeGet('seenSkills', null)
     if (rawSeen === null) {
@@ -923,7 +923,7 @@ function SkillsPane() {
       seen = new Set(ids)
     }
     const fresh = ids.filter(id => !seen.has(id))
-    if (fresh.length) setArrivals(fresh)
+    if (fresh.length) setArrivals(prev => Array.from(new Set([...prev, ...fresh])))
   }, [state])
 
   const autoLinkRef = useRef(false)
@@ -1487,7 +1487,7 @@ function SkillsPane() {
               jsx('div', { className: 'mb-1 text-muted-foreground', children: t('pasteHint') }),
               jsx(Input, {
                 value: presetText,
-                onChange: setPresetText,
+                onChange: e => setPresetText(e && e.target ? e.target.value : e),
                 placeholder: '{"version": 1, "name": "…", "skills": ["…"], "tools": ["…"]}',
                 className: 'h-6 w-full text-xs'
               }),

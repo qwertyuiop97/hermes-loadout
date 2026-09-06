@@ -130,13 +130,9 @@ class ImportDriftTests(unittest.TestCase):
         # hermes untouched
         self.assertTrue(self.local.is_dir() and not self.local.is_symlink())
 
-    def test_import_apply_swap_failure_rolls_back_copy(self) -> None:
-        # make the rename fail: replace the source dir entry with something
-        # os.rename can't move? rename works across dirs on same fs — instead
-        # simulate by making the tool dir read-only is flaky; use a name that
-        # exists as a FILE colliding with backup target: pre-create backup path
-        # is impossible (timestamped). Simplest deterministic rollback trigger:
-        # monkeypatch os.symlink to raise.
+    def test_import_apply_swap_failure_rolls_back(self) -> None:
+        # make the symlink step fail deterministically; the copy must be
+        # rolled back out of the tree AND the original restored in place
         orig = os.symlink
         try:
             def boom(*a, **k):
@@ -149,12 +145,10 @@ class ImportDriftTests(unittest.TestCase):
         self.assertIn("link swap failed", r["results"][0]["error"])
         # copy rolled back out of the tree
         self.assertFalse((self.fx.home / "skills" / "imported" / "my-local-skill").exists())
-        # original dir untouched (rename succeeded, then symlink failed —
-        # the renamed backup is restored by name below? No: rename happened,
-        # so the original now lives at the backup path; the tool dir entry is
-        # GONE. This is the one non-atomic window; verify the backup exists.)
-        backups = list(self.fx.codex.glob("my-local-skill.skills-toggle-backup-*"))
-        self.assertEqual(len(backups), 1)
+        # original restored exactly where it was, backup cleaned up by restore
+        self.assertTrue(self.local.is_dir())
+        self.assertFalse(self.local.is_symlink())
+        self.assertEqual(list(self.fx.codex.glob("my-local-skill.skills-toggle-backup-*")), [])
 
     def test_drift_reports_differing_copies(self) -> None:
         d = self.core.drift()
