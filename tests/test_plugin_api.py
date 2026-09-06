@@ -540,6 +540,14 @@ class ConfigEditorTests(unittest.TestCase):
         self.assertEqual(pa.parse_disabled(out), set())
         self.assertIn("disabled: []", out)
 
+    def test_block_list_remove_last_member_keeps_trailing_comment(self) -> None:
+        text = "skills:\n  disabled:\n    - airtable\n    # why: too noisy\nother: 1\n"
+        out = pa.set_disabled_member(text, "airtable", add=False)
+        self.assertEqual(pa.parse_disabled(out), set())
+        self.assertIn("disabled: []", out)
+        self.assertIn("# why: too noisy", out)
+        self.assertIn("other: 1", out)
+
     def test_scalar_shorthand(self) -> None:
         text = "skills:\n  disabled: airtable\n"
         out = pa.set_disabled_member(text, "arxiv", add=True)

@@ -117,6 +117,10 @@ def expand_path(value: str) -> Path:
 
     value = _VAR_DEFAULT_RE.sub(_sub, value)
     value = _VAR_BARE_RE.sub(lambda m: os.environ.get(m.group(1), ""), value)
+    if not value:
+        # e.g. '${MISSING_VAR:-}' — an empty expansion must never resolve to
+        # the process CWD, which Path('').absolute() would yield.
+        raise ValueError(f"path expands to empty string: {value!r}")
     return Path(os.path.expanduser(value)).absolute()
 
 
@@ -431,10 +435,12 @@ def _set_disabled_member_lf(text: str, name: str, *, add: bool) -> str:
     else:  # remove
         drop = {idx for idx, n in items if n == name}
         if names and len(names) == 1:
-            # list becomes empty — rewrite the block cleanly as `disabled: []`
+            # list becomes empty — rewrite the block cleanly as `disabled: []`,
+            # dropping only up to the last REAL item (trailing comments survive)
+            last_real = max(idx for idx, n in items if n)
             new_lines = lines[:dis_idx]
             new_lines.append(f"{dis_indent}disabled: []")
-            new_lines.extend(lines[items[-1][0] + 1 :])
+            new_lines.extend(lines[last_real + 1 :])
         else:
             new_lines = [ln for idx, ln in enumerate(lines) if idx not in drop]
     return _finish("\n".join(new_lines) + "\n", name, add)
@@ -543,7 +549,11 @@ class SkillsToggleCore:
         tool = self.tools.get(tool_id)
         if not tool or "dir" not in tool:
             return None
-        return expand_path(tool["dir"]) if isinstance(tool["dir"], str) else tool["dir"]
+        try:
+            expanded = expand_path(tool["dir"]) if isinstance(tool["dir"], str) else tool["dir"]
+        except ValueError:
+            return None  # empty expansion — treat as unconfigured, never CWD
+        return expanded
 
     def _tool_states(self, skill: dict, disabled: set[str]) -> dict:
         states: dict[str, dict] = {}
@@ -1120,7 +1130,13 @@ class SkillsToggleCore:
                 os.rename(src, backup)
                 os.symlink(str(dest.resolve()), str(tool_dir / name))
             except OSError as exc:
-                # roll the copy back out of the tree rather than half-adopt
+                # put the original back exactly where it was — the tool must
+                # never lose the entry because the symlink step failed
+                try:
+                    if not (tool_dir / name).exists():
+                        os.rename(backup, src)
+                except OSError:
+                    pass  # original remains recoverable at the backup path
                 shutil.rmtree(dest, ignore_errors=True)
                 results.append({"name": name, "ok": False, "error": f"link swap failed: {exc}"})
                 continue
@@ -1182,37 +1198,42 @@ class SkillsToggleCore:
     def set_tool(self, tool_id: object, label: object, dir_str: object) -> dict:
         """Add or override a tool target dir in <hermes_home>/skills-toggle.json
         (timestamped backup first). Hermes itself is config-backed and locked."""
-        if (
-            not isinstance(tool_id, str)
-            or not re.match(r"^[a-z0-9-]{1,32}$", tool_id)
-            or tool_id == "hermes"
-        ):
-            raise SkillsToggleError(f"invalid tool id {tool_id!r}", "invalid-tool-id")
-        if not isinstance(label, str) or not label.strip() or len(label) > 40:
-            raise SkillsToggleError("'label' must be a 1-40 char string", "invalid-label")
-        if not isinstance(dir_str, str) or not dir_str.strip() or "\0" in dir_str:
-            raise SkillsToggleError("'dir' must be a non-empty path string", "invalid-dir")
-        cfg_path = user_config_path(self.home)
-        data = {}
-        if cfg_path.is_file():
+        with self._lock:
+            if (
+                not isinstance(tool_id, str)
+                or not re.match(r"^[a-z0-9-]{1,32}$", tool_id)
+                or tool_id == "hermes"
+            ):
+                raise SkillsToggleError(f"invalid tool id {tool_id!r}", "invalid-tool-id")
+            if not isinstance(label, str) or not label.strip() or len(label) > 40:
+                raise SkillsToggleError("'label' must be a 1-40 char string", "invalid-label")
+            if not isinstance(dir_str, str) or not dir_str.strip() or "\0" in dir_str:
+                raise SkillsToggleError("'dir' must be a non-empty path string", "invalid-dir")
             try:
-                data = json.loads(cfg_path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                data = {}
-        backup = None
-        if cfg_path.is_file():
-            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-            backup_path = cfg_path.with_name(f"{cfg_path.name}.bak.skills-toggle.{stamp}")
-            shutil.copy2(cfg_path, backup_path)
-            backup = str(backup_path)
-        tools = data.setdefault("tools", {})
-        tools[tool_id] = {"label": label.strip(), "dir": dir_str.strip()}
-        cfg_path.parent.mkdir(parents=True, exist_ok=True)
-        cfg_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-        self._log(action="config-tools", tool=tool_id, dir=str(dir_str), backup=backup)
-        self.invalidate()
-        reset_core()  # tool map is loaded at core build time — rebuild singleton
-        return {"ok": True, "tool": tool_id, "label": label.strip(), "dir": str(expand_path(dir_str)), "backup": backup}
+                expand_path(dir_str)
+            except ValueError:
+                raise SkillsToggleError(f"'dir' expands to an empty path: {dir_str!r}", "invalid-dir")
+            cfg_path = user_config_path(self.home)
+            data = {}
+            if cfg_path.is_file():
+                try:
+                    data = json.loads(cfg_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    data = {}
+            backup = None
+            if cfg_path.is_file():
+                stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+                backup_path = cfg_path.with_name(f"{cfg_path.name}.bak.skills-toggle.{stamp}")
+                shutil.copy2(cfg_path, backup_path)
+                backup = str(backup_path)
+            tools = data.setdefault("tools", {})
+            tools[tool_id] = {"label": label.strip(), "dir": dir_str.strip()}
+            cfg_path.parent.mkdir(parents=True, exist_ok=True)
+            cfg_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            self._log(action="config-tools", tool=tool_id, dir=str(dir_str), backup=backup)
+            self.invalidate()
+            reset_core()  # tool map is loaded at core build time — rebuild singleton
+            return {"ok": True, "tool": tool_id, "label": label.strip(), "dir": str(expand_path(dir_str)), "backup": backup}
 
     def health(self) -> dict:
         return {
