@@ -173,8 +173,10 @@ class WindowsPathHelperTests(unittest.TestCase):
         a = self.pa.Path(r"\\?\C:\Users\runneradmin\Temp\x")
         b = self.pa.Path(r"C:\Users\runneradmin\Temp\x")
         self.assertTrue(self.pa.same_path(a, b))
-        c = self.pa.Path(r"C:\Users\RUNNER~1\Temp\x")
-        self.assertTrue(self.pa.same_path(a, c))  # 8.3 expands via realpath (dir must exist on nt)
+        if os.name == "nt":
+            # 8.3 short names expand via realpath only where the dir exists
+            c = self.pa.Path(r"C:\Users\RUNNER~1\Temp\x")
+            self.assertTrue(self.pa.same_path(a, c))
 
     def test_same_path_case_and_slash(self) -> None:
         self.assertTrue(self.pa.same_path(self.pa.Path("/Tmp/A"), self.pa.Path("/tmp/a")) if os.name == "nt" else True)
