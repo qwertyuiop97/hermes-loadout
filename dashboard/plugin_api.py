@@ -1433,12 +1433,16 @@ class SkillsToggleCore:
             if not existing:
                 raise SkillsToggleError(f"no skill named {name!r} in the tree", "unknown-skill")
             hermes_dir = existing["dir"]
-            hb = Path(hermes_backup)
-            if not hb.is_dir():
-                raise SkillsToggleError(f"hermes backup {hb} is missing", "backup-missing")
             tool_dir = self.tool_dir(tool_id)
             if tool_dir is None:
                 raise SkillsToggleError("tool dir missing", "absent-dir")
+            if not (tool_dir / name).is_symlink():
+                raise SkillsToggleError(
+                    f"{tool_dir / name} is not a symlink — refusing to revert", "not-managed"
+                )
+            hb = Path(hermes_backup)
+            if not hb.is_dir():
+                raise SkillsToggleError(f"hermes backup {hb} is missing", "backup-missing")
             self._restore_tool_entry(tool_dir, name, Path(tool_backup))
             # canonical: move the pulled copy aside (dotted), restore original
             pulled_aside = hermes_dir.parent / f".skills-toggle-reverted-{name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
