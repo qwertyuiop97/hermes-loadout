@@ -33,6 +33,7 @@ ln -sfn "$FRONT/node_modules/react-dom" "$FRONT/staging/node_modules/react-dom"
 
 # fresh plugin copy each run (like a hot reload)
 cp "$REPO/desktop/plugin.js" "$FRONT/staging/plugin.js"
+cp "$HERE/render_harness_body.mjs" "$FRONT/render_harness_body.mjs"
 
 cd "$FRONT"
-exec node "$HERE/render_harness_body.mjs"
+exec node render_harness_body.mjs
