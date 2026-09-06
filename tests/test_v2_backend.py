@@ -390,6 +390,65 @@ class RevertTests(unittest.TestCase):
         self.assertTrue(self.core.revert_push("codex", "architecture-diagram", push["tool_backup"])["ok"])
 
 
+class BackupBrowserTests(unittest.TestCase):
+    """V3-6: every backup kind the plugin creates is listed and restorable."""
+
+    def setUp(self) -> None:
+        self.fx = Fixture()
+        self.core = self.fx.core
+        self.drifted = self.fx.codex / "architecture-diagram"
+        self.drifted.mkdir()
+        (self.drifted / "SKILL.md").write_text(
+            "---\nname: architecture-diagram\ndescription: local edit\n---\nbody", encoding="utf-8"
+        )
+
+    def tearDown(self) -> None:
+        self.fx.cleanup()
+
+    def _paths(self, core):
+        return {b["path"]: b for b in core.list_backups()["backups"]}
+
+    def test_config_backup_restore(self) -> None:
+        self.core.toggle("apple/apple-notes", "hermes", False)  # creates a config backup
+        rows = self._paths(self.core)
+        self.assertEqual([k for k in rows.values() if k["kind"] == "config"], [rows[[p for p in rows if rows[p]["kind"] == "config"][0]]])
+        backup_path = [p for p in rows if rows[p]["kind"] == "config"][0]
+        # current config now has apple-notes disabled; restoring the backup removes it
+        self.assertIn("apple-notes", pa.parse_disabled((self.fx.home / "config.yaml").read_text()))
+        r = self.core.restore_backup(backup_path)
+        self.assertEqual(r["kind"], "config")
+        self.assertNotIn("apple-notes", pa.parse_disabled((self.fx.home / "config.yaml").read_text()))
+
+    def test_tool_link_backup_restore(self) -> None:
+        push = self.core.drift_push("codex", "architecture-diagram")
+        rows = self._paths(self.core)
+        tool_backups = [p for p, b in rows.items() if b["kind"] == "tool-link"]
+        self.assertEqual(len(tool_backups), 1)
+        # restore brings the local edit back as a real dir
+        r = self.core.restore_backup(tool_backups[0])
+        self.assertEqual(r["name"], "architecture-diagram")
+        entry = self.fx.codex / "architecture-diagram"
+        self.assertTrue(entry.is_dir() and not entry.is_symlink())
+        self.assertIn("local edit", (entry / "SKILL.md").read_text())
+
+    def test_hermes_copy_backup_restore(self) -> None:
+        pull = self.core.conflict_pull("codex", "architecture-diagram")
+        rows = self._paths(self.core)
+        hers = [p for p, b in rows.items() if b["kind"] == "hermes-copy"]
+        self.assertEqual(len(hers), 1)
+        r = self.core.restore_backup(hers[0])
+        self.assertEqual(r["name"], "architecture-diagram")
+        canonical = self.fx.home / "skills" / "creative" / "architecture-diagram" / "SKILL.md"
+        self.assertIn("draw diagrams", canonical.read_text())
+
+    def test_unknown_path_refused(self) -> None:
+        r = call(self.core.restore_backup, "/etc/passwd")
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["code"], "unknown-backup")
+        r = call(self.core.restore_backup, str(self.fx.home / "config.yaml"))  # not a backup
+        self.assertFalse(r["ok"])
+
+
 class ConfigToolsTests(unittest.TestCase):
     def setUp(self) -> None:
         self.fx = Fixture()
