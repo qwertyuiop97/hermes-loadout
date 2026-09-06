@@ -208,6 +208,43 @@ staging render harness verifies the pane against a fixture shaped like the Air
 8. Toggle Hermes off for a skill → `grep -A3 '^skills:' ~/.hermes/config.yaml` shows it under `disabled:` (a `config.yaml.bak.skills-toggle.*` backup appears next to it).
 9. Restart the desktop app → pane, filters, and link states persist (links are real symlinks; filters live in plugin storage).
 
+## Using the core from another app
+
+`dashboard/plugin_api.py` is a **shared, dependency-free core** with a stable
+function API (see `__all__` in the module — additions only; removals/renames
+are breaking). It imports stdlib at module level; `fastapi` is optional and
+guarded (without it, `router is None` and everything else works). Enforced by
+`tests/test_core_api.py`.
+
+```python
+import importlib.util
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location(
+    "skills_toggle_core",
+    "~/.hermes/plugins/skills-toggle/dashboard/plugin_api.py",
+)
+core_mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(core_mod)
+
+home = core_mod.hermes_home()                 # $HERMES_HOME > profile > ~/.hermes
+tools = core_mod.load_tools_config(home)      # defaults + skills-toggle.json
+core = core_mod.SkillsToggleCore(home, tools) # explicit construction, no globals
+
+state = core.state()                          # {ok, skills, tools, counts, …}
+core.toggle("creative/architecture-diagram", "claude", True)
+diff = core.diff()                            # unlinked / broken / foreign / unmanaged
+```
+
+Stable surface: `SkillsToggleCore` (`.state .detail .diff .toggle .toggle_bulk
+.repair .repair_all .ensure_tool_dir .import_scan .import_apply .drift
+.drift_push .set_tool .health .invalidate`), `hermes_home`, `expand_path`,
+`parse_skill_markdown`, `parse_disabled`, `set_disabled_member`,
+`load_tools_config`, `user_config_path`, `get_core`/`reset_core`,
+`SkillsToggleError` (`.code`), `ConfigEditError`, `DEFAULT_TOOLS`,
+`PLUGIN_ID`, `PLUGIN_VERSION`. The FastAPI `router` (when fastapi is present)
+mounts the same operations at `/api/plugins/skills-toggle/…`.
+
 ## Troubleshooting
 
 **The pane renders but shows "Skills backend unavailable" with `404 … Headless backend (hermes serve): web UI disabled`.**
