@@ -161,7 +161,7 @@ ok(channel.navigations.includes('/skills-toggle'), 'palette run navigates to the
 
 // every i18n key referenced by t('...') exists in the bundle
 const pluginSrc = (await import('fs')).readFileSync(PLUGIN_SRC, 'utf8')
-const usedKeys = [...pluginSrc.matchAll(/\bt\(\s*'([A-Za-z0-9_]+)'/g)].map(m => m[1])
+const usedKeys = [...pluginSrc.matchAll(/\bt\(\s*'([A-Za-z0-9_]+)'\s*[,)]/g)].map(m => m[1])
 const missingKeys = [...new Set(usedKeys.filter(k => !(k in channel.bundle.en)))]
 ok(missingKeys.length === 0, `every t() key exists in the en bundle (missing: ${missingKeys.join(', ') || 'none'})`)
 
