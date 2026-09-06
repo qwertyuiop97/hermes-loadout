@@ -60,6 +60,7 @@ const ID = 'skills-toggle'
 const STATE_KEY = [ID, 'state']
 const DIFF_KEY = [ID, 'diff']
 const DRIFT_KEY = [ID, 'drift']
+const MCP_KEY = [ID, 'mcp']
 
 // ctx captured at register() so helpers outside components can use storage.
 let pluginCtx = null
@@ -1654,6 +1655,224 @@ function SkillsPane() {
 }
 
 // ---------------------------------------------------------------------------
+// MCP switchboard pane (#12, Q1a) — Hermes catalog + Claude Desktop writer
+// ---------------------------------------------------------------------------
+
+function McpPane() {
+  const t = usePluginI18n(ID)
+  const qc = useQueryClient()
+  const [busyName, setBusyName] = useState(null)
+  const [confirm, setConfirm] = useState(null)
+
+  const stateQuery = useQuery({
+    queryKey: MCP_KEY,
+    queryFn: () => (pluginCtx ? pluginCtx.rest('/mcp/state') : Promise.reject(new Error('no backend'))),
+    staleTime: 10000,
+    refetchInterval: 30000,
+    refetchOnWindowFocus: false,
+    retry: 1
+  })
+  const st = stateQuery.data
+  const rows = st && st.ok && Array.isArray(st.rows) ? st.rows : []
+  const writer = st && st.ok && st.writers ? st.writers.claude : null
+
+  const run = useCallback(
+    (name, path, payload, successKey) => {
+      setBusyName(name + path)
+      pluginCtx
+        .rest(path, { method: 'POST', body: payload })
+        .then(res => {
+          if (res && res.ok) host.notify({ kind: 'success', message: t(successKey, name) })
+          else host.notify({ kind: 'error', message: res && res.error ? res.error : t('mcpFailed') })
+        })
+        .catch(err => host.notifyError(err, t('mcpFailed')))
+        .finally(() => {
+          setBusyName(null)
+          qc.invalidateQueries({ queryKey: MCP_KEY })
+        })
+    },
+    [qc, t]
+  )
+
+  const busy = busyName !== null
+
+  const header = jsxs('div', {
+    className: 'flex flex-col gap-2 px-3 pb-2 pt-3',
+    children: [
+      jsxs('div', { className: 'flex items-center gap-2', children: [
+        jsx('span', { className: 'text-sm font-medium', children: t('mcpTitle') }),
+        st && st.ok
+          ? jsx(Badge, { variant: 'default', size: 'xs', children: t('mcpCount', st.counts.catalog) })
+          : null,
+        jsx(Button, {
+          variant: 'ghost', size: 'xs', className: 'ml-auto',
+          disabled: stateQuery.isFetching,
+          onClick: () => qc.invalidateQueries({ queryKey: MCP_KEY }),
+          children: t('refresh')
+        })
+      ] }),
+      writer
+        ? jsxs('div', { className: 'flex items-center gap-1.5 text-xs text-muted-foreground', children: [
+            jsx(StatusDot, { tone: writer.present ? 'good' : 'muted' }),
+            jsx('span', { className: 'truncate', children: t('mcpWriterLine', writer.label, writer.present ? '' : t('dirAbsentTip')) })
+          ] })
+        : null,
+      st && st.ok && st.counts.foreign > 0
+        ? jsx(Tip, {
+            label: t('mcpForeignTip'),
+            children: jsx(Badge, { variant: 'outline', size: 'xs', children: t('mcpForeignNote', st.counts.foreign) })
+          })
+        : null
+    ]
+  })
+
+  let body = null
+  if (stateQuery.isPending || (stateQuery.isLoading && !st)) {
+    body = jsxs('div', {
+      className: 'flex flex-col gap-2 px-3',
+      children: [0, 1, 2, 3].map(i => jsx(Skeleton, { className: 'h-8 w-full' }, 'mcp-sk-' + i))
+    })
+  } else if (stateQuery.isError) {
+    body = jsx(ErrorState, {
+      title: t('errorTitle'),
+      description: stateQuery.error && stateQuery.error.message ? stateQuery.error.message : t('errorDesc'),
+      children: jsx(Button, {
+        variant: 'secondary', size: 'xs',
+        onClick: () => stateQuery.refetch(), children: t('retry')
+      })
+    })
+  } else if (rows.length === 0) {
+    body = jsx(EmptyState, { title: t('mcpEmpty'), description: t('mcpEmptyDesc') })
+  } else {
+    body = jsxs('div', {
+      className: 'flex flex-col px-2 pb-4',
+      children: rows.map(row => {
+        const claude = row.writers.claude
+        const drifted = claude === 'drifted'
+        return jsxs('div', {
+          className: 'rounded-md px-2 py-2 transition-colors hover:bg-(--chrome-action-hover)',
+          children: [
+            jsxs('div', { className: 'flex items-center gap-1.5', children: [
+              jsx(StatusDot, { tone: row.enabled ? (drifted ? 'warn' : 'good') : 'muted' }),
+              jsx('span', { className: 'min-w-0 truncate text-[0.8125rem] font-medium', children: row.name }),
+              drifted ? jsx(Badge, { variant: 'warn', size: 'xs', children: t('mcpDrifted') }) : null,
+              row.enabled ? null : jsx(Badge, { variant: 'muted', size: 'xs', children: t('mcpDisabledHermes') })
+            ] }),
+            jsxs('div', { className: 'mt-1.5 grid grid-cols-2 gap-2 pl-3', children: [
+              jsxs('span', { className: 'inline-flex items-center justify-between gap-1', children: [
+                jsx('span', { className: 'text-[0.625rem] text-muted-foreground', children: 'Hermes' }),
+                jsx(Switch, {
+                  size: 'xs',
+                  checked: row.enabled,
+                  disabled: busyName !== null,
+                  'aria-label': row.name + ' — Hermes',
+                  onCheckedChange: next => run(row.name, '/mcp/toggle', { name: row.name, enabled: next }, next ? 'mcpOn' : 'mcpOff')
+                })
+              ] }),
+              jsxs('span', { className: 'inline-flex items-center justify-between gap-1', children: [
+                jsx('span', { className: 'text-[0.625rem] text-muted-foreground', children: 'Claude' }),
+                jsxs('span', { className: 'inline-flex items-center gap-1', children: [
+                  jsx(Switch, {
+                    size: 'xs',
+                    checked: claude === 'enabled',
+                    disabled: busyName !== null,
+                    'aria-label': row.name + ' — Claude Desktop',
+                    onCheckedChange: next => {
+                      if (next && !drifted) {
+                        run(row.name, '/mcp/sync', { name: row.name }, 'mcpSynced')
+                      } else if (next) {
+                        setConfirm({
+                          title: t('mcpSyncTitle', row.name),
+                          description: t('mcpOverwriteDesc'),
+                          confirmLabel: t('mcpSync'),
+                          destructive: false,
+                          action: () => run(row.name, '/mcp/sync', { name: row.name }, 'mcpSynced')
+                        })
+                      } else if (!drifted) {
+                        run(row.name, '/mcp/remove', { name: row.name }, 'mcpRemoved')
+                      } else {
+                        setConfirm({
+                          title: t('mcpRemoveTitle', row.name),
+                          description: t('mcpRemoveForceDesc'),
+                          confirmLabel: t('mcpRemoveForce'),
+                          destructive: true,
+                          action: () => run(row.name, '/mcp/remove', { name: row.name, force: true }, 'mcpRemoved')
+                        })
+                      }
+                    }
+                  }),
+                  drifted
+                    ? jsx(Button, {
+                        variant: 'secondary', size: 'xs', className: 'h-4 px-1 text-[0.625rem]',
+                        disabled: busyName !== null,
+                        onClick: () => run(row.name, '/mcp/sync', { name: row.name }, 'mcpSynced'),
+                        children: t('mcpSync')
+                      })
+                    : null
+                ] })
+              ] })
+            ] })
+          ]
+        }, row.name)
+      })
+    })
+  }
+
+  return jsxs('div', {
+    className: 'flex h-full min-w-0 flex-col text-sm',
+    children: [
+      header,
+      jsx(ScrollArea, { className: 'min-h-0 flex-1', children: body }),
+      jsx(ConfirmDialog, {
+        open: !!confirm,
+        onClose: () => setConfirm(null),
+        onConfirm: confirm ? confirm.action : () => undefined,
+        title: confirm ? confirm.title : '',
+        description: confirm ? confirm.description : undefined,
+        confirmLabel: confirm ? confirm.confirmLabel : undefined,
+        destructive: confirm ? confirm.destructive : false
+      })
+    ]
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Pane root — Skills / MCP tabs (persisted per pane in ctx.storage)
+// ---------------------------------------------------------------------------
+
+function PaneRoot() {
+  const t = usePluginI18n(ID)
+  const [tab, setTab] = useState(() => storeGet('paneTab', 'skills'))
+  useEffect(() => storeSet('paneTab', tab), [tab])
+  return jsxs('div', {
+    className: 'flex h-full min-w-0 flex-col',
+    children: [
+      jsxs('div', {
+        className: 'flex items-center gap-1 px-3 pt-2',
+        children: ['skills', 'mcp'].map(name =>
+          jsx(
+            'button',
+            {
+              type: 'button',
+              onClick: () => setTab(name),
+              className: cn(
+                'rounded-[4px] px-2 py-0.5 text-xs transition-colors',
+                tab === name
+                  ? 'bg-primary/10 font-medium text-primary'
+                  : 'text-muted-foreground hover:bg-(--chrome-action-hover) hover:text-foreground'
+              ),
+              children: name === 'skills' ? t('skillsTab') : t('mcpTab')
+            },
+            name
+          )
+        )
+      }),
+      jsx('div', { className: 'min-h-0 flex-1', children: tab === 'mcp' ? jsx(McpPane, {}) : jsx(SkillsPane, {}) })
+    ]
+  })
+}
+
+// ---------------------------------------------------------------------------
 // Plugin entry — register pane, page, and palette command
 // ---------------------------------------------------------------------------
 
@@ -1766,6 +1985,28 @@ export default {
         invalidPreset: 'Invalid preset JSON (need version 1, skills array)',
         rowAll: 'all',
         rowNone: 'none',
+        skillsTab: 'Skills',
+        mcpTab: 'MCP',
+        mcpTitle: 'MCP servers',
+        mcpCount: n => `${n} in Hermes`,
+        mcpEmpty: 'No MCP servers in Hermes',
+        mcpEmptyDesc: 'Servers configured under mcp_servers in config.yaml appear here and can be mirrored into Claude Desktop.',
+        mcpWriterLine: (label, absent) => `${label} — ${absent ? absent : 'config found'}`,
+        mcpForeignNote: n => `${n} server(s) in Claude Desktop are not in the Hermes catalog (never touched)`,
+        mcpForeignTip: 'Foreign entries are managed outside Hermes and are left alone',
+        mcpDrifted: 'drifted',
+        mcpDisabledHermes: 'hermes off',
+        mcpSync: 'sync',
+        mcpOn: name => `${name} enabled for Hermes`,
+        mcpOff: name => `${name} disabled for Hermes`,
+        mcpSynced: name => `${name} synced to Claude Desktop`,
+        mcpRemoved: name => `${name} removed from Claude Desktop`,
+        mcpSyncTitle: name => `Overwrite the Claude Desktop copy of "${name}"?`,
+        mcpOverwriteDesc: 'Its current config differs from the Hermes catalog. The old copy is kept in a timestamped backup next to the config file.',
+        mcpRemoveTitle: name => `Remove "${name}" from Claude Desktop?`,
+        mcpRemoveForceDesc: 'Its config differs from the Hermes catalog. The old copy is kept in a timestamped backup next to the config file.',
+        mcpRemoveForce: 'Remove anyway',
+        mcpFailed: 'MCP change failed',
         rowAllTip: 'Link this skill into every tool',
         rowNoneTip: 'Unlink this skill from every tool',
         viewDrift: 'Drift',
@@ -1788,13 +2029,13 @@ export default {
         area: PANES_AREA,
         title: 'skills',
         data: { placement: 'right', width: '320px' },
-        render: () => jsx(SkillsPane, {})
+        render: () => jsx(PaneRoot, {})
       },
       {
         id: 'page',
         area: ROUTES_AREA,
         data: { path: '/skills-toggle' },
-        render: () => jsx(SkillsPane, {})
+        render: () => jsx(PaneRoot, {})
       },
       {
         id: 'open',
@@ -1805,6 +2046,20 @@ export default {
           keywords: ['skills', 'toggle', 'sync', 'claude', 'codex', 'opencode', 'grok', 'zcode'],
           detail: () => 'Enable or disable skills per tool',
           run: () => host.navigate('/skills-toggle')
+        }
+      },
+      {
+        id: 'mcp',
+        area: PALETTE_AREA,
+        data: {
+          id: 'skills-toggle.mcp',
+          label: 'MCP: toggle…',
+          keywords: ['mcp', 'servers', 'claude desktop', 'toggle'],
+          detail: () => 'Enable or disable MCP servers per app',
+          run: () => {
+            storeSet('paneTab', 'mcp')
+            host.navigate('/skills-toggle')
+          }
         }
       },
       {

@@ -37,6 +37,11 @@ export const SegmentedControl = (props) => el('div', { role: 'radiogroup' }, pro
 
 export function useQuery({ queryKey }) {
   const mode = S().mode || 'ready'
+  if (queryKey[1] === 'mcp') {
+    if (mode === 'loading') return { data: undefined, isLoading: true, isPending: true, isError: false, error: null, refetch: () => {} }
+    if (mode === 'error') return { data: undefined, isLoading: false, isPending: false, isError: true, error: new Error('x') }
+    return { data: S().mcpState, isLoading: false, isPending: false, isError: false, error: null, refetch: () => {} }
+  }
   if (queryKey[1] === 'drift') {
     if (mode === 'error') return { data: undefined, isLoading: false, isError: true, error: new Error('x') }
     return { data: S().driftList || { ok: true, drifted: [], count: 0 }, isLoading: false, isPending: false, isError: false, error: null, refetch: () => {} }
