@@ -1273,6 +1273,7 @@ class SkillsToggleCore:
                 "skill": f"{existing['category']}/{name}",
                 "action": "pushed",
                 "backup": str(backup),
+                "tool_backup": str(backup),
             }
 
     # -- v3: conflict resolution (PROPOSAL-v3 #1, D31 completion) --------------
@@ -1386,10 +1387,10 @@ class SkillsToggleCore:
         """Swap a managed symlink back to its backed-up real dir. Refuses if
         the current entry is not our symlink or the backup is missing."""
         entry = tool_dir / name
-        if not backup.is_dir():
-            raise SkillsToggleError(f"backup {backup} is missing", "backup-missing")
         if not entry.is_symlink():
             raise SkillsToggleError(f"{entry} is not a symlink — refusing to revert", "not-managed")
+        if not backup.is_dir():
+            raise SkillsToggleError(f"backup {backup} is missing", "backup-missing")
         resolved = Path(os.readlink(entry))
         base = resolved if resolved.is_absolute() else (entry.parent / resolved)
         if self.skills_root_resolved not in base.resolve().parents:
