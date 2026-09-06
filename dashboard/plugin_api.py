@@ -885,7 +885,14 @@ class SkillsToggleCore:
                 self._log(action="create-tool-dir", tool=tool_id, dir=str(tool_dir))
             if state == "broken-link":
                 link.unlink()
-            os.symlink(str(skill_dir_resolved), str(link))
+            try:
+                os.symlink(str(skill_dir_resolved), str(link))
+            except (OSError, NotImplementedError) as exc:
+                raise SkillsToggleError(
+                    f"could not create symlink at {link}: {exc} "
+                    "(on Windows, enable Developer Mode or run elevated)",
+                    "symlink-unsupported",
+                ) from exc
             if created_dir:
                 action = "created-dir+linked"
             elif state == "broken-link":

@@ -485,6 +485,20 @@ function getAutoLinkPrefs() {
   }
 }
 
+// V3-7: a pref value is `true` (all categories), '' (all), or a category
+// regex string. A skill matches when the pattern is empty/all or its
+// category matches the pattern (case-insensitive; invalid patterns never
+// match — they surface in the Setup panel as typed text, not crashes).
+function autoLinkMatches(pref, category) {
+  if (pref === true || pref === '' || pref === undefined) return true
+  if (typeof pref !== 'string') return false
+  try {
+    return new RegExp(pref, 'i').test(category)
+  } catch (_err) {
+    return false
+  }
+}
+
 function setAutoLinkPrefs(prefs) {
   storeSet('autoLink', JSON.stringify(prefs || {}))
 }
@@ -596,7 +610,7 @@ function DriftPanel({ drift, tools, onPush, onPull, onKeepBoth, busy }) {
 function SetupPanel({
   tools, onClose, onEnsureDir, onAddTool, busy, autoLink, onAutoLink, adopt, onScanAdopt, onAdoptTool,
   watchPrefs, onWatchPref, onBlueprintExport, onBlueprintFile, blueprintPreview, onBlueprintApply,
-  backups, onScanBackups, onRestoreBackup
+  backups, onScanBackups, onRestoreBackup, onAutoLinkPattern
 }) {
   const t = usePluginI18n(ID)
   const [label, setLabel] = useState('')
@@ -675,6 +689,29 @@ function SetupPanel({
             ),
             children: watchPrefs.on ? '⚡ ' + t('watchOn') : t('watchOff')
           }),
+          linkTools.map(tool =>
+            jsxs('span', { className: 'inline-flex items-center gap-1', children: [
+              jsx('button', {
+                type: 'button',
+                onClick: () => onAutoLink(tool.id),
+                className: cn(
+                  'rounded-[4px] px-1.5 py-0.5 text-[0.6875rem] transition-colors',
+                  autoLink[tool.id]
+                    ? 'bg-primary/10 font-medium text-primary'
+                    : 'text-muted-foreground hover:bg-(--chrome-action-hover) hover:text-foreground'
+                ),
+                children: autoLink[tool.id] ? '⚡ ' + tool.label : tool.label
+              }, 'al-' + tool.id),
+              autoLink[tool.id]
+                ? jsx('input', {
+                    value: typeof autoLink[tool.id] === 'string' ? autoLink[tool.id] : '',
+                    placeholder: t('autoLinkPattern'),
+                    className: 'h-5 w-28 rounded-[4px] border border-(--ui-stroke-secondary) bg-transparent px-1 text-[0.625rem]',
+                    onChange: e => onAutoLinkPattern(tool.id, e && e.target ? e.target.value : e)
+                  }, 'alp-' + tool.id)
+                : null
+            ] }, 'alw-' + tool.id)
+          ),
           watchPrefs.on
             ? ['arrivals', 'broken', 'drift'].map(cls =>
                 jsx('button', {
@@ -1140,14 +1177,18 @@ function SkillsPane() {
     if (!autoTools.length || autoLinkRef.current) return
     autoLinkRef.current = true
     const byId = new Map(skills.map(s => [s.id, s]))
+    const categoriesById = new Map(skills.map(s => [s.id, s.category]))
+    const toolWants = (toolId, skillId) => autoLinkMatches(prefs[toolId], categoriesById.get(skillId) || '')
     const valid = arrivals.filter(id => byId.has(id))
     ;(async () => {
       let changed = 0
       for (const tool of autoTools) {
+        const wanted = valid.filter(id => toolWants(tool.id, id))
+        if (!wanted.length) continue
         try {
           const res = await pluginCtx.rest('/toggle-bulk', {
             method: 'POST',
-            body: { skills: valid, tool: tool.id, enabled: true }
+            body: { skills: wanted, tool: tool.id, enabled: true }
           })
           if (res && res.ok) changed += res.changed || 0
         } catch (_err) {
@@ -1742,6 +1783,13 @@ function SkillsPane() {
     setAutoLinkState({ ...prefs })
   }
 
+  const onAutoLinkPattern = (toolId, pattern) => {
+    const prefs = getAutoLinkPrefs()
+    prefs[toolId] = pattern.trim() === '' ? true : pattern
+    setAutoLinkPrefs(prefs)
+    setAutoLinkState({ ...prefs })
+  }
+
   // per-skill all/none across every present link tool (#5)
   const onRowAll = useCallback(
     skill => {
@@ -1948,6 +1996,7 @@ function SkillsPane() {
             adopt: adopt,
             onScanAdopt: onScanAdopt,
             onAdoptTool: onAdoptTool,
+            onAutoLinkPattern: onAutoLinkPattern,
             watchPrefs: watchPrefs,
             onWatchPref: (cls, value) => {
               const next = { ...watchPrefs, [cls]: value }
@@ -2107,6 +2156,21 @@ function McpPane() {
   const rows = st && st.ok && Array.isArray(st.rows) ? st.rows : []
   const writer = st && st.ok && st.writers ? st.writers.claude : null
 
+  const writers = [
+    {
+      id: 'claude',
+      label: 'Claude',
+      syncPath: '/mcp/sync',
+      removePath: '/mcp/remove'
+    },
+    {
+      id: 'codex',
+      label: 'Codex',
+      syncPath: '/mcp/codex/sync',
+      removePath: '/mcp/codex/remove'
+    }
+  ]
+
   const run = useCallback(
     (name, path, payload, successKey) => {
       setBusyName(name + path)
@@ -2142,11 +2206,16 @@ function McpPane() {
           children: t('refresh')
         })
       ] }),
-      writer
-        ? jsxs('div', { className: 'flex items-center gap-1.5 text-xs text-muted-foreground', children: [
-            jsx(StatusDot, { tone: writer.present ? 'good' : 'muted' }),
-            jsx('span', { className: 'truncate', children: t('mcpWriterLine', writer.label, writer.present ? '' : t('dirAbsentTip')) })
-          ] })
+      st && st.ok && st.writers
+        ? jsx('div', {
+            className: 'flex flex-wrap items-center gap-2 text-xs text-muted-foreground',
+            children: Object.keys(st.writers).map(wid =>
+              jsxs('span', { className: 'inline-flex items-center gap-1', children: [
+                jsx(StatusDot, { tone: st.writers[wid].present ? 'good' : 'muted' }),
+                jsx('span', { className: 'truncate', children: t('mcpWriterLine', st.writers[wid].label, st.writers[wid].present ? '' : t('dirAbsentTip')) })
+              ] }, wid)
+            )
+          })
         : null,
       st && st.ok && st.counts.foreign > 0
         ? jsx(Tip, {
@@ -2189,7 +2258,7 @@ function McpPane() {
               drifted ? jsx(Badge, { variant: 'warn', size: 'xs', children: t('mcpDrifted') }) : null,
               row.enabled ? null : jsx(Badge, { variant: 'muted', size: 'xs', children: t('mcpDisabledHermes') })
             ] }),
-            jsxs('div', { className: 'mt-1.5 grid grid-cols-2 gap-2 pl-3', children: [
+            jsxs('div', { className: 'mt-1.5 grid grid-cols-2 gap-2 pl-3 sm:grid-cols-3', children: [
               jsxs('span', { className: 'inline-flex items-center justify-between gap-1', children: [
                 jsx('span', { className: 'text-[0.625rem] text-muted-foreground', children: 'Hermes' }),
                 jsx(Switch, {
@@ -2200,48 +2269,52 @@ function McpPane() {
                   onCheckedChange: next => run(row.name, '/mcp/toggle', { name: row.name, enabled: next }, next ? 'mcpOn' : 'mcpOff')
                 })
               ] }),
-              jsxs('span', { className: 'inline-flex items-center justify-between gap-1', children: [
-                jsx('span', { className: 'text-[0.625rem] text-muted-foreground', children: 'Claude' }),
-                jsxs('span', { className: 'inline-flex items-center gap-1', children: [
-                  jsx(Switch, {
-                    size: 'xs',
-                    checked: claude === 'enabled',
-                    disabled: busyName !== null,
-                    'aria-label': row.name + ' — Claude Desktop',
-                    onCheckedChange: next => {
-                      if (next && !drifted) {
-                        run(row.name, '/mcp/sync', { name: row.name }, 'mcpSynced')
-                      } else if (next) {
-                        setConfirm({
-                          title: t('mcpSyncTitle', row.name),
-                          description: t('mcpOverwriteDesc'),
-                          confirmLabel: t('mcpSync'),
-                          destructive: false,
-                          action: () => run(row.name, '/mcp/sync', { name: row.name }, 'mcpSynced')
-                        })
-                      } else if (!drifted) {
-                        run(row.name, '/mcp/remove', { name: row.name }, 'mcpRemoved')
-                      } else {
-                        setConfirm({
-                          title: t('mcpRemoveTitle', row.name),
-                          description: t('mcpRemoveForceDesc'),
-                          confirmLabel: t('mcpRemoveForce'),
-                          destructive: true,
-                          action: () => run(row.name, '/mcp/remove', { name: row.name, force: true }, 'mcpRemoved')
-                        })
+              writers.map(writer => {
+                const wstate = row.writers[writer.id] || 'missing'
+                const wdrifted = wstate === 'drifted'
+                return jsxs('span', { className: 'inline-flex items-center justify-between gap-1', children: [
+                  jsx('span', { className: 'text-[0.625rem] text-muted-foreground', children: writer.label }),
+                  jsxs('span', { className: 'inline-flex items-center gap-1', children: [
+                    jsx(Switch, {
+                      size: 'xs',
+                      checked: wstate === 'enabled',
+                      disabled: busyName !== null,
+                      'aria-label': row.name + ' — ' + writer.label,
+                      onCheckedChange: next => {
+                        if (next && !wdrifted) {
+                          run(row.name, writer.syncPath, { name: row.name }, 'mcpSynced')
+                        } else if (next) {
+                          setConfirm({
+                            title: t('mcpSyncTitle', row.name),
+                            description: t('mcpOverwriteDesc'),
+                            confirmLabel: t('mcpSync'),
+                            destructive: false,
+                            action: () => run(row.name, writer.syncPath, { name: row.name }, 'mcpSynced')
+                          })
+                        } else if (!wdrifted) {
+                          run(row.name, writer.removePath, { name: row.name }, 'mcpRemoved')
+                        } else {
+                          setConfirm({
+                            title: t('mcpRemoveTitle', row.name),
+                            description: t('mcpRemoveForceDesc'),
+                            confirmLabel: t('mcpRemoveForce'),
+                            destructive: true,
+                            action: () => run(row.name, writer.removePath, { name: row.name, force: true }, 'mcpRemoved')
+                          })
+                        }
                       }
-                    }
-                  }),
-                  drifted
-                    ? jsx(Button, {
-                        variant: 'secondary', size: 'xs', className: 'h-4 px-1 text-[0.625rem]',
-                        disabled: busyName !== null,
-                        onClick: () => run(row.name, '/mcp/sync', { name: row.name }, 'mcpSynced'),
-                        children: t('mcpSync')
-                      })
-                    : null
-                ] })
-              ] })
+                    }),
+                    wdrifted
+                      ? jsx(Button, {
+                          variant: 'secondary', size: 'xs', className: 'h-4 px-1 text-[0.625rem]',
+                          disabled: busyName !== null,
+                          onClick: () => run(row.name, writer.syncPath, { name: row.name }, 'mcpSynced'),
+                          children: t('mcpSync')
+                        })
+                      : null
+                  ] })
+                ] }, writer.id)
+              })
             ] })
           ]
         }, row.name)
@@ -2388,7 +2461,8 @@ export default {
         toolAdded: label => `${label} added`,
         toolAddFailed: 'Could not save the tool',
         dirCreated: label => `Created skills folder for ${label}`,
-        autoLinkDesc: 'Auto-link: new skills are linked automatically (opt-in per tool)',
+        autoLinkDesc: 'Auto-link: new skills are linked automatically (opt-in per tool; optional category regex)',
+        autoLinkPattern: 'category regex…',
         adoptScan: 'Find copies to adopt',
         adoptCounts: (a, d) => `${a} adoptable copies, ${d} drifted`,
         adoptAll: 'Adopt…',
