@@ -58,7 +58,38 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 PLUGIN_ID = "skills-toggle"
-PLUGIN_VERSION = "2.0.0"
+PLUGIN_VERSION = "2.1.0"
+
+# ---------------------------------------------------------------------------
+# Stable core API (v2) — consumed by the desktop pane's backend mount AND by
+# sibling apps that import this module directly. Guarantee:
+#   * module-level imports are STDLIB ONLY (fastapi is imported inside a
+#     try/except ImportError guard; if absent, `router` is None and everything
+#     else works identically) — no gateway/hermes imports anywhere
+#   * constructing SkillsToggleCore(home, tools, log_path) directly performs
+#     no I/O beyond the paths you hand it; all mutations are explicit calls
+#   * skill ids are "category/name" strings; tools are plain dicts; every
+#     route returns a JSON-able dict: {ok: true, ...} or {ok: false, error, code}
+# Additions are allowed; removals/renames of anything in __all__ are breaking.
+# ---------------------------------------------------------------------------
+
+__all__ = [
+    "PLUGIN_ID",
+    "PLUGIN_VERSION",
+    "DEFAULT_TOOLS",
+    "SkillsToggleError",
+    "SkillsToggleCore",
+    "ConfigEditError",
+    "hermes_home",
+    "expand_path",
+    "parse_skill_markdown",
+    "parse_disabled",
+    "set_disabled_member",
+    "load_tools_config",
+    "user_config_path",
+    "get_core",
+    "reset_core",
+]
 
 # ---------------------------------------------------------------------------
 # Tool map: defaults (overridable via <hermes_home>/skills-toggle.json)
@@ -1193,6 +1224,54 @@ class SkillsToggleCore:
                 )
         return {"ok": True, "drifted": items, "count": len(items)}
 
+    def drift_push(self, tool_id: object, name: object) -> dict:
+        """Push the Hermes-canonical copy out to a tool (D31): the tool's real
+        dir for `name` is backup-renamed (NEVER deleted) and replaced with a
+        symlink into the skills tree. Also resolves adoption conflicts, since
+        both are 'same-name real dir in a tool dir' shapes."""
+        with self._lock:
+            tool_id = self._validate_tool(tool_id)
+            if tool_id == "hermes":
+                raise SkillsToggleError("hermes already is the source of truth", "no-dir")
+            if not isinstance(name, str) or "/" in name or name in (".", "..") or not name.strip():
+                raise SkillsToggleError(f"invalid skill name {name!r}", "invalid-name")
+            skills = self._scan_skills()
+            existing = next((s for s in skills.values() if s["name"] == name), None)
+            if not existing:
+                raise SkillsToggleError(f"no skill named {name!r} in the skills tree", "unknown-skill")
+            tool_dir = self.tool_dir(tool_id)
+            if tool_dir is None or not tool_dir.is_dir():
+                raise SkillsToggleError(f"tool dir for {tool_id} is missing", "absent-dir")
+            entry = tool_dir / name
+            if entry.is_symlink():
+                return {"ok": True, "tool": tool_id, "name": name, "action": "noop", "state": "managed"}
+            if not entry.is_dir() or not (entry / "SKILL.md").is_file():
+                raise SkillsToggleError(
+                    f"{entry} is not a skill directory — refusing to touch it", "unmanaged-dir"
+                )
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            backup = tool_dir / f"{name}.skills-toggle-backup-{stamp}"
+            try:
+                os.rename(entry, backup)
+                os.symlink(str(existing["dir"].resolve()), str(entry))
+            except OSError as exc:
+                try:
+                    if not entry.exists():
+                        os.rename(backup, entry)
+                except OSError:
+                    pass  # original remains recoverable at the backup path
+                raise SkillsToggleError(f"drift push failed: {exc}", "drift-push-failed") from exc
+            self._log(action="drift-push", tool=tool_id, skill=f"{existing['category']}/{name}", backup=str(backup))
+            self.invalidate()
+            return {
+                "ok": True,
+                "tool": tool_id,
+                "name": name,
+                "skill": f"{existing['category']}/{name}",
+                "action": "pushed",
+                "backup": str(backup),
+            }
+
     # -- v2: custom tool config ------------------------------------------------
 
     def set_tool(self, tool_id: object, label: object, dir_str: object) -> dict:
@@ -1402,6 +1481,10 @@ if APIRouter is not None:
     @router.post("/config/tools")
     async def config_tools(body: dict) -> dict:
         return _call(get_core().set_tool, body.get("id"), body.get("label"), body.get("dir"))
+
+    @router.post("/drift/push")
+    async def drift_push(body: dict) -> dict:
+        return _call(get_core().drift_push, body.get("tool"), body.get("name"))
 
 
 else:  # pragma: no cover — non-gateway import (tests); keep attribute defined

@@ -166,6 +166,74 @@ class ImportDriftTests(unittest.TestCase):
         self.assertEqual(d2["count"], 0)
 
 
+class DriftPushTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.fx = Fixture()
+        self.core = self.fx.core
+        self.drifted = self.fx.codex / "architecture-diagram"
+        self.drifted.mkdir()
+        (self.drifted / "SKILL.md").write_text(
+            "---\nname: architecture-diagram\ndescription: local drifted edit\n---\nbody",
+            encoding="utf-8",
+        )
+
+    def tearDown(self) -> None:
+        self.fx.cleanup()
+
+    def test_push_backs_up_and_links_canonical(self) -> None:
+        r = self.core.drift_push("codex", "architecture-diagram")
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["action"], "pushed")
+        link = self.fx.codex / "architecture-diagram"
+        self.assertTrue(link.is_symlink())
+        self.assertEqual(
+            Path(os.readlink(link)).resolve(),
+            (self.fx.home / "skills" / "creative" / "architecture-diagram").resolve(),
+        )
+        backups = list(self.fx.codex.glob("architecture-diagram.skills-toggle-backup-*"))
+        self.assertEqual(len(backups), 1)
+        self.assertIn("local drifted edit", (backups[0] / "SKILL.md").read_text())
+        # drift is resolved
+        self.assertEqual(self.core.drift()["count"], 0)
+
+    def test_push_is_noop_when_already_managed(self) -> None:
+        self.core.drift_push("codex", "architecture-diagram")
+        r = self.core.drift_push("codex", "architecture-diagram")
+        self.assertEqual(r["action"], "noop")
+
+    def test_push_refusals(self) -> None:
+        # unknown in tree
+        r = call(self.core.drift_push, "codex", "ghost-skill")
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["code"], "unknown-skill")
+        # traversal / bad name
+        for bad in ("../..", "a/b", "", None):
+            r = call(self.core.drift_push, "codex", bad)
+            self.assertFalse(r["ok"])
+        # hermes
+        r = call(self.core.drift_push, "hermes", "architecture-diagram")
+        self.assertFalse(r["ok"])
+        # real dir without SKILL.md is untouched
+        plain = self.fx.codex / "plain-dir"
+        plain.mkdir()
+        r = call(self.core.drift_push, "codex", "plain-dir")
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["code"], "unmanaged-dir")
+        self.assertTrue(plain.is_dir() and not plain.is_symlink())
+        # symlink swap failure restores the original
+        orig = os.symlink
+        try:
+            def boom(*a, **k):
+                raise OSError("simulated")
+            os.symlink = boom
+            r = call(self.core.drift_push, "codex", "architecture-diagram")
+        finally:
+            os.symlink = orig
+        self.assertFalse(r["ok"])
+        self.assertIn("drift push failed", r["error"])
+        self.assertTrue(self.drifted.is_dir() and not self.drifted.is_symlink())
+
+
 class ConfigToolsTests(unittest.TestCase):
     def setUp(self) -> None:
         self.fx = Fixture()
