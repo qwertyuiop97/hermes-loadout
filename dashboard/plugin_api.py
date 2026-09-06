@@ -1380,6 +1380,106 @@ class SkillsToggleCore:
                 "tool_backup": str(tool_backup),
             }
 
+    # -- v3-4: undo symmetry for adoption/drift operations ---------------------
+
+    def _restore_tool_entry(self, tool_dir: Path, name: str, backup: Path) -> None:
+        """Swap a managed symlink back to its backed-up real dir. Refuses if
+        the current entry is not our symlink or the backup is missing."""
+        entry = tool_dir / name
+        if not backup.is_dir():
+            raise SkillsToggleError(f"backup {backup} is missing", "backup-missing")
+        if not entry.is_symlink():
+            raise SkillsToggleError(f"{entry} is not a symlink — refusing to revert", "not-managed")
+        resolved = Path(os.readlink(entry))
+        base = resolved if resolved.is_absolute() else (entry.parent / resolved)
+        if self.skills_root_resolved not in base.resolve().parents:
+            raise SkillsToggleError(f"{entry} does not point into the skills tree", "not-managed")
+        entry.unlink()
+        os.rename(backup, entry)
+
+    def revert_push(self, tool_id: object, name: object, tool_backup: object) -> dict:
+        """Undo drift_push: restore the backed-up tool copy and drop the
+        canonical symlink. The hermes tree is untouched by push, so nothing
+        else changes."""
+        with self._lock:
+            tool_id = self._validate_tool(tool_id)
+            if tool_id == "hermes":
+                raise SkillsToggleError("hermes has no tool entry", "no-dir")
+            if not isinstance(name, str) or not name.strip():
+                raise SkillsToggleError("invalid name", "invalid-name")
+            if not isinstance(tool_backup, str):
+                raise SkillsToggleError("missing tool_backup", "invalid-body")
+            tool_dir = self.tool_dir(tool_id)
+            if tool_dir is None:
+                raise SkillsToggleError("tool dir missing", "absent-dir")
+            self._restore_tool_entry(tool_dir, name, Path(tool_backup))
+            self._log(action="revert-push", tool=tool_id, name=name)
+            self.invalidate()
+            return {"ok": True, "tool": tool_id, "name": name, "action": "reverted"}
+
+    def revert_pull(self, tool_id: object, name: object, hermes_backup: object, tool_backup: object) -> dict:
+        """Undo conflict_pull: the external copy that became canonical is
+        removed (it still exists at the tool backup), the dotted hermes backup
+        is restored as canonical, and the tool entry returns to a real dir."""
+        with self._lock:
+            tool_id = self._validate_tool(tool_id)
+            if not isinstance(name, str) or not name.strip():
+                raise SkillsToggleError("invalid name", "invalid-name")
+            if not isinstance(hermes_backup, str) or not isinstance(tool_backup, str):
+                raise SkillsToggleError("missing backup paths", "invalid-body")
+            skills = self._scan_skills()
+            existing = next((sk for sk in skills.values() if sk["name"] == name), None)
+            if not existing:
+                raise SkillsToggleError(f"no skill named {name!r} in the tree", "unknown-skill")
+            hermes_dir = existing["dir"]
+            hb = Path(hermes_backup)
+            if not hb.is_dir():
+                raise SkillsToggleError(f"hermes backup {hb} is missing", "backup-missing")
+            tool_dir = self.tool_dir(tool_id)
+            if tool_dir is None:
+                raise SkillsToggleError("tool dir missing", "absent-dir")
+            self._restore_tool_entry(tool_dir, name, Path(tool_backup))
+            # canonical: move the pulled copy aside (dotted), restore original
+            pulled_aside = hermes_dir.parent / f".skills-toggle-reverted-{name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+            os.rename(hermes_dir, pulled_aside)
+            try:
+                os.rename(hb, hermes_dir)
+            except OSError:
+                os.rename(pulled_aside, hermes_dir)  # never leave it half-done
+                raise SkillsToggleError("could not restore hermes backup", "pull-failed")
+            self._log(action="revert-pull", tool=tool_id, name=name, pulled_aside=str(pulled_aside))
+            self.invalidate()
+            return {
+                "ok": True, "tool": tool_id, "name": name, "action": "reverted",
+                "pulled_aside": str(pulled_aside),
+            }
+
+    def revert_adopt(self, tool_id: object, name: object, tool_backup: object, skill: object) -> dict:
+        """Undo an adoption: restore the tool's real dir from its backup and
+        move the adopted tree copy aside (dotted, never deleted)."""
+        with self._lock:
+            tool_id = self._validate_tool(tool_id)
+            if not isinstance(name, str) or not name.strip():
+                raise SkillsToggleError("invalid name", "invalid-name")
+            if not isinstance(skill, str) or len(skill.split("/")) != 2:
+                raise SkillsToggleError(f"invalid adopted skill id {skill!r}", "invalid-skill")
+            tool_dir = self.tool_dir(tool_id)
+            if tool_dir is None:
+                raise SkillsToggleError("tool dir missing", "absent-dir")
+            self._restore_tool_entry(tool_dir, name, Path(tool_backup))
+            adopted = self.skills_root / skill.split("/")[0] / skill.split("/")[1]
+            if adopted.is_dir():
+                aside = adopted.parent / f".skills-toggle-reverted-{adopted.name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+                os.rename(adopted, aside)
+            else:
+                aside = None
+            self._log(action="revert-adopt", tool=tool_id, name=name, aside=str(aside) if aside else None)
+            self.invalidate()
+            return {
+                "ok": True, "tool": tool_id, "name": name, "action": "reverted",
+                "aside": str(aside) if aside else None,
+            }
+
     # -- v2: custom tool config ------------------------------------------------
 
     def set_tool(self, tool_id: object, label: object, dir_str: object) -> dict:
@@ -1980,6 +2080,24 @@ if APIRouter is not None:
     @router.post("/mcp/remove")
     async def mcp_remove(body: dict) -> dict:
         return _call(get_mcp_core().remove_from_claude, body.get("name"), body.get("force", False))
+
+    @router.post("/conflict/revert-push")
+    async def revert_push(body: dict) -> dict:
+        return _call(get_core().revert_push, body.get("tool"), body.get("name"), body.get("tool_backup"))
+
+    @router.post("/conflict/revert-pull")
+    async def revert_pull(body: dict) -> dict:
+        return _call(
+            get_core().revert_pull,
+            body.get("tool"), body.get("name"), body.get("hermes_backup"), body.get("tool_backup"),
+        )
+
+    @router.post("/conflict/revert-adopt")
+    async def revert_adopt(body: dict) -> dict:
+        return _call(
+            get_core().revert_adopt,
+            body.get("tool"), body.get("name"), body.get("tool_backup"), body.get("skill"),
+        )
 
     @router.post("/conflict/pull")
     async def conflict_pull(body: dict) -> dict:

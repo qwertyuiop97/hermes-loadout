@@ -319,6 +319,73 @@ class DriftPushTests(unittest.TestCase):
         self.assertTrue(self.drifted.is_dir() and not self.drifted.is_symlink())
 
 
+class RevertTests(unittest.TestCase):
+    """V3-4: undo symmetry for push / pull / adopt."""
+
+    def setUp(self) -> None:
+        self.fx = Fixture()
+        self.core = self.fx.core
+        self.drifted = self.fx.codex / "architecture-diagram"
+        self.drifted.mkdir()
+        (self.drifted / "SKILL.md").write_text(
+            "---\nname: architecture-diagram\ndescription: local edit\n---\nbody", encoding="utf-8"
+        )
+
+    def tearDown(self) -> None:
+        self.fx.cleanup()
+
+    def test_revert_push(self) -> None:
+        push = self.core.drift_push("codex", "architecture-diagram")
+        self.assertTrue(push["ok"])
+        r = self.core.revert_push("codex", "architecture-diagram", push["tool_backup"])
+        self.assertTrue(r["ok"])
+        entry = self.fx.codex / "architecture-diagram"
+        self.assertTrue(entry.is_dir() and not entry.is_symlink())
+        self.assertIn("local edit", (entry / "SKILL.md").read_text())
+        self.assertEqual(list(self.fx.codex.glob("*.skills-toggle-backup-*")), [])
+        # double revert refuses (entry is no longer managed)
+        r2 = call(self.core.revert_push, "codex", "architecture-diagram", push["tool_backup"])
+        self.assertFalse(r2["ok"])
+        self.assertEqual(r2["code"], "not-managed")
+
+    def test_revert_pull(self) -> None:
+        pull = self.core.conflict_pull("codex", "architecture-diagram")
+        r = self.core.revert_pull("codex", "architecture-diagram", pull["hermes_backup"], pull["tool_backup"])
+        self.assertTrue(r["ok"])
+        # canonical is the original hermes content again
+        canonical = self.fx.home / "skills" / "creative" / "architecture-diagram" / "SKILL.md"
+        self.assertIn("draw diagrams", canonical.read_text())
+        # pulled copy kept aside, dotted (scanner must skip it)
+        asides = list((self.fx.home / "skills" / "creative").glob(".skills-toggle-reverted-*"))
+        self.assertEqual(len(asides), 1)
+        self.assertEqual(self.core.state()["counts"]["skills"], 7)
+        # tool entry is the real local edit again
+        self.assertTrue(self.drifted.is_dir() and not self.drifted.is_symlink())
+
+    def test_revert_adopt(self) -> None:
+        adopt = self.core.import_apply("codex", ["architecture-diagram"])
+        self.assertEqual(adopt["adopted"], 0)  # name conflict — use keep-both instead
+        kb = self.core.conflict_keep_both("codex", "architecture-diagram")
+        r = self.core.revert_adopt("codex", "architecture-diagram", kb["tool_backup"], kb["skill"])
+        self.assertTrue(r["ok"])
+        entry = self.fx.codex / "architecture-diagram"
+        self.assertTrue(entry.is_dir() and not entry.is_symlink())
+        self.assertIn("local edit", (entry / "SKILL.md").read_text())
+        asides = list((self.fx.home / "skills" / "imported").glob(".skills-toggle-reverted-*"))
+        self.assertEqual(len(asides), 1)
+        self.assertNotIn(kb["skill"], [x["id"] for x in self.core.state()["skills"]])
+
+    def test_revert_refusals(self) -> None:
+        r = call(self.core.revert_push, "codex", "architecture-diagram", "/nonexistent/backup")
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["code"], "backup-missing")
+        # entry is a real dir — refuses to treat as managed
+        r = call(self.core.revert_pull, "codex", "architecture-diagram",
+                 str(self.fx.home / "skills" / "creative" / ".hb"), str(self.drifted))
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["code"], "not-managed")
+
+
 class ConfigToolsTests(unittest.TestCase):
     def setUp(self) -> None:
         self.fx = Fixture()
