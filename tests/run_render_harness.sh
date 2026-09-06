@@ -36,4 +36,4 @@ cp "$REPO/desktop/plugin.js" "$FRONT/staging/plugin.js"
 cp "$HERE/render_harness_body.mjs" "$FRONT/render_harness_body.mjs"
 
 cd "$FRONT"
-exec node render_harness_body.mjs
+PLUGIN_SRC="$FRONT/staging/plugin.js" STAGING_PLUGIN="$FRONT/staging/plugin.js" exec node render_harness_body.mjs
