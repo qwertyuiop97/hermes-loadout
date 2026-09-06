@@ -151,6 +151,17 @@ class RouteRoundTrip(unittest.TestCase):
         r = self.client.post(f"{base}/config/tools", json={"id": "hermes", "label": "X", "dir": "~/y"})
         self.assertFalse(r.json()["ok"])
 
+    def test_mcp_routes(self) -> None:
+        base = "/api/plugins/skills-toggle"
+        # hermes config has no mcp_servers in the fixture -> empty catalog
+        r = self.client.get(f"{base}/mcp/state")
+        body = r.json()
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["counts"]["catalog"], 0)
+        r = self.client.post(f"{base}/mcp/toggle", json={"name": "ghost", "enabled": True})
+        self.assertFalse(r.json()["ok"])
+        self.assertEqual(r.json()["code"], "unknown-server")
+
     def test_mutations_logged_over_http(self) -> None:
         self.client.post("/api/plugins/skills-toggle/toggle", json={"skill": "apple/apple-notes", "tool": "codex", "enabled": True})
         log = self.fx.tmp / "data" / "mutations.log"
