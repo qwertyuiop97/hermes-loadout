@@ -3,7 +3,7 @@
 # the backend routes live in dashboard/plugin_api.py (mounted at
 # /api/plugins/skills-toggle/ when this plugin is in `plugins.enabled`).
 name: skills-toggle
-version: 2.0.0
+version: 2.2.0
 description: >-
   Skills on/off control — Hermes desktop pane that toggles ~/.hermes/skills
   symlinks across Claude, Codex, OpenCode, Grok, ZCode, and Hermes itself
