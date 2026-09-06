@@ -118,6 +118,25 @@ function useDebounced(value, delay) {
   return debounced
 }
 
+// Container-measured layout: viewport media queries are wrong for dockable
+// panes (a 320px pane on a 1600px screen still matches `sm:`). D24:
+// narrow <360 — 2-col tool grid, no descriptions, scrollable filter chips;
+// medium 360–559 — 3-col grid; wide ≥560 — 3-col with roomier spacing.
+function usePaneLayout(ref) {
+  const [layout, setLayout] = useState('medium')
+  useEffect(() => {
+    if (typeof ResizeObserver === 'undefined') return undefined
+    const ro = new ResizeObserver(entries => {
+      const w = entries && entries[0] ? entries[0].contentRect.width : 0
+      if (!w) return
+      setLayout(w < 360 ? 'narrow' : w < 560 ? 'medium' : 'wide')
+    })
+    if (ref.current) ro.observe(ref.current)
+    return () => ro.disconnect()
+  }, [ref])
+  return layout
+}
+
 // ---------------------------------------------------------------------------
 // Tool switch cell — one (skill, tool) pair
 // ---------------------------------------------------------------------------
@@ -194,7 +213,7 @@ function ToolCell({ skill, tool, st, onToggle, onRepair, busy }) {
 // Skill row
 // ---------------------------------------------------------------------------
 
-function SkillRow({ skill, tools, view, activeTool, onToggle, onRepair, busy }) {
+function SkillRow({ skill, tools, view, activeTool, onToggle, onRepair, busy, layout }) {
   const t = usePluginI18n(ID)
   const hermes = skill.tools.hermes
   const hermesOff = hermes && hermes.state === 'disabled'
@@ -227,7 +246,7 @@ function SkillRow({ skill, tools, view, activeTool, onToggle, onRepair, busy }) 
           jsx('span', { className: 'ml-auto shrink-0 text-[0.625rem] text-muted-foreground', children: skill.category })
         ]
       }),
-      skill.description
+      layout !== 'narrow' && skill.description
         ? jsx('div', {
             className: 'mt-0.5 truncate pl-3 text-xs text-muted-foreground',
             title: skill.description,
@@ -235,7 +254,10 @@ function SkillRow({ skill, tools, view, activeTool, onToggle, onRepair, busy }) 
           })
         : null,
       jsxs('div', {
-        className: 'mt-1.5 grid grid-cols-2 gap-x-2 gap-y-1 pl-3 sm:grid-cols-3',
+        className: cn(
+          'mt-1.5 grid gap-x-2 gap-y-1 pl-3',
+          layout === 'narrow' ? 'grid-cols-2' : 'grid-cols-3'
+        ),
         children: tools.map(tool =>
           jsx(
             ToolCell,
@@ -268,7 +290,8 @@ function CategoryGroup({
   onToggle,
   onRepair,
   onBulk,
-  busy
+  busy,
+  layout
 }) {
   const t = usePluginI18n(ID)
   const bulkable = activeTool !== 'all'
@@ -323,7 +346,8 @@ function CategoryGroup({
               activeTool: activeTool,
               onToggle: onToggle,
               onRepair: onRepair,
-              busy: busy
+              busy: busy,
+              layout: layout
             },
             skill.id
           )
@@ -369,13 +393,16 @@ function HeaderBadges({ state, diff, onRepairAll, busy }) {
   })
 }
 
-function ToolFilter({ tools, active, onChange }) {
+function ToolFilter({ tools, active, onChange, layout }) {
   const t = usePluginI18n(ID)
   const options = [{ id: 'all', label: t('toolAll') }].concat(
     tools.map(tool => ({ id: tool.id, label: tool.label }))
   )
   return jsx('div', {
-    className: 'flex flex-wrap items-center gap-1',
+    className: cn(
+      'flex items-center gap-1',
+      layout === 'narrow' ? 'overflow-x-auto whitespace-nowrap pb-0.5' : 'flex-wrap'
+    ),
     role: 'tablist',
     'aria-label': 'Filter by tool',
     children: options.map(opt =>
@@ -388,6 +415,7 @@ function ToolFilter({ tools, active, onChange }) {
           onClick: () => onChange(opt.id),
           className: cn(
             'rounded-[4px] px-1.5 py-0.5 text-[0.6875rem] transition-colors',
+            layout === 'narrow' && 'shrink-0',
             active === opt.id
               ? 'bg-primary/10 font-medium text-primary'
               : 'text-muted-foreground hover:bg-(--chrome-action-hover) hover:text-foreground'
@@ -407,6 +435,8 @@ function ToolFilter({ tools, active, onChange }) {
 function SkillsPane() {
   const t = usePluginI18n(ID)
   const qc = useQueryClient()
+  const rootRef = useRef(null)
+  const layout = usePaneLayout(rootRef)
 
   const [rawQuery, setRawQuery] = useState('')
   const searchQuery = useDebounced(rawQuery, 200)
@@ -637,7 +667,7 @@ function SkillsPane() {
         containerClassName: 'w-full',
         'aria-label': t('searchPlaceholder')
       }),
-      jsx(ToolFilter, { tools: tools, active: activeTool, onChange: setActiveTool }),
+      jsx(ToolFilter, { tools: tools, active: activeTool, onChange: setActiveTool, layout: layout }),
       jsx(SegmentedControl, {
         options: [
           { id: 'all', label: t('viewAll') },
@@ -708,7 +738,8 @@ function SkillsPane() {
             onToggle: onToggle,
             onRepair: onRepair,
             onBulk: onBulk,
-            busy: busy
+            busy: busy,
+            layout: layout
           },
           group.category
         )
@@ -717,6 +748,7 @@ function SkillsPane() {
   }
 
   return jsxs('div', {
+    ref: rootRef,
     className: 'flex h-full min-w-0 flex-col text-sm',
     children: [
       header,
