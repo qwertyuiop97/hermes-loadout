@@ -89,7 +89,7 @@ class ImportDriftTests(unittest.TestCase):
         # tool dir entry is now a symlink to the tree
         link = self.fx.codex / "my-local-skill"
         self.assertTrue(link.is_symlink())
-        self.assertTrue(self.pa.same_path(Path(os.readlink(link)), dest.parent.resolve()))
+        self.assertTrue(pa.same_path(Path(os.readlink(link)), dest.parent.resolve()))
         # original preserved as a backup dir, never deleted
         backups = list(self.fx.codex.glob("my-local-skill.skills-toggle-backup-*"))
         self.assertEqual(len(backups), 1)
@@ -196,7 +196,7 @@ class ConflictResolutionTests(unittest.TestCase):
         # tool entry is a symlink to the new canonical
         link = self.fx.codex / "architecture-diagram"
         self.assertTrue(link.is_symlink())
-        self.assertTrue(self.pa.same_path(Path(os.readlink(link)), canonical.parent.resolve()))
+        self.assertTrue(pa.same_path(Path(os.readlink(link)), canonical.parent.resolve()))
         # drift resolved + scanner sees the skill under the same id
         self.assertEqual(self.core.drift()["count"], 0)
         self.assertIn("creative/architecture-diagram", [s["id"] for s in self.core.state()["skills"]])
@@ -228,7 +228,7 @@ class ConflictResolutionTests(unittest.TestCase):
         self.assertIn("draw diagrams", (self.fx.home / "skills" / "creative" / "architecture-diagram" / "SKILL.md").read_text())
         # tool now links the adopted copy
         link = self.fx.codex / "architecture-diagram"
-        self.assertTrue(self.pa.same_path(Path(os.readlink(link)), adopted.parent.resolve()))
+        self.assertTrue(pa.same_path(Path(os.readlink(link)), adopted.parent.resolve()))
         # keep-both works for plain adoption too (name not in tree)
         local = self.fx.codex / "solo-skill"
         local.mkdir()
