@@ -270,9 +270,11 @@ class DriftPushTests(unittest.TestCase):
         self.assertEqual(r["action"], "pushed")
         link = self.fx.codex / "architecture-diagram"
         self.assertTrue(link.is_symlink())
-        self.assertEqual(
-            Path(os.readlink(link)).resolve(),
-            (self.fx.home / "skills" / "creative" / "architecture-diagram").resolve(),
+        self.assertTrue(
+            pa.same_path(
+                Path(os.readlink(link)),
+                self.fx.home / "skills" / "creative" / "architecture-diagram",
+            )
         )
         backups = list(self.fx.codex.glob("architecture-diagram.skills-toggle-backup-*"))
         self.assertEqual(len(backups), 1)
