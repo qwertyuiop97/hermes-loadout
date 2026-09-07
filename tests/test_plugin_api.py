@@ -169,7 +169,7 @@ class FixtureTest(unittest.TestCase):
         self.assertEqual(r["action"], "linked")
         link = self.fx.claude / "apple-notes"
         self.assertTrue(link.is_symlink())
-        self.assertTrue(self.pa.same_path(Path(os.readlink(link)), self.fx.home / "skills" / "apple" / "apple-notes"))
+        self.assertTrue(pa.same_path(Path(os.readlink(link)), self.fx.home / "skills" / "apple" / "apple-notes"))
         # idempotent
         self.assertEqual(core.toggle("apple/apple-notes", "claude", True)["action"], "noop")
         # unlink
@@ -254,7 +254,7 @@ class FixtureTest(unittest.TestCase):
         r = call(core.toggle, "apple/apple-notes", "grok", False)
         self.assertFalse(r["ok"])
         self.assertEqual(r["code"], "foreign-link")
-        self.assertTrue(self.pa.same_path(Path(os.readlink(self.fx.grok / "apple-notes")), self.fx.foreign_target))
+        self.assertTrue(pa.same_path(Path(os.readlink(self.fx.grok / "apple-notes")), self.fx.foreign_target))
 
     def test_toggle_broken_link_repair_on_enable_and_clean_removal(self) -> None:
         core = self.fx.core
@@ -262,7 +262,7 @@ class FixtureTest(unittest.TestCase):
         r = core.toggle("apple/rem índéluxé", "grok", True)
         self.assertEqual(r["action"], "repaired-link")
         link = self.fx.grok / "rem índéluxé"
-        self.assertTrue(self.pa.same_path(Path(os.readlink(link)), self.fx.home / "skills" / "apple" / "rem índéluxé"))
+        self.assertTrue(pa.same_path(Path(os.readlink(link)), self.fx.home / "skills" / "apple" / "rem índéluxé"))
         # make it broken again, then disable → removed (target inside tree)
         link.unlink()
         os.symlink(self.fx.home / "skills" / "apple" / "vanished", link)
@@ -350,7 +350,7 @@ class FixtureTest(unittest.TestCase):
         # the inside-tree broken link got re-pointed to the real skill
         link = self.fx.codex / "orphan-skill"
         self.assertTrue(link.is_symlink())
-        self.assertTrue(self.pa.same_path(Path(os.readlink(link)), self.fx.home / "skills" / "media" / "orphan-skill"))
+        self.assertTrue(pa.same_path(Path(os.readlink(link)), self.fx.home / "skills" / "media" / "orphan-skill"))
         # the outside-tree one is reported unfixable and left alone
         reasons = {(u["name"], u["reason"]) for u in res["unfixable"]}
         self.assertTrue(any(n == "stray" for n, _ in reasons), reasons)
@@ -477,7 +477,7 @@ class FixtureTest(unittest.TestCase):
                 self.assertTrue(core.tool_dir(tool).is_dir(), tool)
             link = core.tool_dir(tool) / "architecture-diagram"
             self.assertTrue(link.is_symlink(), tool)
-            self.assertTrue(self.pa.same_path(Path(os.readlink(link)), skill_dir), tool)
+            self.assertTrue(pa.same_path(Path(os.readlink(link)), skill_dir), tool)
             # repair (healthy → noop)
             self.assertEqual(core.repair(sid, tool)["action"], "noop", tool)
             # unlink
