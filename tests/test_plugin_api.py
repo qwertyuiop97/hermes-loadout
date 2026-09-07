@@ -641,7 +641,7 @@ class PathAndConfigTests(unittest.TestCase):
                 encoding="utf-8",
             )
             tools = pa.load_tools_config(home)
-            self.assertEqual(pa.expand_path(tools["claude"]["dir"]), Path("/custom/claude"))
+            self.assertTrue(pa.same_path(pa.expand_path(tools["claude"]["dir"]), Path(os.path.abspath("/custom/claude"))))
             self.assertEqual(tools["ghost"]["label"], "Ghost")
             self.assertEqual(tools["hermes"].get("special"), "config")  # hermes stays config-backed
             self.assertEqual(tools["hermes"]["label"], "Hermes (renamed)")
