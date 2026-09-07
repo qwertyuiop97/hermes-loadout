@@ -245,6 +245,18 @@ Stable surface: `SkillsToggleCore` (`.state .detail .diff .toggle .toggle_bulk
 `PLUGIN_ID`, `PLUGIN_VERSION`. The FastAPI `router` (when fastapi is present)
 mounts the same operations at `/api/plugins/skills-toggle/…`.
 
+## v3 — what's new
+
+- **Conflict resolution completed** — the Drift view now offers three actions per same-name conflict: **Use Hermes** (backup tool copy, link canonical), **Use tool copy** (Hermes source backed up dotted inside its category, tool copy becomes canonical, tool links to it), and **Keep both** (tool copy adopted as `imported/<name>.from-<tool>`). Every path preserves both originals; failures roll back.
+- **Undo symmetry** — the 30-second undo banner now also covers adoption, drift-push, pull, and keep-both via real backend reverts (`/conflict/revert-*`), not just "find the backup yourself".
+- **Machine blueprint** — export the entire link map (every skill→tool link + the `skills.disabled` set) as one JSON file and apply it on another machine. Additive-only by owner decision: it creates missing links and Hermes-offs, never removes. Dry-run preview (counts + refusals) before apply; idempotent (re-applying a satisfied blueprint plans nothing).
+- **Backup browser + restore** — the Setup panel lists every backup the plugin ever created (config, tools-json, tool-link, hermes-copy) with one-click **Restore**; restore always backs up the current state first and only accepts paths from its own live scan.
+- **Watch mode** — opt-in native notifications (only when the app is unfocused) for new skills, broken links, and drift, with per-class toggles.
+- **Per-category auto-link** — auto-link preferences take an optional category regex (e.g. `creative|note-taking`), not just all-or-nothing.
+- **MCP: Codex writer** — the MCP tab now also mirrors the catalog into `~/.codex/config.toml` (`[mcp_servers.<name>]` tables, comment-preserving block surgery, drift/foreign guards). OpenCode is pending one schema artifact (see QUESTIONS_FOR_HERMES.md Q6).
+- **Optional agent targets** — Cursor, Windsurf, Copilot, Gemini, and Kimi skills dirs are offered as opt-in tools in Setup (they appear in the rows/filters only once their dir exists).
+- **Windows** — backend CI runs on windows-latest; path identity survives `\?\` extended paths, 8.3 short names, and case differences via the `same_path`/`is_inside` canonicalizers (exported for sibling apps).
+
 ## MCP switchboard (v2.2)
 
 The pane's **MCP** tab applies the same source-of-truth model to MCP servers:

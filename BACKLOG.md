@@ -7,10 +7,10 @@
 RULE: finishing an item means starting the next. QUESTIONS_FOR_HERMES.md for blockers without stopping.
 
 ## v3 extended backlog (owner-added, top-down after PROPOSAL-v3 items)
-(a) Dogfood the machine blueprint on the Air↔Pro setup; fix what breaks (Pro-side round-trip first; Air-side is one command there).
+(a) [x] Pro-side dogfood complete — exported 202-link blueprint (grok 64/codex 62/claude 39/opencode 37, 33 hermes-off); dry-run self-apply = empty plan (idempotent); apply = no-op. Blueprint saved at /tmp/skills-toggle-blueprint-pro.json for the Air (unreachable from this session — one 'Apply blueprint' there finishes the loop).
 (b) Extra agent targets — scan for Kimi, Cursor, Windsurf, Copilot, Gemini skills dirs; offer as opt-in tools.
-(c) Statusbar health chip + ⌘K health report — verify shipped v2 behavior, close.
-(d) Onboarding empty states (choose-your-tools panel) — verify shipped v2 behavior, close.
-(e) Per-tool auto-link reconciler — verify shipped v2 behavior, close.
+(c) [x] SHIPPED (v2) + verified — statusbar chip (broken/unlinked counts) + ⌘K 'Skills: health report'; harness-asserted.
+(d) [x] SHIPPED (v2) + verified — choose-your-tools panel, custom-tool add, auto-link prefs, adoption scanner; harness-asserted.
+(e) [x] SHIPPED (v2) + verified — per-tool opt-in reconciler, now with per-category regex patterns (v3-7).
 (f) Tag v2.2.0 + v3 releases with notes.
 (g) README refresh with the MCP tab and v3 features.
