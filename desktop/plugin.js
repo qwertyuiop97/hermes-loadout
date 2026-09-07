@@ -608,7 +608,7 @@ function DriftPanel({ drift, tools, onPush, onPull, onKeepBoth, busy }) {
 // Setup / onboarding panel — create tool dirs, add custom tools, manage
 // auto-link prefs, and find copies to adopt. Purely user-initiated (opt-in).
 function SetupPanel({
-  tools, onClose, onEnsureDir, onAddTool, busy, autoLink, onAutoLink, adopt, onScanAdopt, onAdoptTool,
+  allTools, tools, onClose, onEnsureDir, onAddTool, busy, autoLink, onAutoLink, adopt, onScanAdopt, onAdoptTool,
   watchPrefs, onWatchPref, onBlueprintExport, onBlueprintFile, blueprintPreview, onBlueprintApply,
   backups, onScanBackups, onRestoreBackup, onAutoLinkPattern
 }) {
@@ -626,7 +626,7 @@ function SetupPanel({
         jsx(Button, { variant: 'ghost', size: 'xs', onClick: onClose, children: t('close') })
       ] }),
       jsx('div', { className: 'mt-1 text-muted-foreground', children: t('setupDesc') }),
-      jsxs('div', { className: 'mt-2 flex flex-col gap-1', children: linkTools.map(tool =>
+      jsxs('div', { className: 'mt-2 flex flex-col gap-1', children: allTools.filter(tool => tool.special !== 'config').map(tool =>
         jsxs('div', { className: 'flex items-center gap-2', children: [
           jsx(StatusDot, { tone: tool.present ? 'good' : 'muted' }),
           jsx('span', { className: 'w-20 shrink-0 truncate', children: tool.label }),
@@ -976,7 +976,10 @@ function SkillsPane() {
   const state = stateQuery.data
   const diff = diffQuery.data
   const drift = driftQuery.data
-  const tools = state && state.ok ? state.tools : []
+  const allTools = state && state.ok ? state.tools : []
+  // optional targets (v3) stay in Setup but stay out of the rows/filters
+  // until their dir exists or is created
+  const tools = allTools.filter(tool => !tool.optional || tool.present)
   const toolsRef = useRef(tools)
   toolsRef.current = tools
 
@@ -1993,6 +1996,7 @@ function SkillsPane() {
             busy: busy,
             autoLink: autoLink,
             onAutoLink: onToggleAutoLink,
+            allTools: allTools,
             adopt: adopt,
             onScanAdopt: onScanAdopt,
             onAdoptTool: onAdoptTool,
