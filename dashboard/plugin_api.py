@@ -1084,11 +1084,11 @@ class SkillsToggleCore:
                 resolved = base.resolve()
                 if not resolved.exists():
                     return {"name": entry.name, "kind": "broken-link", "target": target}
-                inside = self.skills_root_resolved in resolved.parents
                 sid = next(
-                    (s for s in skills.values() if s["dir"].resolve() == resolved), None
+                    (s for s in skills.values() if same_path(s["dir"], resolved)), None
                 )
-                if inside and sid:
+                inside = is_inside(resolved, self.skills_root_resolved)
+                if sid is not None:
                     return {
                         "name": entry.name,
                         "kind": "managed",
