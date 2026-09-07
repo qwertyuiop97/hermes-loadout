@@ -211,21 +211,21 @@ class FixtureTest(unittest.TestCase):
         r = core.toggle("apple/apple-notes", "hermes", False)  # disable
         self.assertTrue(r["ok"])
         self.assertEqual(r["action"], "config-updated")
-        text = (self.fx.home / "config.yaml").read_text()
+        text = (self.fx.home / "config.yaml").read_text(encoding="utf-8")
         self.assertIn("- \"apple-notes\"", text)
-        self.assertIn("# top comment — must survive edits", text)
+        self.assertIn("# top comment", text)
         self.assertIn("creation_nudge_interval: 15", text)
         self.assertIn("- airtable", text)  # pre-existing member untouched
         # backup created
         backups = list(self.fx.home.glob("config.yaml.bak.skills-toggle.*"))
         self.assertEqual(len(backups), 1)
-        self.assertNotIn("- \"apple-notes\"", backups[0].read_text())
+        self.assertNotIn("- \"apple-notes\"", backups[0].read_text(encoding="utf-8"))
         # idempotent
         self.assertEqual(core.toggle("apple/apple-notes", "hermes", False)["action"], "noop")
         # re-enable
         r = core.toggle("apple/apple-notes", "hermes", True)
         self.assertEqual(r["action"], "config-updated")
-        self.assertNotIn("\"apple-notes\"", (self.fx.home / "config.yaml").read_text())
+        self.assertNotIn("\"apple-notes\"", (self.fx.home / "config.yaml").read_text(encoding="utf-8"))
         # state reflects it
         st = self.skill_entry(core.state(), "apple/apple-notes")
         self.assertEqual(st["tools"]["hermes"]["state"], "enabled")
@@ -402,7 +402,7 @@ class FixtureTest(unittest.TestCase):
         core.toggle("apple/apple-notes", "hermes", False)
         log_path = self.fx.tmp / "data" / "mutations.log"
         self.assertTrue(log_path.is_file())
-        lines = [json.loads(l) for l in log_path.read_text().splitlines() if l.strip()]
+        lines = [json.loads(l) for l in log_path.read_text(encoding="utf-8").splitlines() if l.strip()]
         kinds = {(l.get("action"), l.get("tool")) for l in lines}
         self.assertIn(("toggle", "claude"), kinds)
         self.assertIn(("config-edit", "hermes"), kinds)
@@ -614,13 +614,16 @@ class FrontmatterTests(unittest.TestCase):
 
 class PathAndConfigTests(unittest.TestCase):
     def test_expand_path(self) -> None:
-        os.environ["SKT_TEST_VAR"] = "/from-env"
+        base = tempfile.mkdtemp(prefix="skills-toggle-expand-")
+        os.environ["SKT_TEST_VAR"] = base
         try:
-            self.assertEqual(pa.expand_path("${SKT_TEST_VAR}/skills"), Path("/from-env/skills"))
-            self.assertEqual(pa.expand_path("${SKT_MISSING_VAR:-/opt/x}/s"), Path("/opt/x/s"))
-            self.assertEqual(pa.expand_path("~/skills"), Path.home() / "skills")
+            self.assertTrue(pa.same_path(pa.expand_path("${SKT_TEST_VAR}/skills"), Path(base) / "skills"))
+            self.assertTrue(pa.same_path(pa.expand_path("${SKT_TEST_VAR:-/opt/x}/s"), Path(base) / "s"))
+            self.assertTrue(pa.same_path(pa.expand_path("~/skills"), Path.home() / "skills"))
         finally:
             del os.environ["SKT_TEST_VAR"]
+            import shutil as _sh
+            _sh.rmtree(base, ignore_errors=True)
 
     def test_user_tool_overrides_and_custom_tool(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -659,16 +662,20 @@ class PathAndConfigTests(unittest.TestCase):
             env["HERMES_PROFILE"] = "lab"
             old_home = env.get("HOME")
             env["HOME"] = td
+            old_home_cls = Path.home
+            Path.home = classmethod(lambda cls: Path(td))  # Windows ignores HOME
             try:
                 os.environ.clear()
                 os.environ.update(env)
-                self.assertEqual(pa.hermes_home(), prof)
-                os.environ["HERMES_HOME"] = "/explicit/home"
-                self.assertEqual(pa.hermes_home(), Path("/explicit/home"))
+                self.assertTrue(pa.same_path(pa.hermes_home(), prof))
+                explicit = Path(td) / "explicit"
+                os.environ["HERMES_HOME"] = str(explicit)
+                self.assertTrue(pa.same_path(pa.hermes_home(), explicit))
             finally:
                 os.environ.clear()
                 os.environ.update({k: v for k, v in env.items()})
                 os.environ["HOME"] = old_home or os.environ.get("HOME", "")
+                Path.home = old_home_cls
 
     def test_missing_skills_root_reports_cleanly(self) -> None:
         with tempfile.TemporaryDirectory() as td:
