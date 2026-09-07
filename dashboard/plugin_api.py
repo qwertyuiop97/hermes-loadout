@@ -111,6 +111,13 @@ DEFAULT_TOOLS: dict = {
     # ZCode: user skills live in ~/.agents/skills when present (verified on the
     # reference machine), else ~/.zcode/skills. Overridable via config JSON.
     "zcode": {"label": "ZCode", "dir": "~/.agents/skills", "fallback_dir": "~/.zcode/skills"},
+    # v3 optional targets: surfaced in the Setup panel as opt-in; they only
+    # appear in the main rows/filter once their skills dir exists or is created.
+    "cursor": {"label": "Cursor", "dir": "~/.cursor/skills", "optional": True},
+    "windsurf": {"label": "Windsurf", "dir": "~/.codeium/windsurf/skills", "optional": True},
+    "copilot": {"label": "Copilot", "dir": "~/.copilot/skills", "optional": True},
+    "gemini": {"label": "Gemini", "dir": "~/.gemini/skills", "optional": True},
+    "kimi": {"label": "Kimi", "dir": "~/.kimi/skills", "optional": True},
 }
 
 DESCRIPTION_TRUNC = 160
@@ -718,6 +725,7 @@ class SkillsToggleCore:
                         "dir": str(d) if d is not None else None,
                         "present": True if d is None else d.is_dir(),  # hermes has no dir requirement
                         "special": tool.get("special"),
+                        "optional": bool(tool.get("optional")),
                     }
                 )
             payload_skills = []

@@ -525,6 +525,40 @@ class BlueprintTests(unittest.TestCase):
             self.assertEqual(r["code"], "invalid-blueprint")
 
 
+class OptionalToolsTests(unittest.TestCase):
+    """v3 extended (b): optional agent targets exist in the tool map with an
+    optional flag; the pane hides them until present."""
+
+    def setUp(self) -> None:
+        self.fx = Fixture()
+        # the Fixture injects a custom tools map — merge the optional defaults in
+        for tool_id, spec in pa.DEFAULT_TOOLS.items():
+            if spec.get("optional") and tool_id not in self.fx.core.tools:
+                self.fx.core.tools[tool_id] = dict(spec)
+                self.fx.core.tools[tool_id]["dir"] = self.fx.tmp / f"{tool_id}-skills"
+
+    def tearDown(self) -> None:
+        self.fx.cleanup()
+
+    def test_optional_tools_in_map(self) -> None:
+        core = self.fx.core
+        for tool_id in ("cursor", "windsurf", "copilot", "gemini", "kimi"):
+            self.assertIn(tool_id, core.tools)
+            self.assertTrue(core.tools[tool_id].get("optional"))
+        st = core.state()
+        flag = {t["id"]: t["optional"] for t in st["tools"]}
+        self.assertTrue(flag["cursor"] and flag["gemini"])
+        self.assertFalse(flag["claude"])
+
+    def test_optional_tool_toggle_works_when_used(self) -> None:
+        core = self.fx.core
+        cursor_dir = core.tool_dir("cursor")
+        self.assertFalse(cursor_dir.is_dir())
+        r = core.toggle("apple/apple-notes", "cursor", True)  # creates dir + links
+        self.assertEqual(r["action"], "created-dir+linked")
+        self.assertTrue((cursor_dir / "apple-notes").is_symlink())
+
+
 class ConfigToolsTests(unittest.TestCase):
     def setUp(self) -> None:
         self.fx = Fixture()
