@@ -63,6 +63,7 @@ const STATE_KEY = [ID, 'state']
 const DIFF_KEY = [ID, 'diff']
 const DRIFT_KEY = [ID, 'drift']
 const MCP_KEY = [ID, 'mcp']
+const CLIENTS_KEY = [ID, 'clients']
 const ONBOARDING_KEY = 'onboarding'
 const ONBOARDING_VERSION = 1
 const ccSectionAtom = atom('tools')
@@ -96,7 +97,7 @@ function storeSet(key, value) {
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-const PROBLEM_STATES = ['broken-link', 'foreign-link', 'unmanaged-dir']
+const PROBLEM_STATES = ['broken-link', 'foreign-link', 'unmanaged-dir', 'unavailable']
 
 function downloadText(text, filename) {
   const blob = new Blob([text], { type: 'application/json' })
@@ -116,7 +117,7 @@ function isProblemState(state) {
 
 export function presentLinkTools(state) {
   const allTools = state && state.ok && Array.isArray(state.tools) ? state.tools : []
-  return allTools.filter(tool => tool.id !== 'hermes' && tool.special !== 'config' && (!tool.optional || tool.present))
+  return allTools.filter(tool => tool.id !== 'hermes' && tool.special !== 'config' && (!tool.optional || tool.present || tool.configured))
 }
 
 export function countEnabledByTool(state) {
@@ -253,7 +254,7 @@ function ToolCell({ skill, tool, st, onToggle, onRepair, busy }) {
   const state = st ? st.state : 'missing'
   const isHermes = tool.special === 'config'
   const checked = state === 'enabled'
-  const locked = state === 'foreign-link' || state === 'unmanaged-dir'
+  const locked = !!tool.error || state === 'unavailable' || state === 'foreign-link' || state === 'unmanaged-dir'
   const broken = state === 'broken-link'
 
   let tip = ''
@@ -286,7 +287,7 @@ function ToolCell({ skill, tool, st, onToggle, onRepair, busy }) {
         size: 'xs',
         checked: checked,
         disabled: locked || busy,
-        'aria-label': `${skill.name} — ${tool.label}`,
+        'aria-label': `${skill.name} — ${tool.label}${tool.scope === 'project' ? ' (' + tool.project_root + ')' : ''}`,
         onCheckedChange: next => onToggle(skill, tool, next)
       }),
       broken
@@ -865,7 +866,7 @@ function CompactSummaryPane() {
       })
     })
   } else if (state && state.ok && !state.skills_root_exists) {
-    body = jsx(EmptyState, { title: t('noRootTitle'), description: t('noRootDesc') })
+    body = jsx(EmptyState, { title: t('noRootTitle'), description: t('noRootDesc'), children: jsx(Button, { variant: 'secondary', size: 'xs', onClick: () => stateQuery.refetch(), children: t('retry') }) })
   } else {
     const total = state && state.ok && state.counts ? state.counts.skills || 0 : 0
     body = jsxs('div', {
@@ -1143,7 +1144,7 @@ function SetupPanel({
         jsx(Button, { variant: 'ghost', size: 'xs', onClick: onClose, children: t('close') })
       ] }),
       jsx('div', { className: 'mt-1 text-muted-foreground', children: t('setupDesc') }),
-      jsxs('div', { className: 'mt-2 flex flex-col gap-1', children: allTools.filter(tool => tool.special !== 'config').map(tool =>
+      jsxs('div', { className: 'mt-2 flex flex-col gap-1', children: allTools.filter(tool => tool.special !== 'config' && (!tool.optional || tool.present || tool.configured)).map(tool =>
         jsxs('div', { className: 'flex items-center gap-2', children: [
           jsx(StatusDot, { tone: tool.present ? 'good' : 'muted' }),
           jsx('span', { className: 'w-20 shrink-0 truncate', children: tool.label }),
@@ -1152,7 +1153,7 @@ function SetupPanel({
             ? jsx(Badge, { variant: 'success', size: 'xs', children: t('present') })
             : jsx(Button, {
                 variant: 'secondary', size: 'xs', disabled: busy,
-                onClick: () => onEnsureDir(tool), children: t('createDir')
+                onClick: () => !tool.error && onEnsureDir(tool), children: tool.error || t('createDir')
               })
         ] }, tool.id)
       ) }),
@@ -1497,7 +1498,7 @@ function SkillsPane({ section = 'tools' }) {
   const allTools = state && state.ok ? state.tools : []
   // optional targets (v3) stay in Setup but stay out of the rows/filters
   // until their dir exists or is created
-  const tools = allTools.filter(tool => !tool.optional || tool.present)
+  const tools = allTools.filter(tool => !tool.optional || tool.present || tool.configured)
   const toolsRef = useRef(tools)
   toolsRef.current = tools
 
@@ -2365,7 +2366,7 @@ function SkillsPane({ section = 'tools' }) {
       busy: busy
     })
   } else if (state && state.ok && !state.skills_root_exists) {
-    body = jsx(EmptyState, { title: t('noRootTitle'), description: t('noRootDesc') })
+    body = jsx(EmptyState, { title: t('noRootTitle'), description: t('noRootDesc'), children: jsx(Button, { variant: 'secondary', size: 'xs', onClick: () => stateQuery.refetch(), children: t('retry') }) })
   } else if (skills.length === 0) {
     body = jsx(EmptyState, { title: t('emptyTitle'), description: t('emptyDesc') })
   } else if (filtered.length === 0) {
@@ -2784,7 +2785,145 @@ function McpPane() {
 // Full workspace shell — shared by openWorkspace and the route fallback.
 // ---------------------------------------------------------------------------
 
-function ToolCard({ tool, counts, busy, onManage, onEnableAll, onDisableAll }) {
+// Catalog setup is configuration-only. Keep the approved selection immutable;
+// late preview responses must not authorize a different selection or reopen UI.
+function AddToolLibrary({ onClose }) {
+  const t = usePluginI18n(ID)
+  const qc = useQueryClient()
+  const [search, setSearch] = useState('')
+  const [selection, setSelection] = useState(null)
+  const [review, setReview] = useState(null)
+  const [pending, setPending] = useState(null)
+  const [error, setError] = useState('')
+  const epoch = useRef(0)
+  const alive = useRef(true)
+  const heading = useRef(null)
+  useEffect(() => {
+    alive.current = true
+    if (heading.current && heading.current.focus) heading.current.focus()
+    return () => { alive.current = false; epoch.current += 1 }
+  }, [])
+  const query = useQuery({ queryKey: CLIENTS_KEY, queryFn: () => pluginCtx.rest('/clients'), staleTime: 0, retry: 1 })
+  const catalog = query.data
+  const valid = catalog && catalog.ok === true && catalog.catalog_version === 1 && catalog.config_schema_version === 2 && Array.isArray(catalog.clients)
+  const change = next => {
+    epoch.current += 1
+    setSelection(next); setReview(null); setError(''); setPending(null)
+  }
+  const close = () => { if (pending !== 'save') { epoch.current += 1; onClose() } }
+  const request = async save => {
+    if (!valid || !selection || pending || (save && !review)) return
+    const ticket = ++epoch.current
+    const approved = save ? review.selection : { ...selection }
+    setError(''); setPending(save ? 'save' : 'preview')
+    try {
+      const result = await pluginCtx.rest(save ? '/targets/activate' : '/targets/preview', {
+        method: 'POST', body: save ? { selection: approved, preview_id: review.preview_id } : { selection: approved }
+      })
+      if (!alive.current || ticket !== epoch.current) return
+      if (!result || result.ok !== true) throw new Error(result && result.error ? result.error : t('targetRequestFailed'))
+      if (save) {
+        for (const key of [STATE_KEY, DIFF_KEY, CLIENTS_KEY]) qc.invalidateQueries({ queryKey: key })
+        host.notify({ kind: 'success', message: t('targetSaved') })
+        onClose()
+      } else {
+        if (typeof result.preview_id !== 'string' || !result.target || typeof result.target.dir !== 'string' || result.creates_skill_directory !== false) throw new Error(t('catalogRestart'))
+        setReview({ ...result, selection: approved })
+      }
+    } catch (err) {
+      if (alive.current && ticket === epoch.current) { setError(err.message || t('targetRequestFailed')); setReview(null) }
+    } finally {
+      if (alive.current && ticket === epoch.current) setPending(null)
+    }
+  }
+  const field = (name, label, value, placeholder = '') => jsxs('label', {
+    className: 'flex min-w-0 flex-col gap-1 text-xs', children: [
+      jsx('span', { children: label }),
+      jsx('input', { type: 'text', 'aria-label': label, value: value || '', placeholder,
+        disabled: pending === 'save', autoComplete: 'off', spellCheck: false,
+        className: 'w-full min-w-0 rounded-md border border-(--ui-stroke-secondary) bg-background px-2 py-2 text-sm',
+        onChange: event => change({ ...selection, [name]: event.target.value }) })
+    ]
+  }, name)
+  const custom = selection && selection.client_id === 'custom'
+  const client = valid && selection ? catalog.clients.find(item => item.id === selection.client_id) : null
+  const scopes = custom ? ['custom', 'global', 'project'] : client ? client.scopes : []
+  const choose = item => change(item.verified
+    ? { client_id: item.id, scope: item.scopes.includes('global') ? 'global' : 'project' }
+    : { client_id: 'custom', scope: 'custom', id: item.id || '', label: item.label || '', dir: '' })
+  const filtered = valid ? catalog.clients.filter(item => item.id !== 'hermes' && `${item.label} ${item.id}`.toLowerCase().includes(search.trim().toLowerCase())) : []
+  let body
+  if (query.isPending) {
+    body = jsx('p', { role: 'status', children: t('catalogLoading') })
+  } else if (query.isError || !valid) {
+    body = jsx(ErrorState, { title: t('catalogUnavailable'), description: catalog && catalog.error ? catalog.error : t('catalogRestart'),
+      children: jsx(Button, { variant: 'secondary', size: 'sm', onClick: () => { change(null); query.refetch() }, children: t('retry') }) })
+  } else if (!selection) {
+    body = jsxs('div', { className: 'flex flex-col gap-4', children: [
+      jsx('p', { className: 'text-xs text-muted-foreground', children: t('catalogIntro') }),
+      jsx('input', { type: 'search', 'aria-label': t('searchClients'), placeholder: t('searchClients'), value: search,
+        className: 'min-w-0 rounded-md border border-(--ui-stroke-secondary) bg-background p-2', onChange: event => setSearch(event.target.value) }),
+      ['detected', 'available', 'custom'].map(group => {
+        const entries = filtered.filter(item => group === 'custom' ? !item.verified : item.verified && !!item.detected === (group === 'detected'))
+        return jsxs('section', { 'data-client-group': group, className: 'flex flex-col gap-2', children: [
+          jsx('h3', { className: 'font-medium', children: t(group === 'detected' ? 'catalogDetected' : group === 'available' ? 'catalogAvailable' : 'catalogCustom') }),
+          entries.map(item => jsxs('div', { 'data-client-option': item.id, className: 'flex flex-wrap items-center gap-2 rounded-md border border-(--ui-stroke-secondary) p-2', children: [
+            jsx(Button, { variant: 'secondary', size: 'sm', onClick: () => choose(item), children: item.label }),
+            jsx('span', { className: 'text-xs text-muted-foreground', children: !item.verified ? t('catalogUnverified') : item.capabilities && item.capabilities.mcp_writer ? t('catalogSkillsMcp') : t('catalogSkillsOnly') })
+          ] }, item.id)),
+          entries.length ? null : jsx('p', { className: 'text-xs text-muted-foreground', children: t('catalogNoMatches') }),
+          group === 'custom' ? jsx(Button, { variant: 'secondary', size: 'sm', onClick: () => choose({ verified: false }), children: t('customTarget') }) : null
+        ] }, group)
+      })
+    ] })
+  } else {
+    body = jsxs('div', { className: 'flex max-w-2xl flex-col gap-3', children: [
+      jsx('h3', { className: 'font-medium', children: custom ? t('customTarget') : client ? client.label : t('catalogUnavailable') }),
+      jsx('p', { className: 'text-xs text-muted-foreground', children: t('targetScopeHelp') }),
+      jsxs('label', { className: 'flex flex-col gap-1 text-xs', children: [
+        t('targetScope'), jsx('select', { 'aria-label': t('targetScope'), value: selection.scope, disabled: pending === 'save',
+          className: 'rounded-md border border-(--ui-stroke-secondary) bg-background p-2 text-sm',
+          onChange: event => change({ ...selection, scope: event.target.value }),
+          children: scopes.map(scope => jsx('option', { value: scope, children: t(scope === 'global' ? 'globalScope' : scope === 'project' ? 'projectScope' : 'customScope') }, scope)) })
+      ] }),
+      selection.scope === 'project' ? field('project_root', t('projectFolder'), selection.project_root) : null,
+      custom ? field('label', t('targetLabel'), selection.label) : null,
+      custom ? field('id', t('targetId'), selection.id) : null,
+      custom ? field('dir', t('targetFolder'), selection.dir) : null,
+      jsx('p', { className: 'text-xs text-muted-foreground', children: t('targetSaveHelp') }),
+      review ? jsxs('section', { 'data-target-review': 'true', 'aria-live': 'polite', className: 'flex flex-col gap-2 rounded-md border border-(--ui-stroke-secondary) p-3 text-xs', children: [
+        jsx('h4', { className: 'font-medium', children: t('reviewTarget') }),
+        jsx('div', { className: 'break-words', children: `${t('targetScope')}: ${review.target.scope}` }),
+        jsx('code', { className: 'whitespace-normal break-all', children: review.target.dir }),
+        jsx('p', { className: 'break-words', children: review.notice }),
+        jsx('p', { className: 'break-words text-muted-foreground', children: `${t('targetConfigFile')}: ${review.writes_config}` })
+      ] }) : null,
+      error ? jsx('p', { role: 'alert', className: 'break-words text-xs text-(--ui-text-danger)', children: error }) : null,
+      pending ? jsx('p', { role: 'status', children: t(pending === 'save' ? 'savingTarget' : 'reviewingTarget') }) : null,
+      jsxs('div', { className: 'flex flex-wrap gap-2', children: [
+        jsx(Button, { variant: 'secondary', size: 'sm', disabled: pending === 'save', onClick: () => change(null), children: t('backToLibrary') }),
+        jsx(Button, { variant: 'primary', size: 'sm', disabled: !!pending || (selection.scope === 'project' && !selection.project_root),
+          onClick: () => request(!!review), children: t(review ? 'saveTarget' : 'reviewTarget') })
+      ] })
+    ] })
+  }
+  return jsxs('div', { 'data-add-tool-library': 'true', className: 'flex h-full min-w-0 flex-col overflow-y-auto p-4 text-sm',
+    onKeyDown: event => { if (event.key === 'Escape' && pending !== 'save') { event.preventDefault(); close() } }, children: [
+      jsxs('div', { className: 'mb-4 flex flex-wrap items-center gap-2', children: [
+        jsx('h2', { ref: heading, tabIndex: -1, className: 'flex-1 font-medium', children: t('addToolAction') }),
+        jsx(Button, { variant: 'secondary', size: 'sm', disabled: pending === 'save', onClick: close, children: t('backToTools') })
+      ] }), body
+    ] })
+}
+
+function TargetScopeLabel({ tool }) {
+  const t = usePluginI18n(ID)
+  if (!tool.scope) return null
+  return jsx('div', { 'data-target-scope': tool.scope, className: 'break-words text-xs text-muted-foreground',
+    children: tool.scope === 'project' ? `${t('projectScope')}: ${tool.project_root || ''}` : t(tool.scope === 'global' ? 'globalScope' : tool.scope === 'canonical' ? 'canonicalScope' : 'customScope') })
+}
+
+function ToolCard({ tool, counts, busy, onManage, onEnableAll, onDisableAll, onReview }) {
   const t = usePluginI18n(ID)
   return jsxs('section', {
     'data-tool-card': tool.id,
@@ -2793,11 +2932,12 @@ function ToolCard({ tool, counts, busy, onManage, onEnableAll, onDisableAll }) {
       jsxs('div', {
         className: 'flex min-w-0 items-start gap-2',
         children: [
-          jsx(StatusDot, { tone: counts.problem ? 'warn' : counts.enabled ? 'good' : 'muted' }),
+          jsx(StatusDot, { tone: tool.error || counts.problem ? 'warn' : counts.enabled ? 'good' : 'muted' }),
           jsxs('div', {
             className: 'min-w-0 flex-1',
             children: [
               jsx('h3', { className: 'font-medium', children: tool.label }),
+              jsx(TargetScopeLabel, { tool }),
               jsx('div', {
                 'data-tool-path': tool.id,
                 className: 'whitespace-normal break-words text-xs text-muted-foreground',
@@ -2811,6 +2951,7 @@ function ToolCard({ tool, counts, busy, onManage, onEnableAll, onDisableAll }) {
           })
         ]
       }),
+      tool.error ? jsxs('div', { className: 'text-xs', children: [jsx('p', { role: 'alert', className: 'break-words text-(--ui-text-warning)', children: tool.error }), jsx(Button, { variant: 'secondary', size: 'xs', onClick: onReview, children: t('reviewTarget') })] }) : null,
       jsxs('div', {
         className: 'grid grid-cols-3 gap-2 text-xs',
         children: [
@@ -2838,11 +2979,11 @@ function ToolCard({ tool, counts, busy, onManage, onEnableAll, onDisableAll }) {
         className: 'flex flex-wrap gap-2',
         children: [
           jsx(Button, {
-            variant: 'secondary', size: 'xs', disabled: busy || counts.total === 0,
+            variant: 'secondary', size: 'xs', disabled: busy || !!tool.error || counts.total === 0,
             onClick: onEnableAll, children: t('enableAll')
           }),
           jsx(Button, {
-            variant: 'secondary', size: 'xs', disabled: busy || counts.total === 0,
+            variant: 'secondary', size: 'xs', disabled: busy || !!tool.error || counts.total === 0,
             onClick: onDisableAll, children: t('disableAll')
           })
         ]
@@ -2959,10 +3100,12 @@ function SingleToolView({ tool, skills, busy, onBack, onToggle, onBulk }) {
           jsx('h2', { className: 'font-medium', children: tool.label }),
           jsx(Badge, { variant: 'outline', size: 'xs', children: t('skillsCount', skills.length) }),
           jsxs('span', { className: 'ml-auto flex gap-1', children: [
-            jsx(Button, { variant: 'secondary', size: 'xs', disabled: busy || skills.length === 0, onClick: () => onBulk(skills.map(skill => skill.id), true, t('scopeAll')), children: t('enableAll') }),
-            jsx(Button, { variant: 'secondary', size: 'xs', disabled: busy || skills.length === 0, onClick: () => onBulk(skills.map(skill => skill.id), false, t('scopeAll')), children: t('disableAll') })
+            jsx(Button, { variant: 'secondary', size: 'xs', disabled: busy || !!tool.error || skills.length === 0, onClick: () => onBulk(skills.map(skill => skill.id), true, t('scopeAll')), children: t('enableAll') }),
+            jsx(Button, { variant: 'secondary', size: 'xs', disabled: busy || !!tool.error || skills.length === 0, onClick: () => onBulk(skills.map(skill => skill.id), false, t('scopeAll')), children: t('disableAll') })
           ] })
         ] }),
+        jsx(TargetScopeLabel, { tool }),
+        tool.error ? jsx('p', { role: 'alert', className: 'break-words text-xs text-(--ui-text-warning)', children: tool.error }) : null,
         jsx(SearchField, { placeholder: t('searchPlaceholder'), value: rawQuery, onChange: setRawQuery, containerClassName: 'w-full', 'aria-label': t('searchPlaceholder') }),
         jsxs('div', { className: 'flex flex-wrap items-center gap-2', children: [
           jsx('label', { className: 'text-xs text-muted-foreground', children: t('categoryFilter') }),
@@ -2993,14 +3136,14 @@ function SingleToolView({ tool, skills, busy, onBack, onToggle, onBulk }) {
                 jsx('button', { type: 'button', 'aria-expanded': !isCollapsed, onClick: () => toggleCollapsed(group.category), className: 'font-medium', children: `${isCollapsed ? '▸' : '▾'} ${group.category}` }),
                 jsx(Badge, { variant: 'outline', size: 'xs', children: String(group.skills.length) }),
                 jsxs('span', { className: 'ml-auto flex gap-1', children: [
-                  jsx(Button, { variant: 'ghost', size: 'xs', disabled: busy, onClick: () => onBulk(ids, true, t('scopeCategory', group.category)), children: t('enableCategory') }),
-                  jsx(Button, { variant: 'ghost', size: 'xs', disabled: busy, onClick: () => onBulk(ids, false, t('scopeCategory', group.category)), children: t('disableCategory') })
+                  jsx(Button, { variant: 'ghost', size: 'xs', disabled: busy || !!tool.error, onClick: () => onBulk(ids, true, t('scopeCategory', group.category)), children: t('enableCategory') }),
+                  jsx(Button, { variant: 'ghost', size: 'xs', disabled: busy || !!tool.error, onClick: () => onBulk(ids, false, t('scopeCategory', group.category)), children: t('disableCategory') })
                 ] })
               ] }),
               isCollapsed ? null : jsx('div', { children: group.skills.map(skill => {
                 const entry = skill.tools && skill.tools[tool.id]
                 const stateName = entry ? entry.state : 'missing'
-                const locked = stateName === 'foreign-link' || stateName === 'unmanaged-dir'
+                const locked = !!tool.error || stateName === 'unavailable' || stateName === 'foreign-link' || stateName === 'unmanaged-dir'
                 return jsxs('div', { 'data-single-tool-skill': skill.id, className: 'flex items-center gap-2 rounded-md px-2 py-2 hover:bg-(--chrome-action-hover)', children: [
                   jsx('input', { type: 'checkbox', checked: selected.has(skill.id), onChange: () => toggleSelected(skill.id), 'aria-label': t('selectSkill', skill.name) }),
                   jsx(StatusDot, { tone: isProblemState(stateName) ? 'warn' : stateName === 'enabled' ? 'good' : 'muted' }),
@@ -3009,7 +3152,7 @@ function SingleToolView({ tool, skills, busy, onBack, onToggle, onBulk }) {
                     skill.description ? jsx('span', { className: 'block truncate text-xs text-muted-foreground', children: skill.description }) : null
                   ] }),
                   jsx('span', { className: 'text-xs text-muted-foreground', children: stateName }),
-                  jsx(Switch, { size: 'xs', checked: stateName === 'enabled', disabled: busy || locked, 'aria-label': `${skill.name} — ${tool.label}`, onCheckedChange: enabled => onToggle(skill, enabled) })
+                  jsx(Switch, { size: 'xs', checked: stateName === 'enabled', disabled: busy || !!tool.error || locked, 'aria-label': `${skill.name} — ${tool.label}${tool.scope === 'project' ? ' (' + tool.project_root + ')' : ''}`, onCheckedChange: enabled => onToggle(skill, enabled) })
                 ] }, skill.id)
               }) })
             ] }, group.category)
@@ -3017,8 +3160,8 @@ function SingleToolView({ tool, skills, busy, onBack, onToggle, onBulk }) {
         : jsx(EmptyState, { title: t('noMatchTitle'), description: t('noMatchDesc') }) }),
       selectedIds.length ? jsxs('div', { 'data-selection-bar': 'sticky', className: 'sticky bottom-0 flex items-center gap-2 border-t border-(--ui-stroke-secondary) bg-background p-3', children: [
         jsx('span', { className: 'text-xs font-medium', children: t('selectedCount', selectedIds.length) }),
-        jsx(Button, { variant: 'secondary', size: 'xs', disabled: busy, onClick: () => onBulk(selectedIds, true, t('scopeSelected', selectedIds.length)), children: t('enableSelected') }),
-        jsx(Button, { variant: 'secondary', size: 'xs', disabled: busy, onClick: () => onBulk(selectedIds, false, t('scopeSelected', selectedIds.length)), children: t('disableSelected') })
+        jsx(Button, { variant: 'secondary', size: 'xs', disabled: busy || !!tool.error, onClick: () => onBulk(selectedIds, true, t('scopeSelected', selectedIds.length)), children: t('enableSelected') }),
+        jsx(Button, { variant: 'secondary', size: 'xs', disabled: busy || !!tool.error, onClick: () => onBulk(selectedIds, false, t('scopeSelected', selectedIds.length)), children: t('disableSelected') })
       ] }) : null
     ]
   })
@@ -3089,7 +3232,7 @@ function ExpertMatrix({ skills, tools, busy, onToggle }) {
                 scope: 'col',
                 'data-matrix-tool': tool.id,
                 className: 'sticky top-0 z-20 min-w-[112px] border-b border-(--ui-stroke-secondary) bg-background px-2 py-2 text-center font-medium',
-                children: tool.label
+                children: jsxs('span', { children: [tool.label, jsx(TargetScopeLabel, { tool })] })
               }, tool.id))
             ] }) }),
             groups.map(group => {
@@ -3124,14 +3267,14 @@ function ExpertMatrix({ skills, tools, busy, onToggle }) {
                     tools.map(tool => {
                       const entry = skill.tools && skill.tools[tool.id]
                       const stateName = entry ? entry.state : 'missing'
-                      const locked = stateName === 'foreign-link' || stateName === 'unmanaged-dir'
+                      const locked = !!tool.error || stateName === 'unavailable' || stateName === 'foreign-link' || stateName === 'unmanaged-dir'
                       return jsx('td', {
                         className: 'border-b border-(--ui-stroke-secondary) px-2 py-2 text-center',
                         children: jsx(Switch, {
                           size: 'xs',
                           checked: stateName === 'enabled',
                           disabled: busy || locked,
-                          'aria-label': `${skill.name} — ${tool.label}`,
+                          'aria-label': `${skill.name} — ${tool.label}${tool.scope === 'project' ? ' (' + tool.project_root + ')' : ''}`,
                           onCheckedChange: enabled => onToggle(skill, tool, enabled)
                         })
                       }, tool.id)
@@ -3151,7 +3294,8 @@ function ToolsOverview({ layout }) {
   const qc = useQueryClient()
   const onboarding = storeGet(ONBOARDING_KEY, { version: ONBOARDING_VERSION, complete: false })
   const onboardingComplete = onboarding && onboarding.version === ONBOARDING_VERSION && onboarding.complete === true
-  const [selectedTool, setSelectedTool] = useState(null)
+  const [selectedToolId, setSelectedTool] = useState(null)
+  const [addingTarget, setAddingTarget] = useState(false)
   const [viewMode, setViewMode] = useState('cards')
   const [confirm, setConfirm] = useState(null)
   const [undo, setUndo] = useState(null)
@@ -3193,6 +3337,7 @@ function ToolsOverview({ layout }) {
     : null
   const tools = [hermes || { id: 'hermes', label: 'Hermes', special: 'config' }, ...linkTools]
   const problemTotals = summaryProblemTotals(diffQuery.data, driftQuery.data)
+  const selectedTool = state && state.ok && !stateQuery.isError ? tools.find(tool => tool.id === selectedToolId) : null
   const overviewProblems = problemTotals.broken + problemTotals.foreign + problemTotals.unmanaged
 
   useEffect(() => {
@@ -3366,6 +3511,8 @@ function ToolsOverview({ layout }) {
     destructive: confirm ? confirm.destructive : false
   })
 
+  if (addingTarget) return jsx(AddToolLibrary, { onClose: () => setAddingTarget(false) })
+
   if (selectedTool) {
     return jsxs('div', {
       'data-single-tool-layout': 'true',
@@ -3389,13 +3536,13 @@ function ToolsOverview({ layout }) {
   let body
   if (stateQuery.isPending || (stateQuery.isLoading && !state)) {
     body = jsx('div', { className: 'grid grid-cols-1 gap-3 p-4', children: [0, 1, 2].map(index => jsx(Skeleton, { className: 'h-40 w-full' }, `tool-card-${index}`)) })
-  } else if (stateQuery.isError) {
+  } else if (stateQuery.isError || (state && state.ok === false)) {
     body = jsx(ErrorState, {
-      title: t('errorTitle'), description: t('errorDesc'),
+      title: t('errorTitle'), description: state && state.error ? state.error : t('errorDesc'),
       children: jsx(Button, { variant: 'secondary', size: 'xs', onClick: () => stateQuery.refetch(), children: t('retry') })
     })
   } else if (state && state.ok && !state.skills_root_exists) {
-    body = jsx(EmptyState, { title: t('noRootTitle'), description: t('noRootDesc') })
+    body = jsx(EmptyState, { title: t('noRootTitle'), description: t('noRootDesc'), children: jsx(Button, { variant: 'secondary', size: 'xs', onClick: () => stateQuery.refetch(), children: t('retry') }) })
   } else if (layout === 'wide' && viewMode === 'matrix') {
     body = jsx(ExpertMatrix, {
       skills: skills,
@@ -3410,7 +3557,8 @@ function ToolsOverview({ layout }) {
         tool: tool,
         counts: countsFor(tool.id),
         busy: busy,
-        onManage: () => setSelectedTool(tool),
+        onManage: () => setSelectedTool(tool.id),
+        onReview: () => setAddingTarget(true),
         onEnableAll: () => openBulkPlan(tool, true, skills.map(skill => skill.id), t('scopeAll')),
         onDisableAll: () => openBulkPlan(tool, false, skills.map(skill => skill.id), t('scopeAll'))
       }, tool.id))
@@ -3435,7 +3583,7 @@ function ToolsOverview({ layout }) {
               })
             : null,
           jsx(Button, { variant: 'secondary', size: 'xs', className: layout === 'wide' ? undefined : 'ml-auto', onClick: () => ccSectionAtom.set('onboarding'), children: t('scanAndImport') }),
-          jsx(Button, { variant: 'secondary', size: 'xs', onClick: () => ccSectionAtom.set('advanced'), children: t('addToolAction') })
+          jsx(Button, { variant: 'secondary', size: 'xs', disabled: busy, onClick: () => setAddingTarget(true), children: t('addToolAction') })
         ]
       }),
       !onboardingComplete
@@ -3577,7 +3725,7 @@ function FirstRunWizard() {
     ? state.tools.filter(tool => tool.id !== 'hermes' && tool.special !== 'config').map(tool => tool.id)
     : []
   const detectedTools = state && state.ok && Array.isArray(state.tools)
-    ? state.tools.filter(tool => tool.id !== 'hermes' && tool.special !== 'config' && tool.present)
+    ? state.tools.filter(tool => tool.id !== 'hermes' && tool.special !== 'config' && tool.present && !tool.error)
     : []
 
   useEffect(() => {
@@ -3734,12 +3882,13 @@ function FirstRunWizard() {
     body = jsxs('div', { className: 'flex max-w-2xl flex-col gap-3', children: [
       jsx('h2', { className: 'text-lg font-medium', children: t('wizardSourcesTitle') }),
       jsx('p', { className: 'text-sm text-muted-foreground', children: t('wizardSourcesDesc') }),
+      jsx('p', { className: 'text-xs text-muted-foreground', children: t('targetScopeHelp') }),
       stateQuery.isPending ? jsx(Skeleton, { className: 'h-24 w-full' }) : detectedTools.map(tool => jsxs('label', {
         'data-detected-tool': tool.id,
         className: 'flex items-start gap-2 rounded-md border border-(--ui-stroke-secondary) p-2',
         children: [
           jsx('input', { type: 'checkbox', checked: selectedTools.has(tool.id), onChange: () => toggleTool(tool.id), 'aria-label': t('wizardSelectTool', tool.label) }),
-          jsxs('span', { children: [jsx('span', { className: 'block font-medium', children: tool.label }), jsx('span', { className: 'block break-words text-xs text-muted-foreground', children: tool.dir })] })
+          jsxs('span', { children: [jsx('span', { className: 'block font-medium', children: tool.label }), jsx(TargetScopeLabel, { tool }), jsx('span', { className: 'block break-words text-xs text-muted-foreground', children: tool.dir })] })
         ]
       }, tool.id)),
       jsxs('div', { className: 'flex gap-2', children: [
@@ -3988,6 +4137,38 @@ export default {
         disableAll: 'Disable all',
         overviewProblems: n => `${n} problems`,
         addToolAction: 'Add Tool',
+        catalogLoading: "Loading client library…",
+        catalogUnavailable: "Client library unavailable",
+        catalogRestart: "Update both plugin halves and fully restart Hermes, then retry.",
+        catalogIntro: "Choose a skill-folder target. Only detected or configured targets appear in Tools. Skill support and MCP writing are separate.",
+        searchClients: "Search clients",
+        catalogDetected: "Detected",
+        catalogAvailable: "Available",
+        catalogCustom: "Custom",
+        catalogNoMatches: "No matching clients.",
+        catalogUnverified: "Manual path verification required",
+        catalogSkillsMcp: "Skills and MCP writer",
+        catalogSkillsOnly: "Skills only",
+        customTarget: "Custom target",
+        globalScope: "Global",
+        projectScope: "Project",
+        customScope: "Custom folder",
+        canonicalScope: "Canonical library",
+        projectFolder: "Project folder",
+        targetScope: "Target scope",
+        targetLabel: "Display name",
+        targetId: "Target ID",
+        targetFolder: "Skill folder",
+        targetScopeHelp: "Global uses your home folder. Project uses an existing project folder that you explicitly choose. Switchboard never searches your computer for projects.",
+        reviewTarget: "Review target",
+        saveTarget: "Save target",
+        reviewingTarget: "Reviewing target…",
+        savingTarget: "Saving target…",
+        backToLibrary: "Back to library",
+        targetSaveHelp: "Saving adds a target to Switchboard configuration only. No skill folders or links are created until you enable skills.",
+        targetConfigFile: "Configuration file",
+        targetSaved: "Target saved. Choose skills from Tools to enable them.",
+        targetRequestFailed: "The target could not be saved. Review the selection and try again.",
         scanAndImport: 'Scan & import',
         onboardingEntryTitle: 'Bring existing skills into Hermes',
         onboardingEntryDesc: 'Scan detected tools, review every copy, and choose what Hermes should manage.',

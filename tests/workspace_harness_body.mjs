@@ -33,6 +33,11 @@ const scanFixturePath = new URL('./fixtures/first-run-scan-plan.json', import.me
 const scanPlan = JSON.parse(readFileSync(scanFixturePath, 'utf8'))
 const channel = {
   mode: 'ready',
+  catalog: { ok: true, catalog_version: 1, config_schema_version: 2, clients: [
+    { id: 'claude', label: 'Claude Code', verified: true, detected: true, scopes: ['global', 'project'], capabilities: { skills: true, mcp_writer: false } },
+    { id: 'cursor', label: 'Cursor', verified: true, detected: false, scopes: ['global', 'project'], capabilities: { skills: true, mcp_writer: false } },
+    { id: 'grok', label: 'Grok', verified: false, scopes: [], capabilities: { skills: false, mcp_writer: false } }
+  ] },
   state,
   diff: {
     ok: true,
@@ -76,6 +81,17 @@ plugin.register({
     if (path === '/diff') return channel.diff
     if (path === '/drift') return channel.drift
     if (path === '/mcp/state') return channel.mcpState
+    if (path === '/clients') return channel.catalog
+    if (path === '/targets/preview') {
+      const selection = options.body.selection
+      const response = { ok: true, preview_id: 'reviewed-target-001', notice: 'Other clients may read this folder.',
+        writes_config: '/fixture/hermes-switchboard.json', creates_skill_directory: false,
+        target: { id: 'cursor-p-fixture', label: 'Cursor', scope: selection.scope,
+          dir: selection.scope === 'project' ? selection.project_root + '/.cursor/skills' : '/fixture/.cursor/skills', project_root: selection.project_root } }
+      if (channel.holdTargetPreview) return new Promise(resolve => { channel.releaseTargetPreview = () => resolve(response) })
+      return response
+    }
+    if (path === '/targets/activate') return channel.targetFailure ? { ok: false, code: 'preview-stale', error: 'Preview changed; review again' } : { ok: true, tool: 'cursor-p-fixture' }
     if (path === '/toggle' && channel.holdToggle) return new Promise((resolve, reject) => { channel.releaseToggle = channel.toggleTransportError ? () => reject(new Error('fixture transport error')) : () => resolve({ ok: false, error: 'fixture refusal' }) })
     if (path === '/import/plan') {
       if (channel.holdScan) return new Promise(resolve => { channel.resolveScan = resolve })
@@ -472,6 +488,66 @@ channel.atoms[0].set('tools')
 html = renderToString(workspace.render())
 ok(html.includes('1 new skill(s) found') && html.includes('new/arriving-skill'), 'Tools renders the arrivals banner on the daily surface')
 channel.atoms[1].set([])
+
+// Catalog UI: real clicks, deferred responses, and explicit preview-to-save.
+let library
+await act(async () => { library = TestRenderer.create(workspace.render()) })
+const clickLibrary = async text => {
+  const button = library.root.findAllByType('button').find(node => node.children.join('') === text)
+  if (!button) throw new Error('Missing library button: ' + text)
+  if (button.props.disabled) throw new Error('Disabled library button: ' + text)
+  await act(async () => { button.props.onClick(); await Promise.resolve(); await Promise.resolve() })
+}
+await clickLibrary('Add Tool')
+ok(library.root.findAllByProps({ 'data-add-tool-library': 'true' }).length === 1, 'Add Tool opens the searchable library, not Advanced')
+ok(['detected', 'available', 'custom'].every(group => library.root.findAllByProps({ 'data-client-group': group }).length === 1), 'client library groups Detected, Available, and Custom')
+await act(async () => { library.root.findByProps({ 'aria-label': 'Search clients' }).props.onChange({ target: { value: 'cursor' } }) })
+ok(library.root.findAllByProps({ 'data-client-option': 'cursor' }).length === 1 && library.root.findAllByProps({ 'data-client-option': 'claude' }).length === 0, 'search filters the catalog without activating clients')
+await clickLibrary('Cursor')
+await act(async () => { library.root.findByProps({ 'aria-label': 'Target scope' }).props.onChange({ target: { value: 'project' } }) })
+await act(async () => { library.root.findByProps({ 'aria-label': 'Project folder' }).props.onChange({ target: { value: '/fixture/project one' } }) })
+const writesBefore = channel.restCalls.filter(call => call.path === '/targets/activate').length
+await clickLibrary('Review target')
+ok(JSON.stringify(library.toJSON()).includes('/fixture/project one/.cursor/skills') && JSON.stringify(library.toJSON()).includes('Other clients'), 'review shows the resolved project path and shared-folder warning')
+ok(channel.restCalls.filter(call => call.path === '/targets/activate').length === writesBefore, 'preview sends no target activation')
+channel.targetFailure = true
+await clickLibrary('Save target')
+ok(JSON.stringify(library.toJSON()).includes('Preview changed; review again'), 'refused target save has a visible recovery error')
+channel.targetFailure = false
+await clickLibrary('Review target')
+await clickLibrary('Save target')
+const activation = channel.restCalls.filter(call => call.path === '/targets/activate').at(-1)
+ok(activation.body.preview_id === 'reviewed-target-001' && activation.body.selection.project_root === '/fixture/project one', 'save submits exactly the reviewed selection and token')
+ok(channel.invalidated.includes('clients') && library.root.findAllByProps({ 'data-add-tool-library': 'true' }).length === 0, 'successful save refreshes catalog and targets and returns to Tools')
+await clickLibrary('Add Tool')
+await clickLibrary('Cursor')
+channel.holdTargetPreview = true
+await clickLibrary('Review target')
+await clickLibrary('Back to Tools')
+await act(async () => { channel.releaseTargetPreview(); await Promise.resolve() })
+ok(library.root.findAllByProps({ 'data-add-tool-library': 'true' }).length === 0, 'late preview after closing the library cannot reopen it or mutate a target')
+channel.holdTargetPreview = false
+await clickLibrary('Add Tool')
+const validCatalog = channel.catalog
+channel.catalog = { ...validCatalog, catalog_version: 99 }
+await act(async () => { library.update(workspace.render()) })
+ok(JSON.stringify(library.toJSON()).includes('restart Hermes') && library.root.findAllByProps({ 'data-client-option': 'cursor' }).length === 0, 'backend version mismatch blocks activation and gives restart recovery')
+await clickLibrary('Retry')
+ok(channel.catalogRetries > 0, 'catalog recovery retries the backend')
+channel.catalog = validCatalog
+await act(async () => { library.update(workspace.render()) })
+await clickLibrary('Back to Tools')
+const regularState = channel.state
+channel.state = { ...regularState, tools: regularState.tools.concat([{ id: 'cursor-p-absent', label: 'Cursor', scope: 'project', project_root: '/fixture/project', dir: null, optional: true, configured: true, present: false, error: 'Project folder moved; review target' }]) }
+await act(async () => { library.update(workspace.render()) })
+const unavailable = library.root.findByProps({ 'data-tool-card': 'cursor-p-absent' })
+ok(unavailable.findAllByType('button').filter(node => ['Enable all', 'Disable all'].includes(node.children.join(''))).every(node => node.props.disabled), 'configured unavailable project stays visible with mutation buttons disabled')
+ok(unavailable.findAllByProps({ 'data-target-scope': 'project' }).length === 1 && JSON.stringify(library.toJSON()).includes('Project folder moved'), 'scope and recovery error remain visible on a missing target')
+channel.state = { ok: false, error: 'Repair configuration and refresh' }
+await act(async () => { library.update(workspace.render()) })
+ok(JSON.stringify(library.toJSON()).includes('Repair configuration') && library.root.findAll(node => node.props.role === 'switch').length === 0, 'HTTP-200 configuration error hides stale controls and offers recovery')
+channel.state = regularState
+await act(async () => { library.unmount() })
 
 const sdk = await import(new URL('./node_modules/@hermes/plugin-sdk/index.js', 'file://' + STAGING).href)
 const realOpenWorkspace = sdk.host.openWorkspace

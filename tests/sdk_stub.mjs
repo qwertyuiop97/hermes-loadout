@@ -38,7 +38,7 @@ export const host = {
 export const haptic = () => {}
 export const cn = (...args) => args.filter(Boolean).join(' ')
 
-export const Button = (props) => el('button', { onClick: props.onClick, disabled: props.disabled, 'data-variant': props.variant, 'data-size': props.size }, props.children)
+export const Button = (props) => el('button', { onClick: props.onClick, disabled: props.disabled, 'data-variant': props.variant, 'data-size': props.size, 'aria-label': props['aria-label'], 'aria-pressed': props['aria-pressed'] }, props.children)
 export const Badge = (props) => el('span', { 'data-variant': props.variant, 'data-size': props.size }, props.children)
 export const Switch = (props) => el('button', { role: 'switch', 'aria-label': props['aria-label'], 'aria-checked': props.checked ? 'true' : 'false', disabled: props.disabled || undefined, 'data-size': props.size, onClick: () => { if (!props.disabled && props.onCheckedChange) props.onCheckedChange(!props.checked) } }, null)
 export const StatusDot = (props) => el('span', { 'data-tone': props.tone }, null)
@@ -55,6 +55,11 @@ export const SegmentedControl = (props) => el('div', { role: 'radiogroup' }, pro
 
 export function useQuery({ queryKey }) {
   const mode = S().mode || 'ready'
+  if (queryKey[1] === 'clients') {
+    return { data: S().catalogMode === 'loading' ? undefined : S().catalog,
+      isPending: S().catalogMode === 'loading', isError: S().catalogMode === 'error',
+      error: new Error('catalog unavailable'), refetch: () => { S().catalogRetries = (S().catalogRetries || 0) + 1 } }
+  }
   if (queryKey[1] === 'mcp') {
     if (mode === 'loading') return { data: undefined, isLoading: true, isPending: true, isError: false, error: null, refetch: () => {} }
     if (mode === 'error') return { data: undefined, isLoading: false, isPending: false, isError: true, error: new Error('x') }
