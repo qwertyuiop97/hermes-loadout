@@ -62,7 +62,9 @@ class McpFixture(Fixture):
         self.claude = self.tmp / "claude" / "claude_desktop_config.json"
         self.claude.parent.mkdir(parents=True, exist_ok=True)
         self.claude.write_text(json.dumps(CLAUDE_CONFIG, indent=2), encoding="utf-8")
-        self.mcp = McpCore(self.home, claude_desktop_config=self.claude, log_path=self.tmp / "data" / "m.log")
+        self.codex_config = self.tmp / "codex" / "config.toml"
+        self.mcp = McpCore(self.home, claude_desktop_config=self.claude,
+                           codex_config=self.codex_config, log_path=self.tmp / "data" / "m.log")
 
 
 class ParseTests(unittest.TestCase):

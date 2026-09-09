@@ -25,7 +25,8 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--sdk-index', type=Path, default=None, help='Explicit real Hermes SDK index.ts, never a test substitute')
 parser.add_argument('--require-sdk', action='store_true', help='Fail when the real SDK source is unavailable')
 args = parser.parse_args()
-SDK_INDEX = args.sdk_index or Path(os.environ.get('HERMES_SDK_INDEX', str(Path.home() / '.hermes' / 'hermes-agent' / 'apps' / 'desktop' / 'src' / 'sdk' / 'index.ts')))
+sdk_path = args.sdk_index or os.environ.get('HERMES_SDK_INDEX')
+SDK_INDEX = Path(sdk_path) if sdk_path else None
 
 ALLOWED_IMPORTS = {"@hermes/plugin-sdk", "react", "react/jsx-runtime"}
 
@@ -87,7 +88,7 @@ if not banned and not require:
 
 # -- 3b. every SDK name we import must exist in the real SDK -------------------
 m = re.search(r"import\s*\{([^}]+)\}\s*from\s*'@hermes/plugin-sdk'", src, re.S)
-if m and SDK_INDEX.is_file():
+if m and SDK_INDEX is not None and SDK_INDEX.is_file():
     sdk_src = SDK_INDEX.read_text(encoding="utf-8")
     names = [n.strip().split(" as ")[0] for n in m.group(1).split(",") if n.strip()]
     missing = []
@@ -103,7 +104,7 @@ if m and SDK_INDEX.is_file():
         fail(f"names imported from @hermes/plugin-sdk but NOT exported by the real SDK: {missing}")
     else:
         print(f"ok  all {len(names)} SDK imports exist in the real SDK index")
-elif not SDK_INDEX.is_file():
+elif SDK_INDEX is None or not SDK_INDEX.is_file():
     if args.require_sdk:
         fail('Real SDK index.ts is required but was not found')
     else:

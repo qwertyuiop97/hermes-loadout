@@ -10,6 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_plugin_api import Fixture, pa, SKILL_MD_TEMPLATE
 from test_mcp_backend import CONFIG
+from isolation import bind_test_cores
 
 try:
     from fastapi import FastAPI
@@ -25,20 +26,15 @@ class RouteRoundTrip(unittest.TestCase):
     def setUp(self):
         self.fx = Fixture()
         self.addCleanup(self.fx.cleanup)
-        pa.set_core_for_testing(self.fx.core)
-        self.previous_mcp = pa._MCP_CORE
-        pa._MCP_CORE = pa.McpCore(self.fx.home, codex_config=self.fx.tmp / 'client.toml',
+        mcp = pa.McpCore(self.fx.home, codex_config=self.fx.tmp / 'client.toml',
                                   claude_desktop_config=self.fx.tmp / 'client.json')
-        self.addCleanup(self.reset)
+        binding = bind_test_cores(pa, self.fx.core, mcp)
+        binding.__enter__()
+        self.addCleanup(binding.__exit__, None, None, None)
         app = FastAPI()
         app.include_router(pa.router, prefix=self.PREFIX)
         self.client = TestClient(app)
         self.addCleanup(self.client.close)
-
-    def reset(self):
-        pa.set_core_for_testing(None)
-        pa._MCP_CORE = self.previous_mcp
-        pa._LOADOUT_SERVICE = None
 
     def get(self, path, **params):
         response = self.client.get(self.PREFIX + path, params=params)

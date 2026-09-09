@@ -24,6 +24,22 @@ python tests/check_frontend.py
 ./tests/run_render_harness.sh
 ```
 
+Configuration-writer tests must allocate an owned `disposable_root` from
+`tests/isolation.py`. Supply explicit absolute Hermes, Claude, and Codex paths
+to every `McpCore`, even when a test only exercises one client or backups. The
+test loader rejects missing, unresolved, or out-of-fixture paths before the real
+constructor runs. A source contract also checks constructor calls and aliases.
+Foreign-server detection still reads real disposable JSON/TOML files.
+
+Use `isolated_user_home` for catalog discovery and home-relative path tests. It
+redirects HOME, USERPROFILE, APPDATA, client config variables, and Hermes profile
+selection, then restores the environment. Inject HTTP adapters with
+`bind_test_cores`; do not construct default adapters merely to replace them.
+Intentional default-path construction belongs in a fresh `run_isolated_python`
+subprocess, with every candidate inside its disposable home. The ambient-config
+regression seeds a separate fake home and verifies that it neither influences
+the fixture nor receives writes.
+
 The separate Python 3.9 gate installs no dependencies. Optional HTTP tests are
 not executed there; the three-OS HTTP matrix exercises them. Whole-YAML backup
 restore must refuse without PyYAML, and this refusal is tested instead of skipped.
@@ -31,10 +47,13 @@ The shipped plugin has no build step or declared type-check pipeline. Python
 syntax/import tests, ESM syntax, SDK import constraints, and focused behavior
 tests are the applicable gates, not a fictional successful production build.
 
-CI tests Ubuntu, macOS, and Windows. Action revisions and test dependencies are
+CI checks out the exact PR head and tests Ubuntu, macOS, and Windows.
+Action revisions and test dependencies are
 pinned. The frontend job also checks all imported SDK names against the official
 Hermes source at `d9e64e916500fca93920b2fae31b362628f042e6`; it fails if the
-source or an export is missing. This checks exports, not component props or
+source or an export is missing. Local checks use an explicit `--sdk-index` or
+`HERMES_SDK_INDEX`, never an implicit checkout in the developer's home.
+This checks exports, not component props or
 runtime behavior. To run it against an explicit host checkout:
 
 ```bash

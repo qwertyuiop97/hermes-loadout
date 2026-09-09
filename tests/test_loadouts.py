@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_plugin_api import Fixture, pa, SKILL_MD_TEMPLATE
+from isolation import bind_test_cores
 from test_mcp_backend import CONFIG
 
 spec = importlib.util.spec_from_file_location('loadout_service_tests', Path(__file__).resolve().parents[1] / 'dashboard/loadout_service.py')
@@ -266,8 +267,9 @@ class LoadoutTests(unittest.TestCase):
             from fastapi.testclient import TestClient
         except ImportError:
             self.skipTest('HTTP dependencies are optional in the Python 3.9 core gate')
-        pa.set_core_for_testing(self.fx.core)
-        pa._MCP_CORE = self.mcp
+        binding = bind_test_cores(pa, self.fx.core, self.mcp)
+        binding.__enter__()
+        self.addCleanup(binding.__exit__, None, None, None)
         app = FastAPI()
         app.include_router(pa.router, prefix='/api/plugins/hermes-loadout')
         client = TestClient(app)
@@ -289,6 +291,6 @@ class LoadoutTests(unittest.TestCase):
             self.assertFalse(rejected['ok'])
             self.assertNotIn('never-store', str(rejected))
         finally:
-            pa.set_core_for_testing(None)
+            client.close()
 
 if __name__ == '__main__': unittest.main()

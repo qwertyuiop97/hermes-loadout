@@ -3,34 +3,29 @@ from __future__ import annotations
 
 import copy
 import json
-import os
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_plugin_api import pa
+from isolation import disposable_root, isolated_user_home
 
 
 class ConfigScopeTests(unittest.TestCase):
     def setUp(self):
-        temporary = tempfile.TemporaryDirectory(prefix="loadout-migration-")
-        self.addCleanup(temporary.cleanup)
-        self.root = Path(temporary.name).resolve()
+        temporary = disposable_root()
+        self.root = temporary.__enter__()
+        self.addCleanup(temporary.__exit__, None, None, None)
         self.user = self.root / "user"
         self.home = self.user / ".hermes"
         self.home.mkdir(parents=True)
         self.project = self.root / "project"
         self.project.mkdir()
-        env = patch.dict(os.environ, {"HOME": str(self.user), "USERPROFILE": str(self.user),
-                                      "OPENCODE_CONFIG_DIR": str(self.user / ".config/opencode")})
-        env.start()
-        self.addCleanup(env.stop)
-        home = patch.object(Path, "home", return_value=self.user)
-        home.start()
-        self.addCleanup(home.stop)
+        environment = isolated_user_home(self.user, self.home)
+        environment.__enter__()
+        self.addCleanup(environment.__exit__, None, None, None)
         self.addCleanup(pa.reset_core)
 
 

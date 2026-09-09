@@ -21,6 +21,7 @@ sys.path.insert(0, str(_REPO / "tests"))
 # Single module load — importing plugin_api twice (once here, once inside
 # test_plugin_api) would create two distinct LoadoutError classes.
 from test_plugin_api import Fixture, call, pa  # noqa: E402
+from isolation import isolated_user_home
 
 HermesLoadoutCore = pa.HermesLoadoutCore
 LoadoutError = pa.LoadoutError
@@ -536,6 +537,9 @@ class ConfigToolsTests(unittest.TestCase):
     def setUp(self) -> None:
         self.fx = Fixture()
         self.core = self.fx.core
+        environment = isolated_user_home(self.fx.tmp / "user", self.fx.home)
+        environment.__enter__()
+        self.addCleanup(environment.__exit__, None, None, None)
 
     def tearDown(self) -> None:
         self.fx.cleanup()

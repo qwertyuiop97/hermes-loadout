@@ -18,7 +18,8 @@ class BackupPortabilityTests(unittest.TestCase):
         self.addCleanup(fixture.cleanup)
         source = fixture.tmp / 'client.json'
         source.write_bytes(b'fixture-private-value\r\nline\n\x00end')
-        mcp = pa.McpCore(fixture.home, source)
+        mcp = pa.McpCore(fixture.home, claude_desktop_config=source,
+                         codex_config=fixture.tmp / "codex.toml")
         occupied = source.with_name(source.name + '.bak.hermes-loadout.20260101-120000')
         external = fixture.tmp / 'untouched-foreign-target'
         occupied.symlink_to(external)

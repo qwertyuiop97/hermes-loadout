@@ -17,11 +17,17 @@ import unittest
 from pathlib import Path
 
 import importlib.util
+import sys
+from contextlib import ExitStack
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from isolation import disposable_root, guard_mcp_construction, isolated_user_home, run_isolated_python
 
 _REPO = Path(__file__).resolve().parent.parent
 _SPEC = importlib.util.spec_from_file_location("plugin_api", _REPO / "dashboard" / "plugin_api.py")
 pa = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(pa)
+guard_mcp_construction(pa)
 
 HermesLoadoutCore = pa.HermesLoadoutCore
 LoadoutError = pa.LoadoutError
@@ -64,7 +70,8 @@ class Fixture:
     """Fake hermes home + five consumer tool dirs covering every state."""
 
     def __init__(self) -> None:
-        self.tmp = Path(tempfile.mkdtemp(prefix="hermes-loadout-test-"))
+        self._scope = ExitStack()
+        self.tmp = self._scope.enter_context(disposable_root())
         self.home = self.tmp / "hermes"
         (self.home / "skills").mkdir(parents=True)
         (self.home / "config.yaml").write_text(CONFIG_YAML, encoding="utf-8")
@@ -106,7 +113,7 @@ class Fixture:
         self.core = HermesLoadoutCore(self.home, self.tools, log_path=self.tmp / "data" / "mutations.log")
 
     def cleanup(self) -> None:
-        shutil.rmtree(self.tmp, ignore_errors=True)
+        self._scope.close()
 
 
 def call(fn, *args, **kwargs):
@@ -613,6 +620,12 @@ class FrontmatterTests(unittest.TestCase):
 
 
 class PathAndConfigTests(unittest.TestCase):
+    def setUp(self):
+        scope = ExitStack()
+        self.addCleanup(scope.close)
+        self.root = scope.enter_context(disposable_root())
+        self.user = scope.enter_context(isolated_user_home(self.root / "user"))
+
     def test_expand_path(self) -> None:
         base = tempfile.mkdtemp(prefix="hermes-loadout-expand-")
         os.environ["SKT_TEST_VAR"] = base
@@ -656,28 +669,28 @@ class PathAndConfigTests(unittest.TestCase):
 
 
     def test_hermes_home_resolution(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            prof = Path(td) / ".hermes" / "profiles" / "lab"
-            prof.mkdir(parents=True)
-            env = dict(os.environ)
-            env.pop("HERMES_HOME", None)
-            env["HERMES_PROFILE"] = "lab"
-            old_home = env.get("HOME")
-            env["HOME"] = td
-            old_home_cls = Path.home
-            Path.home = classmethod(lambda cls: Path(td))  # Windows ignores HOME
-            try:
-                os.environ.clear()
-                os.environ.update(env)
-                self.assertTrue(pa.same_path(pa.hermes_home(), prof))
-                explicit = Path(td) / "explicit"
-                os.environ["HERMES_HOME"] = str(explicit)
-                self.assertTrue(pa.same_path(pa.hermes_home(), explicit))
-            finally:
-                os.environ.clear()
-                os.environ.update({k: v for k, v in env.items()})
-                os.environ["HOME"] = old_home or os.environ.get("HOME", "")
-                Path.home = old_home_cls
+        probe = """
+import importlib.util
+import os
+from pathlib import Path
+spec = importlib.util.spec_from_file_location('default_home_probe', MODULE)
+api = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(api)
+user = Path.home()
+os.environ.pop('HERMES_HOME', None)
+assert api.same_path(api.hermes_home(), user / '.hermes')
+profile = user / '.hermes/profiles/lab'
+profile.mkdir(parents=True)
+os.environ['HERMES_PROFILE'] = 'lab'
+assert api.same_path(api.hermes_home(), profile)
+explicit = user / 'explicit'
+os.environ['HERMES_HOME'] = str(explicit)
+assert api.same_path(api.hermes_home(), explicit)
+print('HOME_RESOLUTION_OK')
+""".replace('MODULE', repr(str(_REPO / 'dashboard/plugin_api.py')))
+        result = run_isolated_python(probe, self.user)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('HOME_RESOLUTION_OK', result.stdout)
 
     def test_missing_skills_root_reports_cleanly(self) -> None:
         with tempfile.TemporaryDirectory() as td:

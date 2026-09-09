@@ -5,13 +5,13 @@ import copy
 import json
 import os
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_plugin_api import pa
+from isolation import disposable_root, isolated_user_home, bind_test_cores
 
 
 class CatalogContractTests(unittest.TestCase):
@@ -45,21 +45,18 @@ class CatalogContractTests(unittest.TestCase):
 
 class ScopeTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(prefix="loadout-scope-")
-        self.addCleanup(self.tmp.cleanup)
-        self.root = Path(self.tmp.name).resolve()
+        temporary = disposable_root()
+        self.root = temporary.__enter__()
+        self.addCleanup(temporary.__exit__, None, None, None)
         self.user = self.root / "user"
         self.user.mkdir()
         self.project = self.root / "project one"
         self.project.mkdir()
         self.home = self.user / ".hermes"
         self.home.mkdir()
-        self.home_env = patch.dict(os.environ, {"HOME": str(self.user), "USERPROFILE": str(self.user), "HERMES_HOME": str(self.home), "OPENCODE_CONFIG_DIR": str(self.user / ".config/opencode")})
-        self.home_env.start()
-        self.addCleanup(self.home_env.stop)
-        self.home_patch = patch.object(Path, "home", return_value=self.user)
-        self.home_patch.start()
-        self.addCleanup(self.home_patch.stop)
+        environment = isolated_user_home(self.user, self.home)
+        environment.__enter__()
+        self.addCleanup(environment.__exit__, None, None, None)
         self.addCleanup(pa.reset_core)
         skill = self.home / "skills" / "coding" / "review-code"
         skill.mkdir(parents=True)
@@ -236,6 +233,11 @@ class ScopeTests(unittest.TestCase):
             from fastapi.testclient import TestClient
         except ImportError:
             self.skipTest("HTTP dependencies are optional on the Python 3.9 core gate")
+        mcp = pa.McpCore(self.home, claude_desktop_config=self.user / 'claude.json',
+                         codex_config=self.user / 'codex.toml')
+        binding = bind_test_cores(pa, self.core, mcp, frozen=False)
+        binding.__enter__()
+        self.addCleanup(binding.__exit__, None, None, None)
         pa.reset_core()
         app = FastAPI()
         app.include_router(pa.router)

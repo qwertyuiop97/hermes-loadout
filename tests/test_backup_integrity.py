@@ -19,7 +19,8 @@ class BackupIntegrityTests(unittest.TestCase):
         self.addCleanup(self.fx.cleanup)
         self.source = self.fx.tmp / 'client.json'
         self.source.write_bytes(b'fixture-private-value\r\nline\n\x00end')
-        self.mcp = pa.McpCore(self.fx.home, self.source)
+        self.mcp = pa.McpCore(self.fx.home, claude_desktop_config=self.source,
+                              codex_config=self.fx.tmp / "codex.toml")
 
     def test_private_distinct_backups_preserve_bytes_for_both_adapters(self):
         for adapter in (self.fx.core, self.mcp):
