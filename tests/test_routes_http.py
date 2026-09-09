@@ -1,7 +1,7 @@
 """HTTP round-trip of every mounted route against /tmp fixtures.
 
 Uses a real FastAPI app + TestClient so the receipts cover the actual mount
-surface (/api/plugins/skills-toggle/... semantics are the gateway's; here we
+surface (/api/plugins/hermes-switchboard/... semantics are the gateway's; here we
 exercise the router itself, which is what the gateway mounts).
 
 Run:  ./.venv/bin/python -m unittest tests.test_routes_http -v
@@ -36,7 +36,7 @@ class RouteRoundTrip(unittest.TestCase):
         self.fx = Fixture()
         pa.set_core_for_testing(self.fx.core)
         app = fastapi()
-        app.include_router(pa.router, prefix="/api/plugins/skills-toggle")
+        app.include_router(pa.router, prefix="/api/plugins/hermes-switchboard")
         self.client = TestClient(app)
 
     def tearDown(self) -> None:
@@ -44,15 +44,15 @@ class RouteRoundTrip(unittest.TestCase):
         self.fx.cleanup()
 
     def test_health(self) -> None:
-        r = self.client.get("/api/plugins/skills-toggle/health")
+        r = self.client.get("/api/plugins/hermes-switchboard/health")
         self.assertEqual(r.status_code, 200)
         body = r.json()
         self.assertTrue(body["ok"])
-        self.assertEqual(body["plugin"], "skills-toggle")
+        self.assertEqual(body["plugin"], "hermes-switchboard")
         self.assertEqual(body["hermes_home"], str(self.fx.home))
 
     def test_state(self) -> None:
-        r = self.client.get("/api/plugins/skills-toggle/state")
+        r = self.client.get("/api/plugins/hermes-switchboard/state")
         self.assertEqual(r.status_code, 200)
         body = r.json()
         self.assertTrue(body["ok"])
@@ -60,17 +60,17 @@ class RouteRoundTrip(unittest.TestCase):
         self.assertEqual(len(body["skills"]), 7)
 
     def test_detail_ok_and_error(self) -> None:
-        r = self.client.get("/api/plugins/skills-toggle/detail", params={"skill": "apple/apple-notes"})
+        r = self.client.get("/api/plugins/hermes-switchboard/detail", params={"skill": "apple/apple-notes"})
         self.assertEqual(r.status_code, 200)
         self.assertIn("# apple-notes", r.json()["markdown"])
-        r = self.client.get("/api/plugins/skills-toggle/detail", params={"skill": "../../etc/passwd"})
+        r = self.client.get("/api/plugins/hermes-switchboard/detail", params={"skill": "../../etc/passwd"})
         self.assertEqual(r.status_code, 200)
         body = r.json()
         self.assertFalse(body["ok"])
         self.assertEqual(body["code"], "invalid-skill")
 
     def test_diff(self) -> None:
-        r = self.client.get("/api/plugins/skills-toggle/diff")
+        r = self.client.get("/api/plugins/hermes-switchboard/diff")
         self.assertEqual(r.status_code, 200)
         body = r.json()
         self.assertTrue(body["ok"])
@@ -78,7 +78,7 @@ class RouteRoundTrip(unittest.TestCase):
         self.assertEqual(body["counts"]["broken"], 1)
 
     def test_toggle_roundtrip(self) -> None:
-        base = "/api/plugins/skills-toggle/toggle"
+        base = "/api/plugins/hermes-switchboard/toggle"
         r = self.client.post(base, json={"skill": "apple/apple-notes", "tool": "claude", "enabled": True})
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["state"], "enabled")
@@ -99,7 +99,7 @@ class RouteRoundTrip(unittest.TestCase):
 
     def test_toggle_bulk(self) -> None:
         r = self.client.post(
-            "/api/plugins/skills-toggle/toggle-bulk",
+            "/api/plugins/hermes-switchboard/toggle-bulk",
             json={"skills": ["apple/apple-notes", "résearch/arxiv"], "tool": "codex", "enabled": True},
         )
         body = r.json()
@@ -108,7 +108,7 @@ class RouteRoundTrip(unittest.TestCase):
         self.assertEqual(body["failed"], 0)
 
     def test_bulk_plan_and_apply_roundtrip(self) -> None:
-        base = "/api/plugins/skills-toggle/bulk"
+        base = "/api/plugins/hermes-switchboard/bulk"
         skills = ["apple/apple-notes", "résearch/arxiv"]
         planned = self.client.post(
             f"{base}/plan", json={"skills": skills, "tool": "codex", "enabled": True}
@@ -133,25 +133,25 @@ class RouteRoundTrip(unittest.TestCase):
 
     def test_repair_and_repair_all(self) -> None:
         r = self.client.post(
-            "/api/plugins/skills-toggle/repair", json={"skill": "apple/rem índéluxé", "tool": "grok"}
+            "/api/plugins/hermes-switchboard/repair", json={"skill": "apple/rem índéluxé", "tool": "grok"}
         )
         self.assertTrue(r.json()["ok"])
         self.assertEqual(r.json()["state"], "enabled")
         os.symlink(self.fx.home / "skills" / "media" / "gone", self.fx.codex / "orphan-skill")
-        r = self.client.post("/api/plugins/skills-toggle/repair-all")
+        r = self.client.post("/api/plugins/hermes-switchboard/repair-all")
         body = r.json()
         self.assertTrue(body["ok"])
         self.assertEqual(body["fixed"][0]["skill"], "media/orphan-skill")
 
     def test_ensure_tool_dir(self) -> None:
-        r = self.client.post("/api/plugins/skills-toggle/ensure-tool-dir", json={"tool": "zcode"})
+        r = self.client.post("/api/plugins/hermes-switchboard/ensure-tool-dir", json={"tool": "zcode"})
         self.assertTrue(r.json()["ok"])
         self.assertTrue(r.json()["created"])
-        r = self.client.post("/api/plugins/skills-toggle/ensure-tool-dir", json={"tool": "hermes"})
+        r = self.client.post("/api/plugins/hermes-switchboard/ensure-tool-dir", json={"tool": "hermes"})
         self.assertFalse(r.json()["ok"])
 
     def test_import_scan_apply_and_drift_and_config(self) -> None:
-        base = "/api/plugins/skills-toggle"
+        base = "/api/plugins/hermes-switchboard"
         # create an adoptable copy in codex
         local = self.fx.codex / "http-local-skill"
         local.mkdir()
@@ -176,7 +176,7 @@ class RouteRoundTrip(unittest.TestCase):
         self.assertFalse(r.json()["ok"])
 
     def test_import_plan_and_apply_plan_roundtrip(self) -> None:
-        base = "/api/plugins/skills-toggle/import"
+        base = "/api/plugins/hermes-switchboard/import"
         scan_root = self.fx.tmp / "http-scan-root"
         source = scan_root / "http-planned-skill"
         source.mkdir(parents=True)
@@ -206,7 +206,7 @@ class RouteRoundTrip(unittest.TestCase):
         self.assertTrue((self.fx.home / "skills" / "wizard" / "http-planned-skill" / "SKILL.md").is_file())
 
     def test_mcp_routes(self) -> None:
-        base = "/api/plugins/skills-toggle"
+        base = "/api/plugins/hermes-switchboard"
         # hermes config has no mcp_servers in the fixture -> empty catalog
         r = self.client.get(f"{base}/mcp/state")
         body = r.json()
@@ -217,7 +217,7 @@ class RouteRoundTrip(unittest.TestCase):
         self.assertEqual(r.json()["code"], "unknown-server")
 
     def test_mutations_logged_over_http(self) -> None:
-        self.client.post("/api/plugins/skills-toggle/toggle", json={"skill": "apple/apple-notes", "tool": "codex", "enabled": True})
+        self.client.post("/api/plugins/hermes-switchboard/toggle", json={"skill": "apple/apple-notes", "tool": "codex", "enabled": True})
         log = self.fx.tmp / "data" / "mutations.log"
         self.assertTrue(log.is_file())
         self.assertIn('"action": "toggle"', log.read_text())

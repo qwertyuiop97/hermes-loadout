@@ -1,5 +1,5 @@
 /**
- * skills-toggle — desktop half of the unified Hermes plugin package.
+ * hermes-switchboard — desktop half of the unified Hermes plugin package.
  *
  * MIT License — Copyright (c) 2026 qwertyuiop97. See LICENSE at the package root.
  *
@@ -10,9 +10,9 @@
  * actions — all through this plugin's own backend namespace
  * (`dashboard/plugin_api.py`, reached via ctx.rest('/…')).
  *
- * Install (unified package): ~/.hermes/plugins/skills-toggle/
+ * Install (unified package): ~/.hermes/plugins/hermes-switchboard/
  *   ├── plugin.yaml            agent half (metadata)
- *   ├── dashboard/manifest.json  {"name":"skills-toggle","api":"plugin_api.py"}
+ *   ├── dashboard/manifest.json  {"name":"hermes-switchboard","api":"plugin_api.py"}
  *   ├── dashboard/plugin_api.py  backend routes (gated by `plugins.enabled`)
  *   └── desktop/plugin.js      THIS FILE (enable in Settings → Plugins)
  * Then: ⌘K → "Reload desktop plugins".
@@ -58,7 +58,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
-const ID = 'skills-toggle'
+const ID = 'hermes-switchboard'
 const STATE_KEY = [ID, 'state']
 const DIFF_KEY = [ID, 'diff']
 const DRIFT_KEY = [ID, 'drift']
@@ -68,7 +68,7 @@ const ONBOARDING_VERSION = 1
 const ccSectionAtom = atom('tools')
 const arrivalsAtom = atom([])
 const watchPrefsEpochAtom = atom(0)
-const WORKSPACE_ID = 'skills-toggle.control-center'
+const WORKSPACE_ID = 'hermes-switchboard.control-center'
 let workspaceDispose = null
 let bgHosted = false
 const bgWaiters = new Set()
@@ -148,7 +148,7 @@ function openControlCenter(section = 'tools') {
   ccSectionAtom.set(section)
   if (typeof host.openWorkspace === 'function') {
     workspaceDispose = host.openWorkspace(WORKSPACE_ID, {
-      title: 'Skills Control Center',
+      title: 'Hermes Switchboard',
       minWidth: '680px',
       render: () => jsx(ControlCenter, {}),
       onClose: () => {
@@ -157,7 +157,7 @@ function openControlCenter(section = 'tools') {
     })
     return
   }
-  host.navigate('/skills-toggle')
+  host.navigate('/hermes-switchboard')
 }
 
 function closeControlCenter() {
@@ -221,7 +221,7 @@ function ReducedMotionGuard({ active }) {
   if (!active) return null
   return jsx('style', {
     'data-reduced-motion-guard': 'true',
-    children: '[data-skills-toggle-root="true"] *,[data-skills-toggle-root="true"] *::before,[data-skills-toggle-root="true"] *::after{animation:none!important;transition:none!important}'
+    children: '[data-hermes-switchboard-root="true"] *,[data-hermes-switchboard-root="true"] *::before,[data-hermes-switchboard-root="true"] *::after{animation:none!important;transition:none!important}'
   })
 }
 
@@ -939,7 +939,7 @@ function CompactSummaryPane() {
 
   return jsxs('div', {
     ref: rootRef,
-    'data-skills-toggle-root': 'true',
+    'data-hermes-switchboard-root': 'true',
     'data-reduced-motion': reducedMotion ? 'true' : 'false',
     className: 'flex h-full min-w-0 flex-col text-sm',
     children: [
@@ -1057,6 +1057,67 @@ function BrokenLinksPanel({ skills, tools, onRepair, onRepairAll, busy }) {
           jsx(Button, { variant: 'secondary', size: 'xs', disabled: busy, onClick: () => onRepair(item.skill, item.tool), children: t('repair') })
         ]
       }, `${item.skill.id}:${item.tool.id}`))
+    ]
+  })
+}
+
+function UnlinkedSkillsPanel({ diff }) {
+  const t = usePluginI18n(ID)
+  const unlinked = diff && diff.ok && Array.isArray(diff.unlinked) ? diff.unlinked : []
+  if (!unlinked.length) {
+    return jsx(EmptyState, { title: t('unlinkedEmpty'), description: t('unlinkedDesc') })
+  }
+  return jsxs('section', {
+    'data-unlinked-skills': 'true',
+    className: 'flex flex-col gap-2 px-3 pb-4',
+    children: [
+      jsx('h3', { className: 'font-medium', children: t('unlinkedTitle', unlinked.length) }),
+      jsx('p', { className: 'text-xs text-muted-foreground', children: t('unlinkedDesc') }),
+      unlinked.map(skillId => jsxs('div', {
+        className: 'flex items-center gap-2 rounded-md border border-(--ui-stroke-secondary) p-2 text-xs',
+        children: [
+          jsx(StatusDot, { tone: 'muted' }),
+          jsx('span', { className: 'min-w-0 break-words font-medium', children: skillId })
+        ]
+      }, skillId))
+    ]
+  })
+}
+
+function ProtectedEntriesPanel({ diff, tools }) {
+  const t = usePluginI18n(ID)
+  const toolById = new Map(tools.map(tool => [tool.id, tool]))
+  const foreign = diff && diff.ok && Array.isArray(diff.foreign) ? diff.foreign : []
+  const unmanaged = diff && diff.ok && Array.isArray(diff.unmanaged) ? diff.unmanaged : []
+  const rows = foreign.map(row => ({ ...row, kind: 'foreign' })).concat(
+    unmanaged.map(row => ({ ...row, kind: 'unmanaged' }))
+  )
+  if (!rows.length) {
+    return jsx(EmptyState, { title: t('protectedEmpty'), description: t('protectedDesc') })
+  }
+  return jsxs('section', {
+    'data-protected-entries': 'true',
+    className: 'flex flex-col gap-2 px-3 pb-4',
+    children: [
+      jsx('h3', { className: 'font-medium', children: t('protectedTitle', rows.length) }),
+      jsx('p', { className: 'text-xs text-muted-foreground', children: t('protectedDesc') }),
+      rows.map((row, index) => jsxs('div', {
+        className: 'flex min-w-0 items-start gap-2 rounded-md border border-(--ui-stroke-secondary) p-2 text-xs',
+        children: [
+          jsx(StatusDot, { tone: 'warn' }),
+          jsxs('span', { className: 'min-w-0 flex-1', children: [
+            jsx('span', { className: 'block break-words font-medium', children: row.name }),
+            jsx('span', {
+              className: 'block break-words text-muted-foreground',
+              children: t(
+                row.kind === 'foreign' ? 'protectedForeignLine' : 'protectedUnmanagedLine',
+                (toolById.get(row.tool) || { label: row.tool }).label,
+                row.target || ''
+              )
+            })
+          ] })
+        ]
+      }, `${row.kind}-${row.tool}-${row.name}-${index}`))
     ]
   })
 }
@@ -1754,7 +1815,7 @@ function SkillsPane({ section = 'tools' }) {
   })
 
   const downloadPresetFile = () => {
-    downloadText(JSON.stringify(buildPresetExport(), null, 2), 'skills-toggle-preset.json')
+    downloadText(JSON.stringify(buildPresetExport(), null, 2), 'hermes-switchboard-preset.json')
     host.notify({ kind: 'success', message: t('downloaded') })
   }
 
@@ -2021,7 +2082,7 @@ function SkillsPane({ section = 'tools' }) {
       .rest('/blueprint/export')
       .then(res => {
         if (res && res.ok) {
-          downloadText(JSON.stringify(res.blueprint, null, 2), 'skills-toggle-blueprint.json')
+          downloadText(JSON.stringify(res.blueprint, null, 2), 'hermes-switchboard-blueprint.json')
           host.notify({ kind: 'success', message: t('blueprintExported') })
         } else host.notify({ kind: 'error', message: t('blueprintFailed') })
       })
@@ -2442,7 +2503,9 @@ function SkillsPane({ section = 'tools' }) {
               onPull: onPullDrift,
               onKeepBoth: onKeepBothDrift,
               busy: busy
-            })
+            }),
+            jsx(ProtectedEntriesPanel, { diff: diff, tools: tools }),
+            jsx(UnlinkedSkillsPanel, { diff: diff })
           ] })
         }),
         jsx(UndoBanner, { undo: undo, onUndo: onUndo, busy: busy }),
@@ -2505,7 +2568,7 @@ function SkillsPane({ section = 'tools' }) {
 }
 
 // ---------------------------------------------------------------------------
-// MCP switchboard pane (#12, Q1a) — Hermes catalog + Claude Desktop writer
+// MCP switchboard pane — Hermes catalog + supported client writers
 // ---------------------------------------------------------------------------
 
 function McpPane() {
@@ -2526,8 +2589,6 @@ function McpPane() {
   })
   const st = stateQuery.data
   const rows = st && st.ok && Array.isArray(st.rows) ? st.rows : []
-  const writer = st && st.ok && st.writers ? st.writers.claude : null
-
   const writers = [
     {
       id: 'claude',
@@ -2544,12 +2605,12 @@ function McpPane() {
   ]
 
   const run = useCallback(
-    (name, path, payload, successKey) => {
+    (name, path, payload, successKey, writerLabel) => {
       setBusyName(name + path)
       pluginCtx
         .rest(path, { method: 'POST', body: payload })
         .then(res => {
-          if (res && res.ok) host.notify({ kind: 'success', message: t(successKey, name) })
+          if (res && res.ok) host.notify({ kind: 'success', message: t(successKey, name, writerLabel) })
           else host.notify({ kind: 'error', message: res && res.error ? res.error : t('mcpFailed') })
         })
         .catch(err => host.notifyError(err, t('mcpFailed')))
@@ -2619,8 +2680,7 @@ function McpPane() {
     body = jsxs('div', {
       className: 'flex flex-col px-2 pb-4',
       children: rows.map(row => {
-        const claude = row.writers.claude
-        const drifted = claude === 'drifted'
+        const drifted = writers.some(writer => row.writers[writer.id] === 'drifted')
         return jsxs('div', {
           className: 'rounded-md px-2 py-2 transition-colors hover:bg-(--chrome-action-hover)',
           children: [
@@ -2654,24 +2714,24 @@ function McpPane() {
                       'aria-label': row.name + ' — ' + writer.label,
                       onCheckedChange: next => {
                         if (next && !wdrifted) {
-                          run(row.name, writer.syncPath, { name: row.name }, 'mcpSynced')
+                          run(row.name, writer.syncPath, { name: row.name }, 'mcpSynced', writer.label)
                         } else if (next) {
                           setConfirm({
-                            title: t('mcpSyncTitle', row.name),
+                            title: t('mcpSyncTitle', row.name, writer.label),
                             description: t('mcpOverwriteDesc'),
                             confirmLabel: t('mcpSync'),
                             destructive: false,
-                            action: () => run(row.name, writer.syncPath, { name: row.name }, 'mcpSynced')
+                            action: () => run(row.name, writer.syncPath, { name: row.name }, 'mcpSynced', writer.label)
                           })
                         } else if (!wdrifted) {
-                          run(row.name, writer.removePath, { name: row.name }, 'mcpRemoved')
+                          run(row.name, writer.removePath, { name: row.name }, 'mcpRemoved', writer.label)
                         } else {
                           setConfirm({
-                            title: t('mcpRemoveTitle', row.name),
+                            title: t('mcpRemoveTitle', row.name, writer.label),
                             description: t('mcpRemoveForceDesc'),
                             confirmLabel: t('mcpRemoveForce'),
                             destructive: true,
-                            action: () => run(row.name, writer.removePath, { name: row.name, force: true }, 'mcpRemoved')
+                            action: () => run(row.name, writer.removePath, { name: row.name, force: true }, 'mcpRemoved', writer.label)
                           })
                         }
                       }
@@ -2680,7 +2740,7 @@ function McpPane() {
                       ? jsx(Button, {
                           variant: 'secondary', size: 'xs', className: 'h-4 px-1 text-[0.625rem]',
                           disabled: busyName !== null,
-                          onClick: () => run(row.name, writer.syncPath, { name: row.name }, 'mcpSynced'),
+                          onClick: () => run(row.name, writer.syncPath, { name: row.name }, 'mcpSynced', writer.label),
                           children: t('mcpSync')
                         })
                       : null
@@ -3679,7 +3739,14 @@ function FirstRunWizard() {
       jsx('p', { className: 'text-sm text-muted-foreground', children: t('wizardScanningDesc') })
     ] })
   } else if (step === 'review') {
-    body = jsxs('div', { className: 'flex flex-col gap-3', children: [
+    body = entries.length === 0 ? jsxs('div', { className: 'flex max-w-2xl flex-col gap-3', children: [
+      jsx('h2', { className: 'text-lg font-medium', children: t('wizardScanEmptyTitle') }),
+      jsx('p', { className: 'text-sm text-muted-foreground', children: t('wizardScanEmptyDesc') }),
+      jsxs('div', { className: 'flex gap-2', children: [
+        jsx(Button, { variant: 'secondary', size: 'sm', onClick: () => saveProgress('sources'), children: t('wizardRescan') }),
+        jsx(Button, { variant: 'primary', size: 'sm', onClick: finish, children: t('wizardViewTools') })
+      ] })
+    ] }) : jsxs('div', { className: 'flex flex-col gap-3', children: [
       jsx('h2', { className: 'text-lg font-medium', children: t('wizardReviewTitle') }),
       plan && Array.isArray(plan.duplicate_groups) && plan.duplicate_groups.length
         ? jsx('div', { 'data-duplicate-groups': 'true', className: 'rounded-md border border-(--ui-stroke-secondary) p-2 text-xs text-(--ui-text-warning)', children: t('wizardDuplicateGroups', plan.duplicate_groups.length) })
@@ -3776,7 +3843,7 @@ function SectionPlaceholder({ title, hint }) {
 function PrimaryNav({ sections, active, onSelect, layout }) {
   const horizontal = layout === 'narrow'
   return jsx('nav', {
-    'aria-label': 'Control Center sections',
+    'aria-label': 'Switchboard sections',
     className: horizontal
       ? 'w-full shrink-0 overflow-x-auto border-b border-(--ui-stroke-secondary)'
       : 'w-[180px] shrink-0 border-r border-(--ui-stroke-secondary)',
@@ -3827,7 +3894,7 @@ function ControlCenter() {
   return jsxs('div', {
     ref: rootRef,
     'data-layout': layout,
-    'data-skills-toggle-root': 'true',
+    'data-hermes-switchboard-root': 'true',
     'data-reduced-motion': reducedMotion ? 'true' : 'false',
     className: 'flex h-full min-w-0 flex-col text-sm',
     children: [
@@ -3857,7 +3924,7 @@ function ControlCenter() {
 
 export default {
   id: ID, // must match the folder name
-  name: 'Skills Toggle',
+  name: 'Hermes Switchboard',
   defaultEnabled: false, // unified-package desktop halves ship opt-in
   register(ctx) {
     pluginCtx = ctx
@@ -3872,7 +3939,7 @@ export default {
         searchPlaceholder: 'Search skills…',
         refresh: 'Refresh',
         retry: 'Retry',
-        ccTitle: 'Skills Control Center',
+        ccTitle: 'Hermes Switchboard',
         matrixToggle: 'Matrix',
         matrixTitle: 'Expert matrix',
         showDescriptions: 'Show descriptions',
@@ -3881,11 +3948,11 @@ export default {
         ccProblems: 'Problems',
         ccMcp: 'MCP',
         ccAdvanced: 'Advanced',
-        openControlCenter: 'Open Control Center',
+        openControlCenter: 'Open Switchboard',
         scan: 'Scan',
         problemsAction: n => `Problems (${n})`,
         enabledOn: n => `${n} on`,
-        summaryLine: (skills, tools) => `${skills} skills · ${tools} tools`,
+        summaryLine: (skills, tools) => `${skills} skill${skills === 1 ? '' : 's'} · ${tools} tool${tools === 1 ? '' : 's'}`,
         problemLine: (broken, drifted, foreign, unlinked) => `${broken} broken · ${drifted} drift · ${foreign} foreign · ${unlinked} unlinked`,
         toolsLandingHint: 'Manage daily skill availability by tool.',
         toolPathUnknown: 'Path not detected',
@@ -3919,6 +3986,8 @@ export default {
         wizardScanningDesc: 'This is read-only. Filesystem state will be classified from a fresh backend scan.',
         wizardScanFailed: 'Could not complete the import scan',
         wizardReviewTitle: 'Review what was found',
+        wizardScanEmptyTitle: 'No skills found',
+        wizardScanEmptyDesc: 'No skills were found in the selected folders. Nothing changed. Choose different folders or return to Tools.',
         wizardDuplicateGroups: n => `${n} duplicate-name group(s) need review and will not be adopted automatically.`,
         wizardManaged: 'Managed links',
         wizardUnique: 'Unique copies',
@@ -3993,12 +4062,20 @@ export default {
         disableSelected: 'Disable selected',
         enableCategory: 'Enable category',
         disableCategory: 'Disable category',
-        skillsCount: n => `${n} skills`,
+        skillsCount: n => `${n} skill${n === 1 ? '' : 's'}`,
         brokenCount: n => `${n} broken`,
         unlinkedCount: n => `${n} unlinked`,
         totalTip: 'Total skills discovered under the Hermes skills root',
         brokenTip: 'Symlinks pointing at nothing — repair them',
         unlinkedTip: 'Skills not linked into any coding tool',
+        unlinkedTitle: n => `${n} unlinked skill${n === 1 ? '' : 's'}`,
+        unlinkedEmpty: 'No unlinked skills',
+        unlinkedDesc: 'These skills remain in Hermes but are not enabled for any coding tool.',
+        protectedTitle: n => `${n} protected tool entr${n === 1 ? 'y' : 'ies'}`,
+        protectedEmpty: 'No protected tool entries',
+        protectedDesc: 'Foreign links and real skill directories are shown for review and are never changed automatically.',
+        protectedForeignLine: (tool, target) => `${tool} · foreign link${target ? ` → ${target}` : ''}`,
+        protectedUnmanagedLine: tool => `${tool} · real directory`,
         brokenEmpty: 'No broken links',
         brokenDesc: 'Broken skill links can be recreated from the Hermes source.',
         repair: 'Repair',
@@ -4024,8 +4101,8 @@ export default {
         repairFailed: 'Repair failed',
         bulkFailed: 'Bulk toggle failed',
         errorTitle: 'Skills backend unavailable',
-        errorDesc: 'The plugin backend did not answer. Check that skills-toggle is in `plugins.enabled` in config.yaml, then retry.',
-        errorNeedsRestart: "The gateway mounts this plugin's backend only at startup — it looks like the gateway started before skills-toggle was enabled. Run `hermes gateway restart` (or restart from Settings), then Retry.",
+        errorDesc: 'The plugin backend did not answer. Check that hermes-switchboard is in `plugins.enabled` in config.yaml, then retry.',
+        errorNeedsRestart: "The gateway mounts this plugin's backend only at startup — it looks like the gateway started before hermes-switchboard was enabled. Run `hermes gateway restart` (or restart from Settings), then Retry.",
         noRootTitle: 'No skills root found',
         noRootDesc: 'The Hermes skills directory does not exist yet. Create skills and reload.',
         emptyTitle: 'No skills yet',
@@ -4050,7 +4127,7 @@ export default {
         setupNudge: 'No tool skills folders found yet — set up tools to start linking.',
         createDir: 'Create',
         present: 'ready',
-        addTool: 'Add a custom tool (writes skills-toggle.json)',
+        addTool: 'Add a custom tool (writes hermes-switchboard.json)',
         toolLabel: 'Label',
         toolDir: '~/path/to/skills',
         add: 'Add',
@@ -4097,7 +4174,7 @@ export default {
         mcpTitle: 'MCP servers',
         mcpCount: n => `${n} in Hermes`,
         mcpEmpty: 'No MCP servers in Hermes',
-        mcpEmptyDesc: 'Servers configured under mcp_servers in config.yaml appear here and can be mirrored into Claude Desktop.',
+        mcpEmptyDesc: 'Servers configured under mcp_servers in config.yaml appear here and can be mirrored into supported clients.',
         mcpWriterLine: (label, absent) => `${label} — ${absent ? absent : 'config found'}`,
         mcpForeignNote: n => `${n} server(s) in Claude Desktop are not in the Hermes catalog (never touched)`,
         mcpForeignTip: 'Foreign entries are managed outside Hermes and are left alone',
@@ -4106,11 +4183,11 @@ export default {
         mcpSync: 'sync',
         mcpOn: name => `${name} enabled for Hermes`,
         mcpOff: name => `${name} disabled for Hermes`,
-        mcpSynced: name => `${name} synced to Claude Desktop`,
-        mcpRemoved: name => `${name} removed from Claude Desktop`,
-        mcpSyncTitle: name => `Overwrite the Claude Desktop copy of "${name}"?`,
+        mcpSynced: (name, writer) => `${name} synced to ${writer || 'client'}`,
+        mcpRemoved: (name, writer) => `${name} removed from ${writer || 'client'}`,
+        mcpSyncTitle: (name, writer) => `Overwrite the ${writer || 'client'} copy of "${name}"?`,
         mcpOverwriteDesc: 'Its current config differs from the Hermes catalog. The old copy is kept in a timestamped backup next to the config file.',
-        mcpRemoveTitle: name => `Remove "${name}" from Claude Desktop?`,
+        mcpRemoveTitle: (name, writer) => `Remove "${name}" from ${writer || 'client'}?`,
         mcpRemoveForceDesc: 'Its config differs from the Hermes catalog. The old copy is kept in a timestamped backup next to the config file.',
         mcpRemoveForce: 'Remove anyway',
         mcpFailed: 'MCP change failed',
@@ -4182,14 +4259,14 @@ export default {
       {
         id: 'page',
         area: ROUTES_AREA,
-        data: { path: '/skills-toggle' },
+        data: { path: '/hermes-switchboard' },
         render: () => jsx(ControlCenter, {})
       },
       {
         id: 'open',
         area: PALETTE_AREA,
         data: {
-          id: 'skills-toggle.open',
+          id: 'hermes-switchboard.open',
           label: 'Skills: toggle…',
           keywords: ['skills', 'toggle', 'sync', 'claude', 'codex', 'opencode', 'grok', 'zcode'],
           detail: () => 'Enable or disable skills per tool',
@@ -4200,7 +4277,7 @@ export default {
         id: 'mcp',
         area: PALETTE_AREA,
         data: {
-          id: 'skills-toggle.mcp',
+          id: 'hermes-switchboard.mcp',
           label: 'MCP: toggle…',
           keywords: ['mcp', 'servers', 'claude desktop', 'toggle'],
           detail: () => 'Enable or disable MCP servers per app',
@@ -4211,7 +4288,7 @@ export default {
         id: 'report',
         area: PALETTE_AREA,
         data: {
-          id: 'skills-toggle.report',
+          id: 'hermes-switchboard.report',
           label: 'Skills: health report',
           keywords: ['skills', 'health', 'broken', 'diff', 'repair'],
           detail: () => 'Broken links, unlinked skills, drift',

@@ -1,13 +1,12 @@
 ---
-name: Feedback
-about: Report a bug, clipped control, unexpected mutation, or confusing label in skills-toggle
+name: Hermes Switchboard feedback
+about: Report a bug, confusing interface, or unexpected filesystem change
 title: "[alpha] "
 labels: ["alpha-feedback"]
 ---
 
-Use this while skills-toggle is in alpha. Do not assume the plugin is broadly
-adopted. Every terminal intervention, ambiguous label, clipped control, and
-unexpected mutation is a defect.
+Hermes Switchboard is in alpha. Describe what you were trying to do and what
+happened. Please redact usernames, tokens, and MCP environment values.
 
 ## What you were trying to do
 
@@ -17,7 +16,7 @@ unexpected mutation is a defect.
 - [ ] Problems (repair or drift)
 - [ ] MCP
 - [ ] Advanced (blueprint / backups / watch / auto-link)
-- [ ] Compact pane / Control Center / matrix
+- [ ] Compact pane / Switchboard / matrix
 - [ ] Something else:
 
 ## What happened
@@ -45,7 +44,7 @@ get mutated?
 - [ ] No
 - [ ] Yes — details:
 
-## Receipt / logs (no secrets)
+## Receipt or logs
 
-Paste a receipt id, mutation-log line, or screenshot description. Redact env
-values, tokens, and home-directory usernames.
+Paste a receipt ID, relevant log line, or screenshot. Remove environment values,
+tokens, and home-directory usernames first.

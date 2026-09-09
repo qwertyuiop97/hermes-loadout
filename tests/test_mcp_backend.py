@@ -201,7 +201,7 @@ class CodexWriterTests(unittest.TestCase):
         self.assertIn("[desktop]", text)
         self.assertIn("max_depth = 2", text)
         self.assertIn("# codex config", text)
-        self.assertTrue(list(self.codex.parent.glob("config.toml.bak.skills-toggle.*")))
+        self.assertTrue(list(self.codex.parent.glob("config.toml.bak.hermes-switchboard.*")))
 
     def test_sync_update_replaces_block(self) -> None:
         r = self.mcp.sync_to_codex("docs")
@@ -264,7 +264,7 @@ class McpCoreTests(unittest.TestCase):
         r = self.mcp.toggle_hermes("weather", True)
         self.assertEqual(r["action"], "config-updated")
         self.assertTrue(pa.parse_mcp_servers((self.fx.home / "config.yaml").read_text())["weather"]["enabled"])
-        backups = list(self.fx.home.glob("config.yaml.bak.skills-toggle.*"))
+        backups = list(self.fx.home.glob("config.yaml.bak.hermes-switchboard.*"))
         self.assertEqual(len(backups), 1)
         self.assertIn("# header comment", (self.fx.home / "config.yaml").read_text())
         # idempotent
@@ -285,7 +285,7 @@ class McpCoreTests(unittest.TestCase):
         self.assertNotIn("enabled", servers["weather"])  # hermes-only key stripped
         doc = json.loads(self.fx.claude.read_text())
         self.assertEqual(doc["preferences"], {"theme": "dark"})  # untouched
-        self.assertTrue(list(self.fx.claude.parent.glob("claude_desktop_config.json.bak.skills-toggle.*")))
+        self.assertTrue(list(self.fx.claude.parent.glob("claude_desktop_config.json.bak.hermes-switchboard.*")))
         # re-sync is an update, idempotent content
         r = self.mcp.sync_to_claude("weather")
         self.assertEqual(r["action"], "updated")

@@ -13,7 +13,7 @@ FRONT="/tmp/skt-front"
 mkdir -p "$FRONT/staging/node_modules/@hermes/plugin-sdk"
 if [ ! -d "$FRONT/node_modules/react" ] || [ ! -d "$FRONT/node_modules/react-test-renderer" ]; then
   cd "$FRONT"
-  [ -f package.json ] || echo '{"name":"skills-toggle-render-harness","private":true,"type":"module"}' > package.json
+  [ -f package.json ] || echo '{"name":"hermes-switchboard-render-harness","private":true,"type":"module"}' > package.json
   npm install --no-fund --no-audit --silent react@18 react-dom@18 react-test-renderer@18
 fi
 

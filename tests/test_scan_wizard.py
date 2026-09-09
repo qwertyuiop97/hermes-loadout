@@ -97,7 +97,7 @@ class ScanWizardTest(unittest.TestCase):
         self.assertTrue(plan["ok"])
         self.assertEqual(before, after)
         self.assertFalse(self.core.log_path.exists())
-        self.assertEqual(list(self.fx.tmp.rglob("*skills-toggle-backup*")), [])
+        self.assertEqual(list(self.fx.tmp.rglob("*hermes-switchboard-backup*")), [])
         for args in (([], [], "imported"), (["hermes"], [], "imported"), (["bogus"], [], "imported"), (["codex"], [], "../bad")):
             self.assertFalse(call(self.core.import_plan, *args)["ok"])
 

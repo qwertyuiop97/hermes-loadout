@@ -123,7 +123,7 @@ spec.loader.exec_module(m)
 assert m.router is None, m.router
 for name in m.__all__:
     assert hasattr(m, name), name
-core = m.SkillsToggleCore(m.Path('/tmp/does-not-exist-skills-toggle'), {'hermes': {'label': 'H', 'special': 'config'}})
+core = m.SkillsToggleCore(m.Path('/tmp/does-not-exist-hermes-switchboard'), {'hermes': {'label': 'H', 'special': 'config'}})
 st = core.state()
 assert st['ok'] and st['skills'] == []
 print('PROBE_OK', m.PLUGIN_VERSION)
@@ -162,7 +162,7 @@ def _load_module():
 class WindowsPathHelperTests(unittest.TestCase):
     def setUp(self) -> None:
         self.pa = _load_module()
-    """same_path / is_inside must survive \}? prefixes, case, and 8.3 names."""
+    r"""same_path / is_inside must survive \}? prefixes, case, and 8.3 names."""
 
     def test_strip_extended(self) -> None:
         self.assertEqual(self.pa._strip_extended(r"\\?\C:\x\y"), "C:\\x\\y")
