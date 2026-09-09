@@ -11,6 +11,11 @@ This is for people who use several coding agents or maintain more skills than
 they want active at once. One application with a small skill collection may not
 need it. This is a pre-release alpha, not a certification of every client.
 
+![Loadout for Hermes showing per-application skill controls](docs/images/loadout-for-hermes.png)
+
+_Applications view in Hermes Desktop, captured with a disposable profile and
+synthetic skills._
+
 ## Library, import, and activation
 
 The library lives in `<hermes_home>/skills/<category>/<name>/SKILL.md`. The default
