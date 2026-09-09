@@ -107,6 +107,30 @@ class RouteRoundTrip(unittest.TestCase):
         self.assertEqual(body["changed"], 2)
         self.assertEqual(body["failed"], 0)
 
+    def test_bulk_plan_and_apply_roundtrip(self) -> None:
+        base = "/api/plugins/skills-toggle/bulk"
+        skills = ["apple/apple-notes", "résearch/arxiv"]
+        planned = self.client.post(
+            f"{base}/plan", json={"skills": skills, "tool": "codex", "enabled": True}
+        )
+        self.assertEqual(planned.status_code, 200)
+        plan = planned.json()
+        self.assertEqual(plan["would_change"], skills)
+        applied = self.client.post(
+            f"{base}/apply",
+            json={
+                "receipt_id": "http-roundtrip",
+                "skills": plan["would_change"],
+                "tool": "codex",
+                "enabled": True,
+            },
+        )
+        self.assertEqual(applied.status_code, 200)
+        body = applied.json()
+        self.assertEqual(body["receipt"]["receipt_id"], "http-roundtrip")
+        self.assertEqual(body["receipt"]["changed"], 2)
+        self.assertEqual([item["skill"] for item in body["results"]], skills)
+
     def test_repair_and_repair_all(self) -> None:
         r = self.client.post(
             "/api/plugins/skills-toggle/repair", json={"skill": "apple/rem índéluxé", "tool": "grok"}
