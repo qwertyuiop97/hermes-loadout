@@ -1,0 +1,2775 @@
+{
+  "ok": true,
+  "hermes_home": "/Users/demo/.hermes",
+  "skills_root": "/Users/demo/.hermes/skills",
+  "skills_root_exists": true,
+  "tools": [
+    {
+      "id": "hermes",
+      "label": "Hermes",
+      "present": true,
+      "special": "config"
+    },
+    {
+      "id": "claude",
+      "label": "Claude",
+      "present": true
+    },
+    {
+      "id": "codex",
+      "label": "Codex",
+      "present": true
+    },
+    {
+      "id": "opencode",
+      "label": "OpenCode",
+      "present": true
+    },
+    {
+      "id": "grok",
+      "label": "Grok",
+      "present": true
+    },
+    {
+      "id": "zcode",
+      "label": "ZCode",
+      "present": true
+    }
+  ],
+  "counts": {
+    "skills": 105,
+    "unlinked": 73
+  },
+  "skills": [
+    {
+      "id": "software-development/test-driven-development",
+      "name": "test-driven-development",
+      "category": "software-development",
+      "description": "A comprehensive workflow skill with a deliberately long description that will clip in the compact split pane: software-development automation, repeatable steps, references, and examples for daily use by an engineering professional working across multiple AI coding agents.",
+      "tools": {
+        "hermes": {
+          "state": "enabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "software-development/systematic-debugging",
+      "name": "systematic-debugging",
+      "category": "software-development",
+      "description": "A comprehensive workflow skill with a deliberately long description that will clip in the compact split pane: software-development automation, repeatable steps, references, and examples for daily use by an engineering professional working across multiple AI coding agents.",
+      "tools": {
+        "hermes": {
+          "state": "enabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "disabled"
+        },
+        "opencode": {
+          "state": "missing"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "disabled"
+        }
+      }
+    },
+    {
+      "id": "software-development/code-review",
+      "name": "code-review",
+      "category": "software-development",
+      "description": "A comprehensive workflow skill with a deliberately long description that will clip in the compact split pane: software-development automation, repeatable steps, references, and examples for daily use by an engineering professional working across multiple AI coding agents.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "disabled"
+        },
+        "zcode": {
+          "state": "disabled"
+        }
+      }
+    },
+    {
+      "id": "software-development/review-bugbot",
+      "name": "review-bugbot",
+      "category": "software-development",
+      "description": "Software Development automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "missing"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "software-development/review-security",
+      "name": "review-security",
+      "category": "software-development",
+      "description": "Software Development automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "foreign-link"
+        },
+        "opencode": {
+          "state": "disabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "software-development/scoped-file-search",
+      "name": "scoped-file-search",
+      "category": "software-development",
+      "description": "Software Development automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "broken-link"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "disabled"
+        }
+      }
+    },
+    {
+      "id": "software-development/new-repo",
+      "name": "new-repo",
+      "category": "software-development",
+      "description": "Software Development automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "missing"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "software-development/repo-publish-prep",
+      "name": "repo-publish-prep",
+      "category": "software-development",
+      "description": "Software Development automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "disabled"
+        }
+      }
+    },
+    {
+      "id": "software-development/requesting-code-review",
+      "name": "requesting-code-review",
+      "category": "software-development",
+      "description": "Software Development automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "software-development/split-to-prs",
+      "name": "split-to-prs",
+      "category": "software-development",
+      "description": "Software Development automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "disabled"
+        },
+        "opencode": {
+          "state": "broken-link"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "software-development/simplify-code",
+      "name": "simplify-code",
+      "category": "software-development",
+      "description": "Software Development automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "enabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "disabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "disabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "software-development/spike",
+      "name": "spike",
+      "category": "software-development",
+      "description": "Software Development automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "enabled"
+        },
+        "claude": {
+          "state": "disabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "software-development/loop",
+      "name": "loop",
+      "category": "software-development",
+      "description": "Software Development automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "broken-link"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "software-development/sdk",
+      "name": "sdk",
+      "category": "software-development",
+      "description": "Software Development automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "enabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "broken-link"
+        },
+        "zcode": {
+          "state": "broken-link"
+        }
+      }
+    },
+    {
+      "id": "software-development/shell",
+      "name": "shell",
+      "category": "software-development",
+      "description": "Software Development automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "enabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "broken-link"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "software-development/long-agent-runs",
+      "name": "long-agent-runs",
+      "category": "software-development",
+      "description": "Software Development automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "foreign-link"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "disabled"
+        }
+      }
+    },
+    {
+      "id": "software-development/retro",
+      "name": "retro",
+      "category": "software-development",
+      "description": "Software Development automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "enabled"
+        },
+        "claude": {
+          "state": "disabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "missing"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "software-development/node-inspect-debugger",
+      "name": "node-inspect-debugger",
+      "category": "software-development",
+      "description": "Software Development automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "software-development/python-debugpy",
+      "name": "python-debugpy",
+      "category": "software-development",
+      "description": "Software Development automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "disabled"
+        },
+        "codex": {
+          "state": "missing"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "disabled"
+        }
+      }
+    },
+    {
+      "id": "software-development/github",
+      "name": "github",
+      "category": "software-development",
+      "description": "Software Development automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "enabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "software-development/agent-usage-audit",
+      "name": "agent-usage-audit",
+      "category": "software-development",
+      "description": "Software Development automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "software-development/inspecting-hermes-desktop-dom",
+      "name": "inspecting-hermes-desktop-dom",
+      "category": "software-development",
+      "description": "Software Development automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "software-development/git-flow",
+      "name": "git-flow",
+      "category": "software-development",
+      "description": "Software Development automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "enabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "disabled"
+        },
+        "zcode": {
+          "state": "disabled"
+        }
+      }
+    },
+    {
+      "id": "software-development/commit-hygiene",
+      "name": "commit-hygiene",
+      "category": "software-development",
+      "description": "Software Development automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "software-development/migrate-to-skills",
+      "name": "migrate-to-skills",
+      "category": "software-development",
+      "description": "Software Development automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "disabled"
+        },
+        "grok": {
+          "state": "foreign-link"
+        },
+        "zcode": {
+          "state": "disabled"
+        }
+      }
+    },
+    {
+      "id": "software-development/refactor-extract",
+      "name": "refactor-extract",
+      "category": "software-development",
+      "description": "Software Development automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "autonomous-ai-agents/codex",
+      "name": "codex",
+      "category": "autonomous-ai-agents",
+      "description": "A comprehensive workflow skill with a deliberately long description that will clip in the compact split pane: autonomous-ai-agents automation, repeatable steps, references, and examples for daily use by an engineering professional working across multiple AI coding agents.",
+      "tools": {
+        "hermes": {
+          "state": "enabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "autonomous-ai-agents/claude-code",
+      "name": "claude-code",
+      "category": "autonomous-ai-agents",
+      "description": "A comprehensive workflow skill with a deliberately long description that will clip in the compact split pane: autonomous-ai-agents automation, repeatable steps, references, and examples for daily use by an engineering professional working across multiple AI coding agents.",
+      "tools": {
+        "hermes": {
+          "state": "enabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "broken-link"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "autonomous-ai-agents/grok",
+      "name": "grok",
+      "category": "autonomous-ai-agents",
+      "description": "A comprehensive workflow skill with a deliberately long description that will clip in the compact split pane: autonomous-ai-agents automation, repeatable steps, references, and examples for daily use by an engineering professional working across multiple AI coding agents.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "autonomous-ai-agents/opencode",
+      "name": "opencode",
+      "category": "autonomous-ai-agents",
+      "description": "Autonomous Ai Agents automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "enabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "broken-link"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "autonomous-ai-agents/antigravity-cli",
+      "name": "antigravity-cli",
+      "category": "autonomous-ai-agents",
+      "description": "Autonomous Ai Agents automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "enabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "autonomous-ai-agents/create-hook",
+      "name": "create-hook",
+      "category": "autonomous-ai-agents",
+      "description": "Autonomous Ai Agents automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "enabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "missing"
+        },
+        "zcode": {
+          "state": "disabled"
+        }
+      }
+    },
+    {
+      "id": "autonomous-ai-agents/create-rule",
+      "name": "create-rule",
+      "category": "autonomous-ai-agents",
+      "description": "Autonomous Ai Agents automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "enabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "autonomous-ai-agents/create-skill",
+      "name": "create-skill",
+      "category": "autonomous-ai-agents",
+      "description": "Autonomous Ai Agents automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "enabled"
+        },
+        "claude": {
+          "state": "disabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "unmanaged-dir"
+        },
+        "grok": {
+          "state": "disabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "autonomous-ai-agents/create-subagent",
+      "name": "create-subagent",
+      "category": "autonomous-ai-agents",
+      "description": "Autonomous Ai Agents automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "enabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "foreign-link"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "broken-link"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "autonomous-ai-agents/find-skills",
+      "name": "find-skills",
+      "category": "autonomous-ai-agents",
+      "description": "Autonomous Ai Agents automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "autonomous-ai-agents/goal",
+      "name": "goal",
+      "category": "autonomous-ai-agents",
+      "description": "Autonomous Ai Agents automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "enabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "disabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "autonomous-ai-agents/share",
+      "name": "share",
+      "category": "autonomous-ai-agents",
+      "description": "Autonomous Ai Agents automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "enabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "disabled"
+        }
+      }
+    },
+    {
+      "id": "autonomous-ai-agents/statusline",
+      "name": "statusline",
+      "category": "autonomous-ai-agents",
+      "description": "Autonomous Ai Agents automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "enabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "missing"
+        },
+        "zcode": {
+          "state": "disabled"
+        }
+      }
+    },
+    {
+      "id": "autonomous-ai-agents/origin",
+      "name": "origin",
+      "category": "autonomous-ai-agents",
+      "description": "Autonomous Ai Agents automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "disabled"
+        },
+        "codex": {
+          "state": "disabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "autonomous-ai-agents/update-cli-config",
+      "name": "update-cli-config",
+      "category": "autonomous-ai-agents",
+      "description": "Autonomous Ai Agents automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "foreign-link"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "autonomous-ai-agents/update-cursor-settings",
+      "name": "update-cursor-settings",
+      "category": "autonomous-ai-agents",
+      "description": "Autonomous Ai Agents automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "unmanaged-dir"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "disabled"
+        }
+      }
+    },
+    {
+      "id": "autonomous-ai-agents/computer-use",
+      "name": "computer-use",
+      "category": "autonomous-ai-agents",
+      "description": "Autonomous Ai Agents automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "disabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "broken-link"
+        },
+        "zcode": {
+          "state": "broken-link"
+        }
+      }
+    },
+    {
+      "id": "autonomous-ai-agents/babysit",
+      "name": "babysit",
+      "category": "autonomous-ai-agents",
+      "description": "Autonomous Ai Agents automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "enabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "autonomous-ai-agents/delegating-coding-clis",
+      "name": "delegating-coding-clis",
+      "category": "autonomous-ai-agents",
+      "description": "Autonomous Ai Agents automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "disabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "autonomous-ai-agents/multi-agent-skills-sync",
+      "name": "multi-agent-skills-sync",
+      "category": "autonomous-ai-agents",
+      "description": "Autonomous Ai Agents automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "enabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "autonomous-ai-agents/agent-reach",
+      "name": "agent-reach",
+      "category": "autonomous-ai-agents",
+      "description": "Autonomous Ai Agents automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "enabled"
+        },
+        "claude": {
+          "state": "foreign-link"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "disabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "autonomous-ai-agents/computer-use-browser",
+      "name": "computer-use-browser",
+      "category": "autonomous-ai-agents",
+      "description": "Autonomous Ai Agents automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "foreign-link"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "autonomous-ai-agents/autonomous-loop",
+      "name": "autonomous-loop",
+      "category": "autonomous-ai-agents",
+      "description": "Autonomous Ai Agents automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "enabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "disabled"
+        },
+        "zcode": {
+          "state": "disabled"
+        }
+      }
+    },
+    {
+      "id": "productivity/google-workspace",
+      "name": "google-workspace",
+      "category": "productivity",
+      "description": "A comprehensive workflow skill with a deliberately long description that will clip in the compact split pane: productivity automation, repeatable steps, references, and examples for daily use by an engineering professional working across multiple AI coding agents.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "disabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "productivity/pdf",
+      "name": "pdf",
+      "category": "productivity",
+      "description": "A comprehensive workflow skill with a deliberately long description that will clip in the compact split pane: productivity automation, repeatable steps, references, and examples for daily use by an engineering professional working across multiple AI coding agents.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "productivity/grill-me",
+      "name": "grill-me",
+      "category": "productivity",
+      "description": "A comprehensive workflow skill with a deliberately long description that will clip in the compact split pane: productivity automation, repeatable steps, references, and examples for daily use by an engineering professional working across multiple AI coding agents.",
+      "tools": {
+        "hermes": {
+          "state": "enabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "productivity/grilling",
+      "name": "grilling",
+      "category": "productivity",
+      "description": "Productivity automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "productivity/i-have-adhd",
+      "name": "i-have-adhd",
+      "category": "productivity",
+      "description": "Productivity automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "enabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "foreign-link"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "productivity/personality-customization",
+      "name": "personality-customization",
+      "category": "productivity",
+      "description": "Productivity automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "enabled"
+        },
+        "claude": {
+          "state": "missing"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "disabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "productivity/product-price-monitor",
+      "name": "product-price-monitor",
+      "category": "productivity",
+      "description": "Productivity automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "enabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "missing"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "productivity/rename-chat",
+      "name": "rename-chat",
+      "category": "productivity",
+      "description": "Productivity automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "missing"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "productivity/superwhisper",
+      "name": "superwhisper",
+      "category": "productivity",
+      "description": "Productivity automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "enabled"
+        },
+        "claude": {
+          "state": "unmanaged-dir"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "foreign-link"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "foreign-link"
+        }
+      }
+    },
+    {
+      "id": "productivity/writing-for-agents",
+      "name": "writing-for-agents",
+      "category": "productivity",
+      "description": "Productivity automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "enabled"
+        },
+        "claude": {
+          "state": "disabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "productivity/humanizer",
+      "name": "humanizer",
+      "category": "productivity",
+      "description": "Productivity automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "productivity/canvas",
+      "name": "canvas",
+      "category": "productivity",
+      "description": "Productivity automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "enabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "disabled"
+        },
+        "opencode": {
+          "state": "unmanaged-dir"
+        },
+        "grok": {
+          "state": "disabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "productivity/agentic-image-gen",
+      "name": "agentic-image-gen",
+      "category": "productivity",
+      "description": "Productivity automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "disabled"
+        },
+        "codex": {
+          "state": "disabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "disabled"
+        }
+      }
+    },
+    {
+      "id": "productivity/parametric-3d-printing",
+      "name": "parametric-3d-printing",
+      "category": "productivity",
+      "description": "Productivity automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "enabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "missing"
+        },
+        "grok": {
+          "state": "disabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "productivity/quick-capture",
+      "name": "quick-capture",
+      "category": "productivity",
+      "description": "Productivity automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "enabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "disabled"
+        }
+      }
+    },
+    {
+      "id": "productivity/inbox-zero",
+      "name": "inbox-zero",
+      "category": "productivity",
+      "description": "Productivity automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "enabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "disabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "disabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "productivity/meeting-notes",
+      "name": "meeting-notes",
+      "category": "productivity",
+      "description": "Productivity automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "productivity/calendar-block",
+      "name": "calendar-block",
+      "category": "productivity",
+      "description": "Productivity automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "unmanaged-dir"
+        },
+        "codex": {
+          "state": "broken-link"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "broken-link"
+        }
+      }
+    },
+    {
+      "id": "productivity/email-drafting",
+      "name": "email-drafting",
+      "category": "productivity",
+      "description": "Productivity automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "productivity/document-template",
+      "name": "document-template",
+      "category": "productivity",
+      "description": "Productivity automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "productivity/spreadsheet-automation",
+      "name": "spreadsheet-automation",
+      "category": "productivity",
+      "description": "Productivity automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "foreign-link"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "broken-link"
+        },
+        "grok": {
+          "state": "broken-link"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "productivity/screenshare-guide",
+      "name": "screenshare-guide",
+      "category": "productivity",
+      "description": "Productivity automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "creative/ascii-art",
+      "name": "ascii-art",
+      "category": "creative",
+      "description": "A comprehensive workflow skill with a deliberately long description that will clip in the compact split pane: creative automation, repeatable steps, references, and examples for daily use by an engineering professional working across multiple AI coding agents.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "broken-link"
+        },
+        "codex": {
+          "state": "broken-link"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "creative/hand-drawn-diagrams",
+      "name": "hand-drawn-diagrams",
+      "category": "creative",
+      "description": "A comprehensive workflow skill with a deliberately long description that will clip in the compact split pane: creative automation, repeatable steps, references, and examples for daily use by an engineering professional working across multiple AI coding agents.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "creative/visual-design",
+      "name": "visual-design",
+      "category": "creative",
+      "description": "A comprehensive workflow skill with a deliberately long description that will clip in the compact split pane: creative automation, repeatable steps, references, and examples for daily use by an engineering professional working across multiple AI coding agents.",
+      "tools": {
+        "hermes": {
+          "state": "enabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "broken-link"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "creative/color-theory",
+      "name": "color-theory",
+      "category": "creative",
+      "description": "Creative automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "disabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "creative/mood-board",
+      "name": "mood-board",
+      "category": "creative",
+      "description": "Creative automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "disabled"
+        },
+        "opencode": {
+          "state": "disabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "disabled"
+        }
+      }
+    },
+    {
+      "id": "creative/sketch-to-mock",
+      "name": "sketch-to-mock",
+      "category": "creative",
+      "description": "Creative automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "disabled"
+        },
+        "opencode": {
+          "state": "broken-link"
+        },
+        "grok": {
+          "state": "unmanaged-dir"
+        },
+        "zcode": {
+          "state": "broken-link"
+        }
+      }
+    },
+    {
+      "id": "creative/typography-guide",
+      "name": "typography-guide",
+      "category": "creative",
+      "description": "Creative automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "creative/layout-composition",
+      "name": "layout-composition",
+      "category": "creative",
+      "description": "Creative automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "disabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "creative/brand-assets",
+      "name": "brand-assets",
+      "category": "creative",
+      "description": "Creative automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "missing"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "creative/photo-editing",
+      "name": "photo-editing",
+      "category": "creative",
+      "description": "Creative automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "disabled"
+        },
+        "codex": {
+          "state": "foreign-link"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "foreign-link"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "creative/video-scripting",
+      "name": "video-scripting",
+      "category": "creative",
+      "description": "Creative automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "disabled"
+        },
+        "opencode": {
+          "state": "disabled"
+        },
+        "grok": {
+          "state": "missing"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "creative/motion-storyboard",
+      "name": "motion-storyboard",
+      "category": "creative",
+      "description": "Creative automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "enabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "broken-link"
+        },
+        "zcode": {
+          "state": "missing"
+        }
+      }
+    },
+    {
+      "id": "creative/sound-design",
+      "name": "sound-design",
+      "category": "creative",
+      "description": "Creative automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "disabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "disabled"
+        }
+      }
+    },
+    {
+      "id": "creative/logo-exploration",
+      "name": "logo-exploration",
+      "category": "creative",
+      "description": "Creative automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "missing"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "foreign-link"
+        }
+      }
+    },
+    {
+      "id": "research/deep-research",
+      "name": "deep-research",
+      "category": "research",
+      "description": "A comprehensive workflow skill with a deliberately long description that will clip in the compact split pane: research automation, repeatable steps, references, and examples for daily use by an engineering professional working across multiple AI coding agents.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "disabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "research/grounded-citations",
+      "name": "grounded-citations",
+      "category": "research",
+      "description": "A comprehensive workflow skill with a deliberately long description that will clip in the compact split pane: research automation, repeatable steps, references, and examples for daily use by an engineering professional working across multiple AI coding agents.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "broken-link"
+        },
+        "grok": {
+          "state": "missing"
+        },
+        "zcode": {
+          "state": "disabled"
+        }
+      }
+    },
+    {
+      "id": "research/llm-wiki",
+      "name": "llm-wiki",
+      "category": "research",
+      "description": "A comprehensive workflow skill with a deliberately long description that will clip in the compact split pane: research automation, repeatable steps, references, and examples for daily use by an engineering professional working across multiple AI coding agents.",
+      "tools": {
+        "hermes": {
+          "state": "enabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "disabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "research/rss-feeds",
+      "name": "rss-feeds",
+      "category": "research",
+      "description": "Research automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "enabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "research/literature-review",
+      "name": "literature-review",
+      "category": "research",
+      "description": "Research automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "enabled"
+        },
+        "claude": {
+          "state": "broken-link"
+        },
+        "codex": {
+          "state": "disabled"
+        },
+        "opencode": {
+          "state": "broken-link"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "research/domain-recon",
+      "name": "domain-recon",
+      "category": "research",
+      "description": "Research automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "foreign-link"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "disabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "research/market-data",
+      "name": "market-data",
+      "category": "research",
+      "description": "Research automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "unmanaged-dir"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "devops/hermes-self-config-audit",
+      "name": "hermes-self-config-audit",
+      "category": "devops",
+      "description": "A comprehensive workflow skill with a deliberately long description that will clip in the compact split pane: devops automation, repeatable steps, references, and examples for daily use by an engineering professional working across multiple AI coding agents.",
+      "tools": {
+        "hermes": {
+          "state": "enabled"
+        },
+        "claude": {
+          "state": "disabled"
+        },
+        "codex": {
+          "state": "disabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "disabled"
+        }
+      }
+    },
+    {
+      "id": "devops/multi-mac-agent-sync",
+      "name": "multi-mac-agent-sync",
+      "category": "devops",
+      "description": "A comprehensive workflow skill with a deliberately long description that will clip in the compact split pane: devops automation, repeatable steps, references, and examples for daily use by an engineering professional working across multiple AI coding agents.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "disabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "disabled"
+        }
+      }
+    },
+    {
+      "id": "devops/tailscale-expose",
+      "name": "tailscale-expose",
+      "category": "devops",
+      "description": "A comprehensive workflow skill with a deliberately long description that will clip in the compact split pane: devops automation, repeatable steps, references, and examples for daily use by an engineering professional working across multiple AI coding agents.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "broken-link"
+        },
+        "codex": {
+          "state": "disabled"
+        },
+        "opencode": {
+          "state": "disabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "devops/ci-pipeline",
+      "name": "ci-pipeline",
+      "category": "devops",
+      "description": "Devops automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "foreign-link"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "disabled"
+        }
+      }
+    },
+    {
+      "id": "devops/release-automation",
+      "name": "release-automation",
+      "category": "devops",
+      "description": "Devops automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "enabled"
+        },
+        "claude": {
+          "state": "disabled"
+        },
+        "codex": {
+          "state": "broken-link"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "disabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "apple/apple-reminders",
+      "name": "apple-reminders",
+      "category": "apple",
+      "description": "A comprehensive workflow skill with a deliberately long description that will clip in the compact split pane: apple automation, repeatable steps, references, and examples for daily use by an engineering professional working across multiple AI coding agents.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "broken-link"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "foreign-link"
+        }
+      }
+    },
+    {
+      "id": "apple/imessage",
+      "name": "imessage",
+      "category": "apple",
+      "description": "A comprehensive workflow skill with a deliberately long description that will clip in the compact split pane: apple automation, repeatable steps, references, and examples for daily use by an engineering professional working across multiple AI coding agents.",
+      "tools": {
+        "hermes": {
+          "state": "enabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "apple/shortcuts-automation",
+      "name": "shortcuts-automation",
+      "category": "apple",
+      "description": "A comprehensive workflow skill with a deliberately long description that will clip in the compact split pane: apple automation, repeatable steps, references, and examples for daily use by an engineering professional working across multiple AI coding agents.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "foreign-link"
+        },
+        "opencode": {
+          "state": "broken-link"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "apple/script-editor",
+      "name": "script-editor",
+      "category": "apple",
+      "description": "Apple automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "enabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "disabled"
+        }
+      }
+    },
+    {
+      "id": "apple/jxa-automation",
+      "name": "jxa-automation",
+      "category": "apple",
+      "description": "Apple automation: repeatable steps and safe defaults.",
+      "tools": {
+        "hermes": {
+          "state": "enabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "unmanaged-dir"
+        },
+        "opencode": {
+          "state": "missing"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "media/transcribe-audio",
+      "name": "transcribe-audio",
+      "category": "media",
+      "description": "A comprehensive workflow skill with a deliberately long description that will clip in the compact split pane: media automation, repeatable steps, references, and examples for daily use by an engineering professional working across multiple AI coding agents.",
+      "tools": {
+        "hermes": {
+          "state": "enabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "disabled"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "missing"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "media/video-notes",
+      "name": "video-notes",
+      "category": "media",
+      "description": "A comprehensive workflow skill with a deliberately long description that will clip in the compact split pane: media automation, repeatable steps, references, and examples for daily use by an engineering professional working across multiple AI coding agents.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "foreign-link"
+        },
+        "opencode": {
+          "state": "enabled"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    },
+    {
+      "id": "media/image-ocr",
+      "name": "image-ocr",
+      "category": "media",
+      "description": "A comprehensive workflow skill with a deliberately long description that will clip in the compact split pane: media automation, repeatable steps, references, and examples for daily use by an engineering professional working across multiple AI coding agents.",
+      "tools": {
+        "hermes": {
+          "state": "disabled"
+        },
+        "claude": {
+          "state": "enabled"
+        },
+        "codex": {
+          "state": "enabled"
+        },
+        "opencode": {
+          "state": "missing"
+        },
+        "grok": {
+          "state": "enabled"
+        },
+        "zcode": {
+          "state": "enabled"
+        }
+      }
+    }
+  ]
+}
