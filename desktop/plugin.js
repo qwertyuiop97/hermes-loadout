@@ -2905,6 +2905,179 @@ function ToolCard({ tool, counts, busy, onManage, onEnableAll, onDisableAll }) {
   })
 }
 
+function BulkPlanPreview({ plan }) {
+  const t = usePluginI18n(ID)
+  if (!plan) return null
+  const totals = plan.totals || {}
+  const sample = Array.isArray(plan.sample) ? plan.sample : []
+  const refused = Array.isArray(plan.refused) ? plan.refused : []
+  return jsxs('div', {
+    'data-bulk-plan': 'preview',
+    className: 'flex max-h-64 flex-col gap-2 overflow-y-auto text-left text-xs',
+    children: [
+      jsx('div', { className: 'font-medium', children: t('toolBulkPreview', totals.would_change || 0, totals.already_satisfied || 0, totals.refused || 0) }),
+      sample.length ? jsxs('div', { children: [
+        jsx('div', { className: 'text-muted-foreground', children: t('bulkSampleTitle') }),
+        sample.map(row => jsx('div', {
+          'data-plan-sample': row.skill_id,
+          children: t('bulkSampleLine', row.name, row.category, row.current_state, row.next_state)
+        }, row.skill_id))
+      ] }) : null,
+      refused.length ? jsxs('div', { children: [
+        jsx('div', { className: 'font-medium text-(--ui-text-warning)', children: t('bulkRefusedTitle') }),
+        refused.map(row => jsx('div', {
+          'data-plan-refused': row.skill,
+          className: 'text-(--ui-text-warning)',
+          children: t('bulkRefusedLine', row.skill, row.code, row.reason)
+        }, `${row.skill}-${row.code}`))
+      ] }) : null
+    ]
+  })
+}
+
+function BulkReceipt({ receipt, tool }) {
+  const t = usePluginI18n(ID)
+  if (!receipt) return null
+  const details = receipt.receipt || {}
+  const results = Array.isArray(receipt.results) ? receipt.results : []
+  return jsxs('div', {
+    'data-bulk-receipt': tool.id,
+    className: 'mx-3 mb-2 max-h-48 overflow-y-auto rounded-md border border-(--ui-stroke-secondary) p-2 text-xs',
+    children: [
+      jsx('div', { className: 'mb-1 font-medium', children: t('bulkReceiptTitle', tool.label, details.changed || 0, details.failed || 0, details.refused || 0) }),
+      details.receipt_id ? jsx('div', { className: 'mb-1 text-muted-foreground', children: t('bulkReceiptId', details.receipt_id) }) : null,
+      results.map(result => jsx('div', {
+        'data-bulk-result': result.skill,
+        className: result.ok ? 'text-muted-foreground' : 'text-(--ui-text-danger)',
+        children: t('bulkResultLine', result.skill, result.ok ? t('bulkResultOk', result.state) : t('bulkResultFailed', result.error || result.code || t('bulkFailed')))
+      }, result.skill))
+    ]
+  })
+}
+
+function SingleToolView({ tool, skills, busy, onBack, onToggle, onBulk }) {
+  const t = usePluginI18n(ID)
+  const [rawQuery, setRawQuery] = useState('')
+  const query = useDebounced(rawQuery, 200).trim().toLowerCase()
+  const [view, setView] = useState('all')
+  const [categoryFilter, setCategoryFilter] = useState('all')
+  const [collapsed, setCollapsed] = useState(() => new Set())
+  const [selected, setSelected] = useState(() => new Set())
+  const categories = useMemo(() => Array.from(new Set(skills.map(skill => skill.category))), [skills])
+  const visible = useMemo(() => skills.filter(skill => {
+    const entry = skill.tools && skill.tools[tool.id]
+    const stateName = entry ? entry.state : 'missing'
+    if (categoryFilter !== 'all' && skill.category !== categoryFilter) return false
+    if (query && skill.name.toLowerCase().indexOf(query) === -1 && skill.category.toLowerCase().indexOf(query) === -1 && (skill.description || '').toLowerCase().indexOf(query) === -1) return false
+    if (view === 'enabled') return stateName === 'enabled'
+    if (view === 'issues') return isProblemState(stateName)
+    if (view === 'off') return stateName !== 'enabled' && !isProblemState(stateName)
+    return true
+  }), [skills, tool.id, categoryFilter, query, view])
+  const groups = useMemo(() => {
+    const grouped = new Map()
+    for (const skill of visible) {
+      if (!grouped.has(skill.category)) grouped.set(skill.category, [])
+      grouped.get(skill.category).push(skill)
+    }
+    return Array.from(grouped.entries()).map(([category, rows]) => ({ category: category, skills: rows }))
+  }, [visible])
+  const visibleIds = visible.map(skill => skill.id)
+  const allVisibleSelected = visibleIds.length > 0 && visibleIds.every(id => selected.has(id))
+  const setAllVisible = checked => setSelected(previous => {
+    const next = new Set(previous)
+    for (const id of visibleIds) checked ? next.add(id) : next.delete(id)
+    return next
+  })
+  const toggleSelected = id => setSelected(previous => {
+    const next = new Set(previous)
+    if (next.has(id)) next.delete(id)
+    else next.add(id)
+    return next
+  })
+  const toggleCollapsed = category => setCollapsed(previous => {
+    const next = new Set(previous)
+    if (next.has(category)) next.delete(category)
+    else next.add(category)
+    return next
+  })
+  const selectedIds = Array.from(selected)
+
+  return jsxs('div', {
+    'data-single-tool': tool.id,
+    className: 'flex h-full min-w-0 flex-col text-sm',
+    children: [
+      jsxs('div', { className: 'flex flex-col gap-2 border-b border-(--ui-stroke-secondary) p-3', children: [
+        jsxs('div', { className: 'flex flex-wrap items-center gap-2', children: [
+          jsx(Button, { variant: 'secondary', size: 'xs', onClick: onBack, children: t('backToTools') }),
+          jsx('h2', { className: 'font-medium', children: tool.label }),
+          jsx(Badge, { variant: 'outline', size: 'xs', children: t('skillsCount', skills.length) }),
+          jsxs('span', { className: 'ml-auto flex gap-1', children: [
+            jsx(Button, { variant: 'secondary', size: 'xs', disabled: busy || skills.length === 0, onClick: () => onBulk(skills.map(skill => skill.id), true, t('scopeAll')), children: t('enableAll') }),
+            jsx(Button, { variant: 'secondary', size: 'xs', disabled: busy || skills.length === 0, onClick: () => onBulk(skills.map(skill => skill.id), false, t('scopeAll')), children: t('disableAll') })
+          ] })
+        ] }),
+        jsx(SearchField, { placeholder: t('searchPlaceholder'), value: rawQuery, onChange: setRawQuery, containerClassName: 'w-full', 'aria-label': t('searchPlaceholder') }),
+        jsxs('div', { className: 'flex flex-wrap items-center gap-2', children: [
+          jsx('label', { className: 'text-xs text-muted-foreground', children: t('categoryFilter') }),
+          jsx('select', {
+            'aria-label': t('categoryFilter'), value: categoryFilter,
+            onChange: event => setCategoryFilter(event.target.value),
+            className: 'rounded-md border border-(--ui-stroke-secondary) bg-background px-2 py-1 text-xs',
+            children: [jsx('option', { value: 'all', children: t('allCategories') }, 'all')].concat(categories.map(category => jsx('option', { value: category, children: category }, category)))
+          }),
+          jsx(SegmentedControl, {
+            options: [{ id: 'all', label: t('viewAll') }, { id: 'enabled', label: t('viewEnabled') }, { id: 'off', label: t('viewOff') }, { id: 'issues', label: t('viewIssues') }],
+            value: view,
+            onChange: setView
+          })
+        ] }),
+        jsxs('label', { className: 'flex items-center gap-2 text-xs', children: [
+          jsx('input', { type: 'checkbox', checked: allVisibleSelected, onChange: event => setAllVisible(event.target.checked), 'aria-label': t('selectAllVisible') }),
+          t('selectAllVisible'),
+          jsx('span', { className: 'text-muted-foreground', children: t('visibleCount', visible.length) })
+        ] })
+      ] }),
+      jsx(ScrollArea, { className: 'min-h-0 flex-1', children: groups.length
+        ? jsx('div', { className: 'flex flex-col gap-2 p-3 pb-20', children: groups.map(group => {
+            const isCollapsed = collapsed.has(group.category)
+            const ids = group.skills.map(skill => skill.id)
+            return jsxs('section', { 'data-tool-category': group.category, children: [
+              jsxs('div', { className: 'sticky top-0 z-10 flex items-center gap-2 bg-background py-1', children: [
+                jsx('button', { type: 'button', 'aria-expanded': !isCollapsed, onClick: () => toggleCollapsed(group.category), className: 'font-medium', children: `${isCollapsed ? '▸' : '▾'} ${group.category}` }),
+                jsx(Badge, { variant: 'outline', size: 'xs', children: String(group.skills.length) }),
+                jsxs('span', { className: 'ml-auto flex gap-1', children: [
+                  jsx(Button, { variant: 'ghost', size: 'xs', disabled: busy, onClick: () => onBulk(ids, true, t('scopeCategory', group.category)), children: t('enableCategory') }),
+                  jsx(Button, { variant: 'ghost', size: 'xs', disabled: busy, onClick: () => onBulk(ids, false, t('scopeCategory', group.category)), children: t('disableCategory') })
+                ] })
+              ] }),
+              isCollapsed ? null : jsx('div', { children: group.skills.map(skill => {
+                const entry = skill.tools && skill.tools[tool.id]
+                const stateName = entry ? entry.state : 'missing'
+                const locked = stateName === 'foreign-link' || stateName === 'unmanaged-dir'
+                return jsxs('div', { 'data-single-tool-skill': skill.id, className: 'flex items-center gap-2 rounded-md px-2 py-2 hover:bg-(--chrome-action-hover)', children: [
+                  jsx('input', { type: 'checkbox', checked: selected.has(skill.id), onChange: () => toggleSelected(skill.id), 'aria-label': t('selectSkill', skill.name) }),
+                  jsx(StatusDot, { tone: isProblemState(stateName) ? 'warn' : stateName === 'enabled' ? 'good' : 'muted' }),
+                  jsxs('span', { className: 'min-w-0 flex-1', children: [
+                    jsx('span', { className: 'block truncate font-medium', children: skill.name }),
+                    skill.description ? jsx('span', { className: 'block truncate text-xs text-muted-foreground', children: skill.description }) : null
+                  ] }),
+                  jsx('span', { className: 'text-xs text-muted-foreground', children: stateName }),
+                  jsx(Switch, { size: 'xs', checked: stateName === 'enabled', disabled: busy || locked, 'aria-label': `${skill.name} — ${tool.label}`, onCheckedChange: enabled => onToggle(skill, enabled) })
+                ] }, skill.id)
+              }) })
+            ] }, group.category)
+          }) })
+        : jsx(EmptyState, { title: t('noMatchTitle'), description: t('noMatchDesc') }) }),
+      selectedIds.length ? jsxs('div', { 'data-selection-bar': 'sticky', className: 'sticky bottom-0 flex items-center gap-2 border-t border-(--ui-stroke-secondary) bg-background p-3', children: [
+        jsx('span', { className: 'text-xs font-medium', children: t('selectedCount', selectedIds.length) }),
+        jsx(Button, { variant: 'secondary', size: 'xs', disabled: busy, onClick: () => onBulk(selectedIds, true, t('scopeSelected', selectedIds.length)), children: t('enableSelected') }),
+        jsx(Button, { variant: 'secondary', size: 'xs', disabled: busy, onClick: () => onBulk(selectedIds, false, t('scopeSelected', selectedIds.length)), children: t('disableSelected') })
+      ] }) : null
+    ]
+  })
+}
+
 function ToolsOverview({ layout }) {
   const t = usePluginI18n(ID)
   const qc = useQueryClient()
@@ -2966,27 +3139,24 @@ function ToolsOverview({ layout }) {
     return { enabled: enabledByTool.get(toolId) || 0, total: skills.length, off: off, problem: problem }
   }
 
-  const bulkMutation = useMutation({
-    mutationFn: vars => pluginCtx.rest('/toggle-bulk', {
-      method: 'POST', body: { skills: vars.skillIds, tool: vars.tool.id, enabled: vars.enabled }
+  const applyMutation = useMutation({
+    mutationFn: vars => pluginCtx.rest('/bulk/apply', {
+      method: 'POST', body: { skills: vars.skillIds, tool: vars.tool.id, enabled: vars.enabled, receipt_id: vars.receiptId }
     }),
     onSuccess: (data, vars) => {
       if (!data || data.ok !== true) {
         host.notify({ kind: 'error', message: t('bulkFailed') })
         return
       }
-      const results = Array.isArray(data.results) ? data.results : []
-      const succeeded = new Set(results.filter(result => result.ok).map(result => result.skill))
-      const undoActions = vars.changedIds
-        .filter(skillId => succeeded.has(skillId))
-        .map(skillId => ({ skill: skillId, tool: vars.tool.id, enabled: !vars.enabled }))
+      const resultReceipt = data.receipt || {}
+      const undoActions = (Array.isArray(resultReceipt.undone_by) ? resultReceipt.undone_by : [])
+        .map(item => ({ skill: item.skill, tool: vars.tool.id, enabled: item.enabled }))
       if (undoActions.length) {
         setUndo({ actions: undoActions, count: undoActions.length, expires: Date.now() + 30000 })
       }
-      const changed = undoActions.length
-      setReceipt({ tool: vars.tool, results: results, changed: changed, failed: data.failed || 0 })
+      setReceipt({ tool: vars.tool, results: Array.isArray(data.results) ? data.results : [], receipt: resultReceipt })
       haptic('tap')
-      host.notify({ kind: data.failed ? 'error' : 'success', message: t('toastBulk', changed, data.failed || 0) })
+      host.notify({ kind: resultReceipt.failed ? 'error' : 'success', message: t('toastBulk', resultReceipt.changed || 0, resultReceipt.failed || 0) })
     },
     onError: err => host.notifyError(err, t('bulkFailed')),
     onSettled: () => {
@@ -2996,28 +3166,45 @@ function ToolsOverview({ layout }) {
     }
   })
 
-  const openBulkConfirm = (tool, enabled) => {
-    const protectedStates = new Set(['foreign-link', 'unmanaged-dir'])
-    const changedIds = []
-    let already = 0
-    let refused = 0
-    for (const skill of skills) {
-      const entry = skill.tools && skill.tools[tool.id]
-      const stateName = entry ? entry.state : 'missing'
-      if (protectedStates.has(stateName)) refused += 1
-      else if ((enabled && stateName === 'enabled') || (!enabled && (stateName === 'disabled' || stateName === 'missing'))) already += 1
-      else changedIds.push(skill.id)
-    }
-    setConfirm({
-      title: enabled ? t('bulkOnTitle', tool.label) : t('bulkOffTitle', tool.label),
-      description: t('toolBulkPreview', changedIds.length, already, refused),
-      confirmLabel: enabled ? t('enableAll') : t('disableAll'),
-      destructive: !enabled,
-      action: () => bulkMutation.mutate({
-        skillIds: skills.map(skill => skill.id), tool: tool, enabled: enabled, changedIds: changedIds
+  const planMutation = useMutation({
+    mutationFn: vars => pluginCtx.rest('/bulk/plan', { method: 'POST', body: { skills: vars.skillIds, tool: vars.tool.id, enabled: vars.enabled } }),
+    onSuccess: (plan, vars) => {
+      if (!plan || plan.ok !== true) {
+        host.notify({ kind: 'error', message: t('bulkPlanFailed') })
+        return
+      }
+      const exactIds = Array.isArray(plan.would_change) ? plan.would_change.slice() : []
+      setConfirm({
+        title: vars.enabled ? t('bulkOnScopeTitle', vars.scope, vars.tool.label) : t('bulkOffScopeTitle', vars.scope, vars.tool.label),
+        description: jsx(BulkPlanPreview, { plan: plan }),
+        confirmLabel: vars.enabled ? t('confirmEnable') : t('confirmDisable'),
+        destructive: !vars.enabled,
+        action: () => {
+          setConfirm(null)
+          applyMutation.mutate({ skillIds: exactIds, tool: vars.tool, enabled: vars.enabled })
+        }
       })
-    })
+    },
+    onError: err => host.notifyError(err, t('bulkPlanFailed'))
+  })
+
+  const openBulkPlan = (tool, enabled, skillIds, scope) => {
+    planMutation.mutate({ tool: tool, enabled: enabled, skillIds: skillIds.slice(), scope: scope || t('scopeAll') })
   }
+
+  const toggleMutation = useMutation({
+    mutationFn: vars => pluginCtx.rest('/toggle', { method: 'POST', body: { skill: vars.skill.id, tool: vars.tool.id, enabled: vars.enabled } }),
+    onSuccess: data => {
+      if (!data || data.ok !== true) host.notify({ kind: 'error', message: data && data.error ? data.error : t('toggleFailed') })
+      else haptic('tap')
+    },
+    onError: err => host.notifyError(err, t('toggleFailed')),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: STATE_KEY })
+      qc.invalidateQueries({ queryKey: DIFF_KEY })
+      qc.invalidateQueries({ queryKey: DRIFT_KEY })
+    }
+  })
 
   const onUndo = useCallback(() => {
     if (!undo) return
@@ -3030,10 +3217,15 @@ function ToolsOverview({ layout }) {
     setUndo(null)
     setTaskBusy(true)
     Promise.all(Array.from(byEnabled.entries()).map(([enabled, skillIds]) =>
-      pluginCtx.rest('/toggle-bulk', {
+      pluginCtx.rest('/bulk/apply', {
         method: 'POST', body: { skills: skillIds, tool: undo.actions[0].tool, enabled: enabled }
       })
-    )).then(() => {
+    )).then(responses => {
+      const response = responses[responses.length - 1]
+      if (response && response.receipt) {
+        const tool = tools.find(item => item.id === response.receipt.tool) || { id: response.receipt.tool, label: response.receipt.tool }
+        setReceipt({ tool: tool, results: response.results || [], receipt: response.receipt })
+      }
       host.notify({ kind: 'success', message: t('toastBulkDone', undo.count) })
     }).catch(err => host.notifyError(err, t('undoFailed'))).finally(() => {
       setTaskBusy(false)
@@ -3043,7 +3235,7 @@ function ToolsOverview({ layout }) {
     })
   }, [undo, qc, t])
 
-  const busy = taskBusy || bulkMutation.isPending
+  const busy = taskBusy || planMutation.isPending || applyMutation.isPending || toggleMutation.isPending
   const sharedConfirm = jsx(ConfirmDialog, {
     open: !!confirm,
     onClose: () => setConfirm(null),
@@ -3056,10 +3248,19 @@ function ToolsOverview({ layout }) {
 
   if (selectedTool) {
     return jsxs('div', {
-      className: 'flex h-full min-w-0 flex-col p-4',
+      className: 'flex h-full min-w-0 flex-col',
       children: [
-        jsx(Button, { variant: 'secondary', size: 'xs', className: 'self-start', onClick: () => setSelectedTool(null), children: t('backToTools') }),
-        jsx(EmptyState, { title: selectedTool.label, description: t('singleToolNext') })
+        jsx(SingleToolView, {
+          tool: selectedTool,
+          skills: skills,
+          busy: busy,
+          onBack: () => setSelectedTool(null),
+          onToggle: (skill, enabled) => toggleMutation.mutate({ skill: skill, tool: selectedTool, enabled: enabled }),
+          onBulk: (skillIds, enabled, scope) => openBulkPlan(selectedTool, enabled, skillIds, scope)
+        }),
+        receipt ? jsx(BulkReceipt, { receipt: receipt, tool: receipt.tool }) : null,
+        jsx(UndoBanner, { undo: undo, onUndo: onUndo, busy: busy }),
+        sharedConfirm
       ]
     })
   }
@@ -3082,8 +3283,8 @@ function ToolsOverview({ layout }) {
         counts: countsFor(tool.id),
         busy: busy,
         onManage: () => setSelectedTool(tool),
-        onEnableAll: () => openBulkConfirm(tool, true),
-        onDisableAll: () => openBulkConfirm(tool, false)
+        onEnableAll: () => openBulkPlan(tool, true, skills.map(skill => skill.id), t('scopeAll')),
+        onDisableAll: () => openBulkPlan(tool, false, skills.map(skill => skill.id), t('scopeAll'))
       }, tool.id))
     })
   }
@@ -3101,20 +3302,7 @@ function ToolsOverview({ layout }) {
         ]
       }),
       jsx(ScrollArea, { className: 'min-h-0 flex-1', children: body }),
-      receipt
-        ? jsxs('div', {
-            'data-bulk-receipt': receipt.tool.id,
-            className: 'mx-3 mb-2 max-h-40 overflow-y-auto rounded-md border border-(--ui-stroke-secondary) p-2 text-xs',
-            children: [
-              jsx('div', { className: 'mb-1 font-medium', children: t('bulkReceiptTitle', receipt.tool.label, receipt.changed, receipt.failed) }),
-              receipt.results.map(result => jsx('div', {
-                'data-bulk-result': result.skill,
-                className: result.ok ? 'text-muted-foreground' : 'text-(--ui-text-danger)',
-                children: t('bulkResultLine', result.skill, result.ok ? result.state : result.error || result.code || t('bulkFailed'))
-              }, result.skill))
-            ]
-          })
-        : null,
+      receipt ? jsx(BulkReceipt, { receipt: receipt, tool: receipt.tool }) : null,
       jsx(UndoBanner, { undo: undo, onUndo: onUndo, busy: busy }),
       sharedConfirm
     ]
@@ -3241,11 +3429,36 @@ export default {
         disableAll: 'Disable all',
         overviewProblems: n => `${n} problems`,
         addToolAction: 'Add Tool',
-        toolBulkPreview: (changed, already, refused) => `${changed} will change · ${already} already set · ${refused} protected/refused. Every skill is sent so the backend returns a per-item result.`,
+        toolBulkPreview: (changed, already, refused) => `${changed} will change · ${already} already set · ${refused} protected/refused`,
+        bulkSampleTitle: 'Sample changes',
+        bulkSampleLine: (name, category, current, next) => `${name} (${category}): ${current} → ${next}`,
+        bulkRefusedTitle: 'Protected or refused',
+        bulkRefusedLine: (skill, code, reason) => `${skill} [${code}] — ${reason}`,
+        bulkPlanFailed: 'Could not prepare the bulk preview',
+        confirmEnable: 'Confirm enable',
+        confirmDisable: 'Confirm disable',
+        bulkOnScopeTitle: (scope, tool) => `Enable ${scope} for ${tool}?`,
+        bulkOffScopeTitle: (scope, tool) => `Disable ${scope} for ${tool}?`,
+        scopeAll: 'all skills',
+        scopeCategory: category => `${category} category`,
+        scopeSelected: n => `${n} selected skill(s)`,
         backToTools: 'Back to Tools',
-        singleToolNext: 'This tool is selected. The full single-tool skill view lands in the next phase.',
-        bulkReceiptTitle: (tool, changed, failed) => `${tool}: ${changed} changed, ${failed} failed`,
+        bulkReceiptTitle: (tool, changed, failed, refused) => `${tool}: ${changed} changed, ${failed} failed, ${refused} refused`,
+        bulkReceiptId: id => `Receipt ${id}`,
         bulkResultLine: (skill, result) => `${skill} — ${result}`,
+        bulkResultOk: state => `OK — ${state}`,
+        bulkResultFailed: reason => `Failed — ${reason}`,
+        categoryFilter: 'Category',
+        allCategories: 'All categories',
+        viewEnabled: 'Enabled',
+        selectAllVisible: 'Select all visible',
+        visibleCount: n => `${n} visible`,
+        selectSkill: skill => `Select ${skill}`,
+        selectedCount: n => `${n} selected`,
+        enableSelected: 'Enable selected',
+        disableSelected: 'Disable selected',
+        enableCategory: 'Enable category',
+        disableCategory: 'Disable category',
         skillsCount: n => `${n} skills`,
         brokenCount: n => `${n} broken`,
         unlinkedCount: n => `${n} unlinked`,
