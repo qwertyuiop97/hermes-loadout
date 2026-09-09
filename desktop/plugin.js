@@ -2838,6 +2838,289 @@ function McpPane() {
 // Full workspace shell — shared by openWorkspace and the route fallback.
 // ---------------------------------------------------------------------------
 
+function ToolCard({ tool, counts, busy, onManage, onEnableAll, onDisableAll }) {
+  const t = usePluginI18n(ID)
+  return jsxs('section', {
+    'data-tool-card': tool.id,
+    className: 'flex min-w-0 flex-col gap-3 rounded-lg border border-(--ui-stroke-secondary) p-3',
+    children: [
+      jsxs('div', {
+        className: 'flex min-w-0 items-start gap-2',
+        children: [
+          jsx(StatusDot, { tone: counts.problem ? 'warn' : counts.enabled ? 'good' : 'muted' }),
+          jsxs('div', {
+            className: 'min-w-0 flex-1',
+            children: [
+              jsx('h3', { className: 'font-medium', children: tool.label }),
+              jsx('div', {
+                'data-tool-path': tool.id,
+                className: 'whitespace-normal break-words text-xs text-muted-foreground',
+                children: tool.dir || t('toolPathUnknown')
+              })
+            ]
+          }),
+          jsx(Button, {
+            variant: 'secondary', size: 'xs', disabled: busy,
+            onClick: onManage, children: t('manageTool')
+          })
+        ]
+      }),
+      jsxs('div', {
+        className: 'grid grid-cols-3 gap-2 text-xs',
+        children: [
+          jsxs('div', {
+            children: [
+              jsx('div', { className: 'font-medium', children: t('enabledOfTotal', counts.enabled, counts.total) }),
+              jsx('div', { className: 'text-muted-foreground', children: t('enabledLabel') })
+            ]
+          }),
+          jsxs('div', {
+            children: [
+              jsx('div', { className: 'font-medium', children: counts.off }),
+              jsx('div', { className: 'text-muted-foreground', children: t('offLabel') })
+            ]
+          }),
+          jsxs('div', {
+            children: [
+              jsx('div', { className: counts.problem ? 'font-medium text-(--ui-text-warning)' : 'font-medium', children: counts.problem }),
+              jsx('div', { className: 'text-muted-foreground', children: t('problemLabel') })
+            ]
+          })
+        ]
+      }),
+      jsxs('div', {
+        className: 'flex flex-wrap gap-2',
+        children: [
+          jsx(Button, {
+            variant: 'secondary', size: 'xs', disabled: busy || counts.total === 0,
+            onClick: onEnableAll, children: t('enableAll')
+          }),
+          jsx(Button, {
+            variant: 'secondary', size: 'xs', disabled: busy || counts.total === 0,
+            onClick: onDisableAll, children: t('disableAll')
+          })
+        ]
+      })
+    ]
+  })
+}
+
+function ToolsOverview({ layout }) {
+  const t = usePluginI18n(ID)
+  const qc = useQueryClient()
+  const [selectedTool, setSelectedTool] = useState(null)
+  const [confirm, setConfirm] = useState(null)
+  const [undo, setUndo] = useState(null)
+  const [receipt, setReceipt] = useState(null)
+  const [taskBusy, setTaskBusy] = useState(false)
+  const stateQuery = useQuery({
+    queryKey: STATE_KEY,
+    queryFn: () => (pluginCtx ? pluginCtx.rest('/state') : Promise.reject(new Error('no backend'))),
+    staleTime: 10000,
+    refetchInterval: 15000,
+    refetchOnWindowFocus: false,
+    retry: 1
+  })
+  const diffQuery = useQuery({
+    queryKey: DIFF_KEY,
+    queryFn: () => (pluginCtx ? pluginCtx.rest('/diff') : Promise.reject(new Error('no backend'))),
+    staleTime: 10000,
+    refetchInterval: 30000,
+    refetchOnWindowFocus: false,
+    retry: 1
+  })
+  const driftQuery = useQuery({
+    queryKey: DRIFT_KEY,
+    queryFn: () => (pluginCtx ? pluginCtx.rest('/drift') : Promise.reject(new Error('no backend'))),
+    staleTime: 30000,
+    refetchInterval: 60000,
+    refetchOnWindowFocus: false,
+    retry: 0
+  })
+  const state = stateQuery.data
+  const skills = state && state.ok && Array.isArray(state.skills) ? state.skills : []
+  const enabledByTool = countEnabledByTool(state)
+  const linkTools = presentLinkTools(state)
+  const hermes = state && state.ok && Array.isArray(state.tools)
+    ? state.tools.find(tool => tool.id === 'hermes' || tool.special === 'config')
+    : null
+  const tools = [hermes || { id: 'hermes', label: 'Hermes', special: 'config' }, ...linkTools]
+  const problemTotals = summaryProblemTotals(diffQuery.data, driftQuery.data)
+  const overviewProblems = problemTotals.broken + problemTotals.foreign + problemTotals.unmanaged
+
+  useEffect(() => {
+    if (!undo) return undefined
+    const timer = setTimeout(() => setUndo(null), Math.max(0, undo.expires - Date.now()))
+    return () => clearTimeout(timer)
+  }, [undo])
+
+  const countsFor = toolId => {
+    let off = 0
+    let problem = 0
+    for (const skill of skills) {
+      const entry = skill.tools && skill.tools[toolId]
+      const stateName = entry ? entry.state : 'missing'
+      if (isProblemState(stateName)) problem += 1
+      else if (stateName !== 'enabled') off += 1
+    }
+    return { enabled: enabledByTool.get(toolId) || 0, total: skills.length, off: off, problem: problem }
+  }
+
+  const bulkMutation = useMutation({
+    mutationFn: vars => pluginCtx.rest('/toggle-bulk', {
+      method: 'POST', body: { skills: vars.skillIds, tool: vars.tool.id, enabled: vars.enabled }
+    }),
+    onSuccess: (data, vars) => {
+      if (!data || data.ok !== true) {
+        host.notify({ kind: 'error', message: t('bulkFailed') })
+        return
+      }
+      const results = Array.isArray(data.results) ? data.results : []
+      const succeeded = new Set(results.filter(result => result.ok).map(result => result.skill))
+      const undoActions = vars.changedIds
+        .filter(skillId => succeeded.has(skillId))
+        .map(skillId => ({ skill: skillId, tool: vars.tool.id, enabled: !vars.enabled }))
+      if (undoActions.length) {
+        setUndo({ actions: undoActions, count: undoActions.length, expires: Date.now() + 30000 })
+      }
+      const changed = undoActions.length
+      setReceipt({ tool: vars.tool, results: results, changed: changed, failed: data.failed || 0 })
+      haptic('tap')
+      host.notify({ kind: data.failed ? 'error' : 'success', message: t('toastBulk', changed, data.failed || 0) })
+    },
+    onError: err => host.notifyError(err, t('bulkFailed')),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: STATE_KEY })
+      qc.invalidateQueries({ queryKey: DIFF_KEY })
+      qc.invalidateQueries({ queryKey: DRIFT_KEY })
+    }
+  })
+
+  const openBulkConfirm = (tool, enabled) => {
+    const protectedStates = new Set(['foreign-link', 'unmanaged-dir'])
+    const changedIds = []
+    let already = 0
+    let refused = 0
+    for (const skill of skills) {
+      const entry = skill.tools && skill.tools[tool.id]
+      const stateName = entry ? entry.state : 'missing'
+      if (protectedStates.has(stateName)) refused += 1
+      else if ((enabled && stateName === 'enabled') || (!enabled && (stateName === 'disabled' || stateName === 'missing'))) already += 1
+      else changedIds.push(skill.id)
+    }
+    setConfirm({
+      title: enabled ? t('bulkOnTitle', tool.label) : t('bulkOffTitle', tool.label),
+      description: t('toolBulkPreview', changedIds.length, already, refused),
+      confirmLabel: enabled ? t('enableAll') : t('disableAll'),
+      destructive: !enabled,
+      action: () => bulkMutation.mutate({
+        skillIds: skills.map(skill => skill.id), tool: tool, enabled: enabled, changedIds: changedIds
+      })
+    })
+  }
+
+  const onUndo = useCallback(() => {
+    if (!undo) return
+    const byEnabled = new Map()
+    for (const action of undo.actions) {
+      const entry = byEnabled.get(action.enabled) || []
+      entry.push(action.skill)
+      byEnabled.set(action.enabled, entry)
+    }
+    setUndo(null)
+    setTaskBusy(true)
+    Promise.all(Array.from(byEnabled.entries()).map(([enabled, skillIds]) =>
+      pluginCtx.rest('/toggle-bulk', {
+        method: 'POST', body: { skills: skillIds, tool: undo.actions[0].tool, enabled: enabled }
+      })
+    )).then(() => {
+      host.notify({ kind: 'success', message: t('toastBulkDone', undo.count) })
+    }).catch(err => host.notifyError(err, t('undoFailed'))).finally(() => {
+      setTaskBusy(false)
+      qc.invalidateQueries({ queryKey: STATE_KEY })
+      qc.invalidateQueries({ queryKey: DIFF_KEY })
+      qc.invalidateQueries({ queryKey: DRIFT_KEY })
+    })
+  }, [undo, qc, t])
+
+  const busy = taskBusy || bulkMutation.isPending
+  const sharedConfirm = jsx(ConfirmDialog, {
+    open: !!confirm,
+    onClose: () => setConfirm(null),
+    onConfirm: confirm ? confirm.action : () => undefined,
+    title: confirm ? confirm.title : '',
+    description: confirm ? confirm.description : undefined,
+    confirmLabel: confirm ? confirm.confirmLabel : undefined,
+    destructive: confirm ? confirm.destructive : false
+  })
+
+  if (selectedTool) {
+    return jsxs('div', {
+      className: 'flex h-full min-w-0 flex-col p-4',
+      children: [
+        jsx(Button, { variant: 'secondary', size: 'xs', className: 'self-start', onClick: () => setSelectedTool(null), children: t('backToTools') }),
+        jsx(EmptyState, { title: selectedTool.label, description: t('singleToolNext') })
+      ]
+    })
+  }
+
+  let body
+  if (stateQuery.isPending || (stateQuery.isLoading && !state)) {
+    body = jsx('div', { className: 'grid grid-cols-1 gap-3 p-4', children: [0, 1, 2].map(index => jsx(Skeleton, { className: 'h-40 w-full' }, `tool-card-${index}`)) })
+  } else if (stateQuery.isError) {
+    body = jsx(ErrorState, {
+      title: t('errorTitle'), description: t('errorDesc'),
+      children: jsx(Button, { variant: 'secondary', size: 'xs', onClick: () => stateQuery.refetch(), children: t('retry') })
+    })
+  } else if (state && state.ok && !state.skills_root_exists) {
+    body = jsx(EmptyState, { title: t('noRootTitle'), description: t('noRootDesc') })
+  } else {
+    body = jsx('div', {
+      className: cn('grid gap-3 p-4', layout === 'narrow' ? 'grid-cols-1' : 'grid-cols-2'),
+      children: tools.map(tool => jsx(ToolCard, {
+        tool: tool,
+        counts: countsFor(tool.id),
+        busy: busy,
+        onManage: () => setSelectedTool(tool),
+        onEnableAll: () => openBulkConfirm(tool, true),
+        onDisableAll: () => openBulkConfirm(tool, false)
+      }, tool.id))
+    })
+  }
+
+  return jsxs('div', {
+    className: 'flex h-full min-w-0 flex-col text-sm',
+    children: [
+      jsxs('div', {
+        className: 'flex flex-wrap items-center gap-2 border-b border-(--ui-stroke-secondary) px-4 py-3',
+        children: [
+          jsx('h2', { className: 'font-medium', children: t('ccTools') }),
+          jsx(Badge, { variant: 'outline', size: 'xs', children: t('skillsCount', skills.length) }),
+          overviewProblems ? jsx(Badge, { variant: 'warn', size: 'xs', children: t('overviewProblems', overviewProblems) }) : null,
+          jsx(Button, { variant: 'secondary', size: 'xs', className: 'ml-auto', onClick: () => ccSectionAtom.set('advanced'), children: t('addToolAction') })
+        ]
+      }),
+      jsx(ScrollArea, { className: 'min-h-0 flex-1', children: body }),
+      receipt
+        ? jsxs('div', {
+            'data-bulk-receipt': receipt.tool.id,
+            className: 'mx-3 mb-2 max-h-40 overflow-y-auto rounded-md border border-(--ui-stroke-secondary) p-2 text-xs',
+            children: [
+              jsx('div', { className: 'mb-1 font-medium', children: t('bulkReceiptTitle', receipt.tool.label, receipt.changed, receipt.failed) }),
+              receipt.results.map(result => jsx('div', {
+                'data-bulk-result': result.skill,
+                className: result.ok ? 'text-muted-foreground' : 'text-(--ui-text-danger)',
+                children: t('bulkResultLine', result.skill, result.ok ? result.state : result.error || result.code || t('bulkFailed'))
+              }, result.skill))
+            ]
+          })
+        : null,
+      jsx(UndoBanner, { undo: undo, onUndo: onUndo, busy: busy }),
+      sharedConfirm
+    ]
+  })
+}
+
 function SectionPlaceholder({ title, hint }) {
   return jsx(EmptyState, { title: title, description: hint })
 }
@@ -2884,7 +3167,7 @@ function ControlCenter() {
     { id: 'advanced', label: t('ccAdvanced') }
   ]
   const bodies = {
-    tools: () => jsx(SkillsPane, { section: 'tools' }),
+    tools: () => jsx(ToolsOverview, { layout: layout }),
     sets: () => jsx(SkillsPane, { section: 'sets' }),
     problems: () => jsx(SkillsPane, { section: 'problems' }),
     mcp: () => jsx(McpPane, {}),
@@ -2948,6 +3231,21 @@ export default {
         summaryLine: (skills, tools) => `${skills} skills · ${tools} tools`,
         problemLine: (broken, drifted, foreign, unlinked) => `${broken} broken · ${drifted} drift · ${foreign} foreign · ${unlinked} unlinked`,
         toolsLandingHint: 'Manage daily skill availability by tool.',
+        toolPathUnknown: 'Path not detected',
+        manageTool: 'Manage',
+        enabledOfTotal: (enabled, total) => `${enabled} on / ${total}`,
+        enabledLabel: 'enabled',
+        offLabel: 'off',
+        problemLabel: 'problems',
+        enableAll: 'Enable all',
+        disableAll: 'Disable all',
+        overviewProblems: n => `${n} problems`,
+        addToolAction: 'Add Tool',
+        toolBulkPreview: (changed, already, refused) => `${changed} will change · ${already} already set · ${refused} protected/refused. Every skill is sent so the backend returns a per-item result.`,
+        backToTools: 'Back to Tools',
+        singleToolNext: 'This tool is selected. The full single-tool skill view lands in the next phase.',
+        bulkReceiptTitle: (tool, changed, failed) => `${tool}: ${changed} changed, ${failed} failed`,
+        bulkResultLine: (skill, result) => `${skill} — ${result}`,
         skillsCount: n => `${n} skills`,
         brokenCount: n => `${n} broken`,
         unlinkedCount: n => `${n} unlinked`,

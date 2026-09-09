@@ -7,33 +7,46 @@
     {
       "id": "hermes",
       "label": "Hermes",
+      "dir": "/Users/demo/.hermes/skills",
       "present": true,
       "special": "config"
     },
     {
       "id": "claude",
       "label": "Claude",
+      "dir": "/Users/demo/.claude/skills",
       "present": true
     },
     {
       "id": "codex",
       "label": "Codex",
+      "dir": "/Users/demo/.codex/skills",
       "present": true
     },
     {
       "id": "opencode",
       "label": "OpenCode",
+      "dir": "/Users/demo/.config/opencode/skills",
       "present": true
     },
     {
       "id": "grok",
       "label": "Grok",
+      "dir": "/Users/demo/.grok/skills",
       "present": true
     },
     {
       "id": "zcode",
       "label": "ZCode",
+      "dir": "/Users/demo/.zcode/skills",
       "present": true
+    },
+    {
+      "id": "kimi",
+      "label": "Kimi",
+      "dir": "/Users/demo/.kimi/skills",
+      "present": false,
+      "optional": true
     }
   ],
   "counts": {
