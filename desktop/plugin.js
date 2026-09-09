@@ -2665,10 +2665,10 @@ function McpPane() {
       className: 'flex flex-col gap-2 px-3',
       children: [0, 1, 2, 3].map(i => jsx(Skeleton, { className: 'h-8 w-full' }, 'mcp-sk-' + i))
     })
-  } else if (stateQuery.isError) {
+  } else if (stateQuery.isError || (st && st.ok === false)) {
     body = jsx(ErrorState, {
       title: t('errorTitle'),
-      description: stateQuery.error && stateQuery.error.message ? stateQuery.error.message : t('errorDesc'),
+      description: (st && st.error) || (stateQuery.error && stateQuery.error.message) || t('errorDesc'),
       children: jsx(Button, {
         variant: 'secondary', size: 'xs',
         onClick: () => stateQuery.refetch(), children: t('retry')
@@ -2721,7 +2721,7 @@ function McpPane() {
                             description: t('mcpOverwriteDesc'),
                             confirmLabel: t('mcpSync'),
                             destructive: false,
-                            action: () => run(row.name, writer.syncPath, { name: row.name }, 'mcpSynced', writer.label)
+                            action: () => run(row.name, writer.syncPath, { name: row.name, force: true }, 'mcpSynced', writer.label)
                           })
                         } else if (!wdrifted) {
                           run(row.name, writer.removePath, { name: row.name }, 'mcpRemoved', writer.label)
@@ -2740,7 +2740,13 @@ function McpPane() {
                       ? jsx(Button, {
                           variant: 'secondary', size: 'xs', className: 'h-4 px-1 text-[0.625rem]',
                           disabled: busyName !== null,
-                          onClick: () => run(row.name, writer.syncPath, { name: row.name }, 'mcpSynced', writer.label),
+                          onClick: () => setConfirm({
+                            title: t('mcpSyncTitle', row.name, writer.label),
+                            description: t('mcpOverwriteDesc'),
+                            confirmLabel: t('mcpSync'),
+                            destructive: false,
+                            action: () => run(row.name, writer.syncPath, { name: row.name, force: true }, 'mcpSynced', writer.label)
+                          }),
                           children: t('mcpSync')
                         })
                       : null

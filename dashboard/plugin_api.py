@@ -57,6 +57,7 @@ import os
 import re
 import shutil
 import threading
+import tempfile
 import time
 import uuid
 from datetime import datetime, timezone
@@ -551,8 +552,62 @@ class SkillsToggleError(Exception):
         self.code = code
 
 
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Replace a complete file, preserving an existing symlink and permissions.
+
+    A failed write/replace leaves the previous file intact. Temporary files are
+    private, live on the same filesystem, and are removed on every failure path.
+    """
+    if path.is_symlink() and not path.is_file():
+        raise SkillsToggleError("configuration symlink has no regular-file target", "config-invalid")
+    destination = path.resolve()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    mode = destination.stat().st_mode & 0o777 if destination.exists() else 0o600
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="", delete=False,
+                                         prefix=".hermes-switchboard-", dir=str(destination.parent)) as stream:
+            temporary = Path(stream.name)
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.chmod(mode)
+        os.replace(temporary, destination)
+    finally:
+        if temporary is not None and temporary.exists():
+            temporary.unlink()
+
+
+def _read_json_mapping(path: Path, mapping_key: str) -> tuple[dict, str]:
+    """Read settings without interpreting corrupt/unreadable data as empty."""
+    if not path.exists() and not path.is_symlink():
+        return {}, ""
+    if not path.is_file():
+        raise SkillsToggleError("configuration is not a regular file", "config-invalid")
+
+    def unique_keys(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate configuration key")
+            result[key] = value
+        return result
+
+    try:
+        text = path.read_text(encoding="utf-8")
+        data = json.loads(text, object_pairs_hook=unique_keys)
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise SkillsToggleError("configuration cannot be read as valid JSON; repair it before making changes",
+                                "config-invalid") from exc
+    if not isinstance(data, dict) or (mapping_key in data and not isinstance(data[mapping_key], dict)):
+        raise SkillsToggleError("configuration must be an object containing a mapping for " + mapping_key,
+                                "config-invalid")
+    return data, text
+
+
 _SECRET_LOG_KEY_RE = re.compile(
-    r"(?:api[_-]?key|apikey|secret|token|password|credential|authorization|private[_-]?key|access[_-]?key|env)",
+    r"(?:api[_-]?key|apikey|secret|token|password|credential|authorization|private[_-]?key|access[_-]?key|env|headers|args|url)",
     re.I,
 )
 
@@ -906,7 +961,7 @@ class SkillsToggleCore:
             return "noop"
         backup = self._backup_config()
         self.config_path.parent.mkdir(parents=True, exist_ok=True)
-        self.config_path.write_text(new_text, encoding="utf-8")
+        _atomic_write_text(self.config_path, new_text)
         self._log(action="config-edit", tool="hermes", skill=skill_name, enabled=enabled, backup=backup)
         return "config-updated"
 
@@ -933,6 +988,11 @@ class SkillsToggleCore:
             return "missing", None
 
         state, target = link_state()
+        if state == "broken-link":
+            base = Path(target) if os.path.isabs(target) else link.parent / target
+            if not is_inside(base, self.skills_root_resolved):
+                raise SkillsToggleError("broken symlink points outside the Hermes skills tree; left untouched",
+                                        "foreign-link")
 
         if enabled:
             if state == "enabled":
@@ -959,16 +1019,26 @@ class SkillsToggleCore:
                     raise SkillsToggleError(f"cannot create {tool_dir}: {exc}", "mkdir-failed") from exc
                 created_dir = True
                 self._log(action="create-tool-dir", tool=tool_id, dir=str(tool_dir))
-            if state == "broken-link":
-                link.unlink()
+            temporary = None
             try:
-                os.symlink(str(skill_dir_resolved), str(link))
+                if state == "broken-link":
+                    temporary = link.with_name(".hermes-switchboard-" + uuid.uuid4().hex)
+                    os.symlink(str(skill_dir_resolved), str(temporary))
+                    if not link.is_symlink() or os.readlink(link) != target:
+                        raise SkillsToggleError("target changed during repair; refresh and review it again",
+                                                "changed-since-preview")
+                    os.replace(temporary, link)
+                else:
+                    os.symlink(str(skill_dir_resolved), str(link))
             except (OSError, NotImplementedError) as exc:
                 raise SkillsToggleError(
                     f"could not create symlink at {link}: {exc} "
                     "(on Windows, enable Developer Mode or run elevated)",
                     "symlink-unsupported",
                 ) from exc
+            finally:
+                if temporary is not None and temporary.is_symlink():
+                    temporary.unlink()
             if created_dir:
                 action = "created-dir+linked"
             elif state == "broken-link":
@@ -1085,7 +1155,7 @@ class SkillsToggleCore:
             else:
                 reason = f"{link} is a real directory/file — refusing to remove"
             return {"kind": "refused", "state": state, "next": state, "code": "unmanaged-dir", "reason": reason}
-        if not enabled and state == "broken-link":
+        if state == "broken-link":
             target = state_info.get("target")
             base = Path(target) if os.path.isabs(target) else (link.parent / target)
             if not is_inside(base.resolve(), self.skills_root_resolved):
@@ -1230,7 +1300,7 @@ class SkillsToggleCore:
                     backup = self._backup_config() if new_text != text else None
                     if new_text != text:
                         self.config_path.parent.mkdir(parents=True, exist_ok=True)
-                        self.config_path.write_text(new_text, encoding="utf-8")
+                        _atomic_write_text(self.config_path, new_text)
                         self._log(
                             action="config-edit", tool="hermes", skills=[sid for sid, _, _ in ready],
                             enabled=enabled, backup=backup,
@@ -2402,22 +2472,15 @@ class SkillsToggleCore:
             except ValueError:
                 raise SkillsToggleError(f"'dir' expands to an empty path: {dir_str!r}", "invalid-dir")
             cfg_path = user_config_path(self.home)
-            data = {}
-            if cfg_path.is_file():
-                try:
-                    data = json.loads(cfg_path.read_text(encoding="utf-8"))
-                except (OSError, json.JSONDecodeError):
-                    data = {}
-            backup = None
-            if cfg_path.is_file():
-                stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-                backup_path = cfg_path.with_name(f"{cfg_path.name}.bak.hermes-switchboard.{stamp}")
-                shutil.copy2(cfg_path, backup_path)
-                backup = str(backup_path)
+            source_path = cfg_path
+            if not source_path.exists() and legacy_user_config_path(self.home).is_file():
+                source_path = legacy_user_config_path(self.home)
+            data, _ = _read_json_mapping(source_path, "tools")
+            backup = self._backup(source_path)
             tools = data.setdefault("tools", {})
             tools[tool_id] = {"label": label.strip(), "dir": dir_str.strip()}
             cfg_path.parent.mkdir(parents=True, exist_ok=True)
-            cfg_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            _atomic_write_text(cfg_path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
             self._log(action="config-tools", tool=tool_id, dir=str(dir_str), backup=backup)
             self.invalidate()
             reset_core()  # tool map is loaded at core build time — rebuild singleton
@@ -2730,9 +2793,19 @@ def set_mcp_server_enabled(text: str, name: str, enabled: bool) -> str:
 
 def _redact_env(definition: dict) -> dict:
     """env values never leave the gateway: the pane sees key names only."""
-    redacted = dict(definition)
-    if isinstance(redacted.get("env"), dict):
-        redacted["env"] = sorted(redacted["env"].keys())
+    redacted = {}
+    for key in _MCP_UNIVERSAL_KEYS:
+        if key not in definition:
+            continue
+        value = definition[key]
+        if key in ("env", "headers") and isinstance(value, dict):
+            redacted[key] = sorted(str(name) for name in value)
+        elif key == "args" and isinstance(value, list):
+            redacted[key] = ["[REDACTED]" for _ in value]
+        else:
+            # Executable strings may also include inline credentials. The UI
+            # needs only field presence, not raw command lines or endpoints.
+            redacted[key] = "[REDACTED]"
     return redacted
 
 
@@ -2777,6 +2850,7 @@ class McpCore:
         if not self.log_path:
             return
         rec.setdefault("ts", datetime.now(timezone.utc).isoformat(timespec="seconds"))
+        rec = _redact_log_record(rec)
         try:
             self.log_path.parent.mkdir(parents=True, exist_ok=True)
             with self.log_path.open("a", encoding="utf-8") as fh:
@@ -2819,13 +2893,9 @@ class McpCore:
     # -- claude side ----------------------------------------------------------
 
     def _read_claude(self) -> tuple[dict, str]:
-        if self.claude_config is None or not self.claude_config.is_file():
+        if self.claude_config is None:
             return {}, ""
-        try:
-            text = self.claude_config.read_text(encoding="utf-8")
-            return json.loads(text), text
-        except (OSError, json.JSONDecodeError):
-            return {}, ""
+        return _read_json_mapping(self.claude_config, "mcpServers")
 
     def _read_codex(self) -> tuple[dict, str]:
         if self.codex_config is None or not self.codex_config.is_file():
@@ -2850,7 +2920,7 @@ class McpCore:
             return {"ok": True, "name": name, "action": "noop", "state": "missing"}
         if not create and entry is None:
             raise SkillsToggleError(f"{name!r} is not in the Hermes catalog — refusing to remove", "unknown-server")
-        if not create and (codex[name]["definition"] != entry["projection"]) and not force:
+        if name in codex and entry is not None and codex[name]["definition"] != entry["projection"] and not force:
             raise SkillsToggleError(
                 f"Codex's copy of {name!r} differs from the catalog — pass force to overwrite", "drifted"
             )
@@ -2864,13 +2934,15 @@ class McpCore:
             new_text = _remove_codex_block(raw, name)
             action = "removed"
             state = "missing"
-        self.codex_config.write_text(new_text, encoding="utf-8")
+        _atomic_write_text(self.codex_config, new_text)
         self._log(action=f"mcp-codex-{action}", server=name, backup=backup)
         return {"ok": True, "name": name, "writer": "codex", "action": action, "state": state, "backup": backup}
 
-    def sync_to_codex(self, name: object) -> dict:
+    def sync_to_codex(self, name: object, force: object = False) -> dict:
         with self._lock:
-            return self._write_codex(name, create=True)
+            if not isinstance(force, bool):
+                raise SkillsToggleError("'force' must be a boolean", "invalid-body")
+            return self._write_codex(name, create=True, force=force)
 
     def remove_from_codex(self, name: object, force: object = False) -> dict:
         with self._lock:
@@ -2957,13 +3029,15 @@ class McpCore:
                 new_text = set_mcp_server_enabled(text, name, enabled)
             except ConfigEditError as exc:
                 raise SkillsToggleError(f"config.yaml edit refused: {exc}", "config-edit") from exc
-            self.config_path.write_text(new_text, encoding="utf-8")
+            _atomic_write_text(self.config_path, new_text)
             self._log(action="mcp-toggle", server=name, enabled=enabled, backup=backup)
             return {"ok": True, "name": name, "enabled": enabled, "action": "config-updated", "backup": backup}
 
-    def sync_to_claude(self, name: object) -> dict:
+    def sync_to_claude(self, name: object, force: object = False) -> dict:
         with self._lock:
-            return self._write_claude(name, create=True)
+            if not isinstance(force, bool):
+                raise SkillsToggleError("'force' must be a boolean", "invalid-body")
+            return self._write_claude(name, create=True, force=force)
 
     def remove_from_claude(self, name: object, force: object = False) -> dict:
         with self._lock:
@@ -2985,7 +3059,7 @@ class McpCore:
         if not create and entry is None:
             # present in Claude but not in the catalog: foreign, never touched
             raise SkillsToggleError(f"{name!r} is not in the Hermes catalog — refusing to remove", "unknown-server")
-        if not create and servers[name] != entry["projection"] and not force:
+        if name in servers and entry is not None and servers[name] != entry["projection"] and not force:
             raise SkillsToggleError(
                 f"Claude's copy of {name!r} differs from the catalog — pass force to overwrite", "drifted"
             )
@@ -3004,7 +3078,7 @@ class McpCore:
             doc["mcpServers"] = remaining
             action = "removed"
         self.claude_config.parent.mkdir(parents=True, exist_ok=True)
-        self.claude_config.write_text(json.dumps(doc, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        _atomic_write_text(self.claude_config, json.dumps(doc, indent=2, ensure_ascii=False) + "\n")
         self._log(action=f"mcp-{action}", server=name, writer="claude", backup=backup)
         return {
             "ok": True,
@@ -3193,7 +3267,7 @@ if APIRouter is not None:
 
     @router.post("/mcp/sync")
     async def mcp_sync(body: dict) -> dict:
-        return _call(get_mcp_core().sync_to_claude, body.get("name"))
+        return _call(get_mcp_core().sync_to_claude, body.get("name"), body.get("force", False))
 
     @router.post("/mcp/remove")
     async def mcp_remove(body: dict) -> dict:
@@ -3201,7 +3275,7 @@ if APIRouter is not None:
 
     @router.post("/mcp/codex/sync")
     async def mcp_codex_sync(body: dict) -> dict:
-        return _call(get_mcp_core().sync_to_codex, body.get("name"))
+        return _call(get_mcp_core().sync_to_codex, body.get("name"), body.get("force", False))
 
     @router.post("/mcp/codex/remove")
     async def mcp_codex_remove(body: dict) -> dict:
