@@ -117,6 +117,12 @@ plugin.register({
         totals: { would_change: wouldChange.length, already_satisfied: already.length, refused: refused.length }
       }
     }
+    if (path === '/bulk/undo') {
+      const applied = channel.restCalls.filter(call => call.path === '/bulk/apply').at(-1)
+      const results = applied.body.skills.slice(0, 2).map(skill => ({ skill, ok: true, state: 'missing' }))
+      return { ok: true, changed: 2, failed: 0, results,
+        receipt: { receipt_id: options.body.receipt_id, tool: applied.body.tool, changed: 2, failed: 0, undo_available: false } }
+    }
     if (path === '/bulk/apply') {
       const ids = options.body.skills
       const undoing = options.body.enabled === false
@@ -131,6 +137,7 @@ plugin.register({
           receipt_id: undoing ? 'receipt-undo' : 'receipt-apply',
           tool: options.body.tool,
           enabled: options.body.enabled,
+          undo_available: true,
           items: results,
           changed: changedIds.length,
           failed: results.length - changedIds.length,
@@ -313,8 +320,8 @@ ok(singleToolLayout.findAllByProps({ 'data-single-tool': 'grok' }).length === 1 
 ok(channel.invalidated.includes('state') && channel.invalidated.includes('diff'), 'apply invalidates state and diff so counts refresh from backend state')
 const undoButton = interactive.root.findAllByType('button').find(node => node.children.join('') === 'Undo')
 await act(async () => { undoButton.props.onClick(); await Promise.resolve(); await Promise.resolve() })
-const undoApply = channel.restCalls.filter(call => call.path === '/bulk/apply').at(-1)
-ok(undoApply.body.enabled === false && JSON.stringify(undoApply.body.skills) === JSON.stringify(planned.body.skills.slice(0, 2)), 'Undo applies only the receipt.undone_by skill set')
+const undoApply = channel.restCalls.filter(call => call.path === '/bulk/undo').at(-1)
+ok(JSON.stringify(undoApply.body) === JSON.stringify({ receipt_id: 'receipt-apply' }) && channel.restCalls.filter(call => call.path === '/bulk/apply').at(-1) === applied, 'Undo uses the durable receipt, never an inverse bulk mutation')
 const disableCategory = interactive.root.findAllByType('button').find(node => node.children.join('') === 'Disable category')
 await act(async () => { disableCategory.props.onClick(); await Promise.resolve() })
 const categoryPlan = channel.restCalls.filter(call => call.path === '/bulk/plan').at(-1)

@@ -1,6 +1,6 @@
 // Minimal @hermes/plugin-sdk stub for the render harness. State flows through
 // globalThis.__SKT so the harness can drive loading/ready/error scenarios.
-import { createElement, Fragment } from 'react'
+import { createElement, Fragment, useSyncExternalStore, useState } from 'react'
 
 const S = () => globalThis.__SKT || {}
 
@@ -38,13 +38,13 @@ export const host = {
 export const haptic = () => {}
 export const cn = (...args) => args.filter(Boolean).join(' ')
 
-export const Button = (props) => el('button', { onClick: props.onClick, disabled: props.disabled, 'data-variant': props.variant, 'data-size': props.size }, props.children)
+export const Button = ({ variant, size, ...props }) => el('button', { ...props, 'data-variant': variant, 'data-size': size })
 export const Badge = (props) => el('span', { 'data-variant': props.variant, 'data-size': props.size }, props.children)
-export const Switch = (props) => el('button', { role: 'switch', 'aria-label': props['aria-label'], 'aria-checked': props.checked ? 'true' : 'false', disabled: props.disabled || undefined, 'data-size': props.size }, null)
+export const Switch = (props) => el('button', { role: 'switch', 'aria-label': props['aria-label'], 'aria-checked': props.checked ? 'true' : 'false', disabled: props.disabled || undefined, 'data-size': props.size, onClick: () => { if (!props.disabled) props.onCheckedChange?.(!props.checked) } }, null)
 export const StatusDot = (props) => el('span', { 'data-tone': props.tone }, null)
 export const EmptyState = (props) => el('div', {}, el('div', {}, props.title), props.description ? el('div', {}, props.description) : null, props.children ?? null)
 export const ErrorState = (props) => el('div', {}, el('div', {}, props.title), typeof props.description === 'string' ? el('div', {}, props.description) : null, props.children ?? null)
-export const Input = (props) => el('input', { value: props.value, placeholder: props.placeholder, className: props.className, onChange: e => props.onChange && props.onChange(e && e.target ? e.target.value : props.value) })
+export const Input = (props) => el('input', { ...props, onChange: e => props.onChange && props.onChange(e && e.target ? e.target.value : e) })
 export const SearchField = (props) => el('input', { placeholder: props.placeholder, value: props.value, 'aria-label': props['aria-label'], onChange: props.onChange })
 export const Skeleton = (props) => el('div', { 'data-skeleton': 'true', className: props.className }, null)
 export const ScrollArea = (props) => el('div', {}, props.children)
@@ -54,6 +54,13 @@ export const ConfirmDialog = (props) => (props.open ? el('div', { role: 'dialog'
 export const SegmentedControl = (props) => el('div', { role: 'radiogroup' }, props.options.map(o => el('button', { role: 'radio', 'aria-checked': props.value === o.id, onClick: () => props.onChange(o.id), key: o.id }, o.label)))
 
 export function useQuery({ queryKey }) {
+  const field = queryKey[1] === 'mcp' ? 'mcpState' : queryKey[1]
+  const channel = S()
+  useSyncExternalStore(fn => {
+    const listeners = channel.queryListeners ||= new Set()
+    listeners.add(fn)
+    return () => listeners.delete(fn)
+  }, () => channel[field], () => channel[field])
   const mode = S().mode || 'ready'
   if (queryKey[1] === 'mcp') {
     if (mode === 'loading') return { data: undefined, isLoading: true, isPending: true, isError: false, error: null, refetch: () => {} }
@@ -74,36 +81,41 @@ export function useQuery({ queryKey }) {
 }
 
 export function useMutation(opts) {
+  const [isPending, setPending] = useState(false)
   return {
-    isPending: false,
-    mutate: vars => {
-      const prev = S().state
-      opts.onMutate && opts.onMutate(vars)
-      const finish = result => {
-        if (result && result.ok) opts.onSuccess && opts.onSuccess(result, vars, { previous: prev })
-        else opts.onError && opts.onError(new Error((result && result.error) || 'mutation failed'), vars, { previous: prev })
-        opts.onSettled && opts.onSettled()
-        return result
-      }
+    isPending,
+    mutate: async vars => {
+      setPending(true)
+      let context
+      let data
+      let error
       try {
-        const result = opts.mutationFn ? opts.mutationFn(vars) : (S().mutationResult || { ok: true })
-        return result && typeof result.then === 'function'
-          ? result.then(finish).catch(error => {
-              opts.onError && opts.onError(error, vars, { previous: prev })
-              opts.onSettled && opts.onSettled()
-            })
-          : finish(result)
-      } catch (error) {
-        opts.onError && opts.onError(error, vars, { previous: prev })
-        opts.onSettled && opts.onSettled()
+        context = opts.onMutate ? await opts.onMutate(vars) : undefined
+        data = opts.mutationFn ? await opts.mutationFn(vars) : (S().mutationResult || { ok: true })
+        // React Query treats every resolved promise as success. Application
+        // responses such as {ok:false} must be handled by the product itself.
+        if (opts.onSuccess) await opts.onSuccess(data, vars, context)
+        return data
+      } catch (caught) {
+        error = caught
+        if (opts.onError) await opts.onError(error, vars, context)
+      } finally {
+        if (opts.onSettled) await opts.onSettled(data, error, vars, context)
+        setPending(false)
       }
     }
   }
 }
 
 export const useQueryClient = () => ({
-  setQueryData: (key, up) => { S().patchedKeys = S().patchedKeys || []; S().patchedKeys.push(key[1]) },
-  getQueryData: () => S().state,
+  setQueryData: (key, updater) => {
+    const field = key[1] === 'mcp' ? 'mcpState' : key[1]
+    const channel = S()
+    channel[field] = typeof updater === 'function' ? updater(channel[field]) : updater
+    ;(channel.patchedKeys ||= []).push(key[1])
+    for (const listener of channel.queryListeners || []) listener()
+  },
+  getQueryData: key => S()[key[1] === 'mcp' ? 'mcpState' : key[1]],
   cancelQueries: async () => {},
   invalidateQueries: ({ queryKey }) => { S().invalidated = S().invalidated || []; S().invalidated.push(queryKey[1]) }
 })

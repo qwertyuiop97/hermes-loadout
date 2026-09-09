@@ -1111,6 +1111,8 @@ class SkillsToggleCore:
             # no-ops; retain that contract for the item-8 frontend.
             "changed": sum(1 for item in results if item["ok"]),
             "failed": sum(1 for item in results if not item["ok"]),
+            "receipt": applied["receipt"],
+            **({"receipt_error": applied["receipt_error"]} if "receipt_error" in applied else {}),
         }
 
     def _bulk_inputs(
@@ -1245,6 +1247,200 @@ class SkillsToggleCore:
                 },
             }
 
+    def _receipt_path(self, receipt_id: object) -> Path:
+        if not isinstance(receipt_id, str) or not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", receipt_id):
+            raise SkillsToggleError("invalid receipt identifier", "invalid-receipt")
+        root = self.home / "data" / PLUGIN_ID / "receipts"
+        if not is_inside(root, self.home):
+            raise SkillsToggleError("receipt storage resolves outside the Hermes home", "unsafe-receipt")
+        path = root / (hashlib.sha256(receipt_id.encode("utf-8")).hexdigest() + ".json")
+        if path.is_symlink():
+            raise SkillsToggleError("receipt files must not be symlinks", "unsafe-receipt")
+        return path
+
+    def _reserve_receipt(self, receipt: dict) -> None:
+        """Write before-images before changing anything; never reuse an id."""
+        path = self._receipt_path(receipt["receipt_id"])
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            descriptor = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError as exc:
+            raise SkillsToggleError("a receipt with this identifier already exists", "receipt-exists") from exc
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                stream.write(json.dumps(receipt, indent=2, ensure_ascii=False) + "\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+        except OSError:
+            path.unlink(missing_ok=True)
+            raise
+
+    def _save_receipt(self, receipt: dict) -> None:
+        _atomic_write_text(self._receipt_path(receipt["receipt_id"]),
+                           json.dumps(receipt, indent=2, ensure_ascii=False) + "\n")
+
+    def get_bulk_receipt(self, receipt_id: object) -> dict:
+        path = self._receipt_path(receipt_id)
+        if not path.is_file():
+            raise SkillsToggleError("receipt not found", "unknown-receipt")
+        data, _ = _read_json_mapping(path, "context")
+        if data.get("format") != "switchboard-bulk-v1" or data.get("receipt_id") != receipt_id:
+            raise SkillsToggleError("receipt format does not match this operation", "invalid-receipt")
+        # Validate the whole document before undo touches its first entry.
+        # A truncated or hand-edited receipt is evidence to inspect, not a plan.
+        context = data.get("context")
+        items = data.get("items")
+        if (not isinstance(context, dict) or not isinstance(items, list)
+                or not isinstance(data.get("tool"), str)
+                or data.get("status") not in ("applying", "complete", "undone")
+                or any(not isinstance(context.get(key), str) or not Path(context[key]).is_absolute()
+                       for key in ("target_dir", "skills_root"))):
+            raise SkillsToggleError("receipt structure is incomplete", "invalid-receipt")
+        seen = set()
+        for item in items:
+            if not isinstance(item, dict):
+                raise SkillsToggleError("receipt contains an invalid entry", "invalid-receipt")
+            if not item.get("ok"):
+                continue
+            sid = item.get("skill")
+            if (not isinstance(sid, str) or not _SKILL_ID_RE.fullmatch(sid)
+                    or any(part in (".", "..") or "\\" in part for part in sid.split("/"))
+                    or sid in seen or not isinstance(item.get("from"), str)
+                    or not isinstance(item.get("to"), str)):
+                raise SkillsToggleError("receipt contains an invalid skill", "invalid-receipt")
+            seen.add(sid)
+            for key in ("before", "after"):
+                image = item.get(key)
+                kind = image.get("kind") if isinstance(image, dict) else None
+                valid = (kind == "config" and isinstance(image.get("disabled"), bool)) if data["tool"] == "hermes" else (
+                    kind == "missing" or (kind == "symlink" and isinstance(image.get("target"), str)
+                    and "\0" not in image["target"] and isinstance(image.get("identity"), list)
+                    and len(image["identity"]) == 4 and all(isinstance(n, int) for n in image["identity"])))
+                if not valid:
+                    raise SkillsToggleError("receipt contains an invalid before/after image", "invalid-receipt")
+        if data.get("undo_result") is not None and (data.get("status") != "undone"
+                or not isinstance(data["undo_result"], dict) or data["undo_result"].get("ok") is not True):
+            raise SkillsToggleError("receipt contains an invalid undo result", "invalid-receipt")
+        return {"ok": True, "receipt": data}
+
+    @staticmethod
+    def _entry_snapshot(path: Path) -> dict:
+        """Record link identity as well as its destination to detect replacement."""
+        try:
+            stat = path.lstat()
+            if path.is_symlink():
+                return {"kind": "symlink", "target": os.readlink(path),
+                        "identity": [stat.st_dev, stat.st_ino, stat.st_mtime_ns, stat.st_ctime_ns]}
+            return {"kind": "protected"}
+        except FileNotFoundError:
+            return {"kind": "missing"}
+        except OSError:
+            return {"kind": "unreadable"}
+
+    def undo_bulk(self, receipt_id: object) -> dict:
+        """Restore only recorded changes whose post-apply state still matches.
+
+        Before-images survive a restart. An interrupted or unpersisted operation
+        requires review, never a guessed inverse. Completed undo is idempotent.
+        """
+        with self._lock:
+            receipt = self.get_bulk_receipt(receipt_id)["receipt"]
+            if receipt.get("undo_result") is not None:
+                return receipt["undo_result"]
+            if receipt.get("status") != "complete":
+                raise SkillsToggleError("this operation has incomplete evidence; inspect the saved receipt and backups",
+                                        "incomplete-receipt")
+            context = receipt.get("context", {})
+            tool_id = self._validate_tool(receipt.get("tool"))
+            expected_dir = context.get("target_dir")
+            current_dir = self.config_path.resolve() if tool_id == "hermes" else self.tool_dir(tool_id)
+            if (current_dir is None or not isinstance(expected_dir, str)
+                    or not same_path(current_dir, Path(expected_dir))
+                    or not same_path(self.skills_root, Path(context.get("skills_root", "")))):
+                raise SkillsToggleError("the target changed since this receipt; no files were modified", "target-changed")
+            results = []
+            config_ready = []
+            for item in receipt["items"]:
+                if not item.get("ok") or item.get("from") == item.get("to"):
+                    continue
+                sid = item["skill"]
+                before, after = item.get("before", {}), item.get("after", {})
+                name = sid.split("/")[-1]
+                try:
+                    if not _SKILL_ID_RE.fullmatch(sid) or name in (".", "..") or "\\" in name:
+                        raise SkillsToggleError("receipt contains an invalid skill name", "invalid-receipt")
+                    if tool_id == "hermes":
+                        now = {"kind": "config", "disabled": name in self._disabled_set()}
+                    else:
+                        link = current_dir / name
+                        now = self._entry_snapshot(link)
+                    if now != after or now.get("kind") in ("protected", "unreadable"):
+                        raise SkillsToggleError("entry changed after this operation; left untouched", "changed-since-apply")
+                    if tool_id == "hermes":
+                        config_ready.append((sid, name, before["disabled"]))
+                        continue
+                    if before.get("kind") == "missing" and now.get("kind") == "symlink":
+                        target = Path(now["target"])
+                        resolved = target if target.is_absolute() else link.parent / target
+                        if not is_inside(resolved, self.skills_root):
+                            raise SkillsToggleError("managed target changed; left untouched", "changed-since-apply")
+                        link.unlink()
+                    elif before.get("kind") == "symlink":
+                        raw = before.get("target")
+                        if not isinstance(raw, str):
+                            raise SkillsToggleError("receipt has no original link target", "invalid-receipt")
+                        target = Path(raw)
+                        resolved = target if target.is_absolute() else link.parent / target
+                        if not is_inside(resolved, self.skills_root):
+                            raise SkillsToggleError("original target is no longer inside the skill library", "changed-since-apply")
+                        if now.get("kind") == "missing":
+                            # Exclusive symlink creation refuses a concurrently created entry.
+                            os.symlink(raw, link)
+                        else:
+                            temporary = link.with_name(".hermes-switchboard-" + uuid.uuid4().hex)
+                            try:
+                                os.symlink(raw, temporary)
+                                if self._entry_snapshot(link) != after:
+                                    raise SkillsToggleError("entry changed during undo; left untouched", "changed-since-apply")
+                                os.replace(temporary, link)
+                            finally:
+                                if temporary.is_symlink():
+                                    temporary.unlink()
+                    else:
+                        raise SkillsToggleError("receipt has no safe before-image", "invalid-receipt")
+                    results.append({"skill": sid, "ok": True, "state": item["from"]})
+                except (SkillsToggleError, OSError) as exc:
+                    results.append({"skill": sid, "ok": False, "error": str(exc),
+                                    "code": exc.code if isinstance(exc, SkillsToggleError) else "filesystem-error"})
+            if config_ready:
+                try:
+                    text = self.config_path.read_text(encoding="utf-8") if self.config_path.is_file() else ""
+                    new_text = text
+                    for _, name, disabled in config_ready:
+                        new_text = set_disabled_member(new_text, name, add=disabled)
+                    if new_text != text:
+                        self._backup_config()
+                        _atomic_write_text(self.config_path, new_text)
+                    results.extend({"skill": sid, "ok": True, "state": "disabled" if disabled else "enabled"}
+                                   for sid, _, disabled in config_ready)
+                except (ConfigEditError, SkillsToggleError, OSError) as exc:
+                    results.extend({"skill": sid, "ok": False, "error": str(exc), "code": "config-write"}
+                                   for sid, _, _ in config_ready)
+            changed = sum(bool(row["ok"]) for row in results)
+            failed = len(results) - changed
+            summary = {"receipt_id": receipt_id, "tool": tool_id, "changed": changed,
+                       "failed": failed, "refused": failed, "undo_available": False, "status": "undone"}
+            result = {"ok": True, "changed": changed, "failed": failed, "results": results, "receipt": summary}
+            receipt.update(status="undone", undo_available=False, undo_result=result)
+            try:
+                self._save_receipt(receipt)
+            except (SkillsToggleError, OSError) as exc:
+                result["receipt_error"] = "Undo completed but its final receipt could not be saved; inspect the changed entries."
+            self._log(action="bulk-undo", receipt_id=receipt_id, tool=tool_id, changed=changed, failed=failed)
+            if changed:
+                self.invalidate()
+            return result
+
     def execute_bulk(
         self, planned_ids: object, tool_id: object, enabled: object, receipt_id: object = None
     ) -> dict:
@@ -1290,7 +1486,25 @@ class SkillsToggleCore:
                     continue
                 ready.append((valid_sid, skill, disposition))
 
+            context_dir = self.config_path.resolve() if tool_id == "hermes" else self.tool_dir(tool_id)
+            before_images = {
+                sid: ({"kind": "config", "disabled": skill["name"] in disabled} if tool_id == "hermes"
+                      else self._entry_snapshot(context_dir / skill["name"]))
+                for sid, skill, _ in ready
+            }
+            durable = {"format": "switchboard-bulk-v1", "receipt_id": receipt_id, "tool": tool_id,
+                       "enabled": enabled, "status": "applying", "undo_available": False,
+                       "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                       "context": {"target_dir": str(context_dir.resolve()) if context_dir else None,
+                                   "skills_root": str(self.skills_root.resolve())},
+                       "items": [{"skill": sid, "before": before_images[sid]} for sid, _, _ in ready]}
+            try:
+                self._reserve_receipt(durable)
+            except OSError as exc:
+                raise SkillsToggleError("receipt storage is not writable; no target changes were made", "receipt-write") from exc
+
             changed_ids = set()
+            after_images = {}
             if tool_id == "hermes" and ready:
                 try:
                     text = self.config_path.read_text(encoding="utf-8") if self.config_path.is_file() else ""
@@ -1315,6 +1529,8 @@ class SkillsToggleCore:
                 for sid, skill, disposition in ready:
                     try:
                         _, new_state = self._link_tool(skill, tool_id, enabled)
+                        # Capture each mutation before moving to the next skill.
+                        after_images[sid] = self._entry_snapshot(context_dir / skill["name"])
                         changed_ids.add(sid)
                         state = new_state["state"]
                         results.append({"skill": sid, "ok": True, "state": state})
@@ -1339,14 +1555,26 @@ class SkillsToggleCore:
             refused_codes = {"foreign-link", "unmanaged-dir", "no-dir", "not-a-dir"}
             refused_count = sum(1 for item in results if item.get("code") in refused_codes)
             undone_by = [{"skill": item["skill"], "enabled": not enabled} for item in receipt_items if item["ok"] and item["from"] != item["to"]]
+            for item in receipt_items:
+                if item["ok"]:
+                    item["before"] = before_images[item["skill"]]
+                    item["after"] = ({"kind": "config", "disabled": not enabled} if tool_id == "hermes"
+                                     else after_images[item["skill"]])
             receipt = {
-                "receipt_id": receipt_id, "tool": tool_id, "enabled": enabled, "items": receipt_items,
-                "changed": changed, "failed": failed, "refused": refused_count, "undone_by": undone_by,
+                **durable, "status": "complete", "undo_available": bool(changed),
+                "items": receipt_items, "changed": changed, "failed": failed,
+                "refused": refused_count, "undone_by": undone_by,
             }
+            response = {"ok": True, "results": results, "receipt": receipt, "changed": changed, "failed": failed}
+            try:
+                self._save_receipt(receipt)
+            except (SkillsToggleError, OSError):
+                receipt.update(status="persistence-failed", undo_available=False)
+                response["receipt_error"] = "Changes completed but the final receipt could not be saved; review the before-images and backups."
             self._log(action="bulk", receipt_id=receipt_id, tool=tool_id, enabled=enabled, receipt=receipt)
             if changed:
                 self.invalidate()
-            return {"ok": True, "results": results, "receipt": receipt, "changed": changed, "failed": failed}
+            return response
 
     def repair(self, skill_id: object, tool_id: object) -> dict:
         with self._lock:
@@ -3211,6 +3439,14 @@ if APIRouter is not None:
             body.get("enabled"),
             body.get("receipt_id"),
         )
+
+    @router.get("/bulk/receipt")
+    async def bulk_receipt(receipt_id: str) -> dict:
+        return _call(get_core().get_bulk_receipt, receipt_id)
+
+    @router.post("/bulk/undo")
+    async def bulk_undo(body: dict) -> dict:
+        return _call(get_core().undo_bulk, body.get("receipt_id"))
 
     @router.post("/repair")
     async def repair(body: dict) -> dict:

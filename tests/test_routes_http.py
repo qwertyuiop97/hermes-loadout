@@ -43,6 +43,17 @@ class RouteRoundTrip(unittest.TestCase):
         pa.set_core_for_testing(None)
         self.fx.cleanup()
 
+    def test_durable_receipt_load_and_undo(self):
+        prefix = "/api/plugins/hermes-switchboard"
+        body = self.client.post(prefix + "/bulk/apply", json={"skills": ["apple/apple-notes"], "tool": "codex", "enabled": True}).json()
+        rid = body["receipt"]["receipt_id"]
+        loaded = self.client.get(prefix + "/bulk/receipt", params={"receipt_id": rid}).json()
+        self.assertTrue(loaded["receipt"]["undo_available"])
+        result = self.client.post(prefix + "/bulk/undo", json={"receipt_id": rid}).json()
+        self.assertEqual(result["changed"], 1)
+        self.assertFalse((self.fx.codex / "apple-notes").is_symlink())
+        self.assertEqual(self.client.post(prefix + "/bulk/undo", json={"receipt_id": "../escape"}).json()["code"], "invalid-receipt")
+
     def test_health(self) -> None:
         r = self.client.get("/api/plugins/hermes-switchboard/health")
         self.assertEqual(r.status_code, 200)

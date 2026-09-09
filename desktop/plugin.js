@@ -1404,7 +1404,7 @@ function ArrivalBanner({ arrivals, tools, autoLink, onLink, onDismiss, onAutoLin
   })
 }
 
-// Undo banner — 30 s window over the last bulk/preset/arrival action (D29).
+// Durable bulk receipts are undoable until superseded; legacy backup actions expire.
 function UndoBanner({ undo, onUndo, busy }) {
   const t = usePluginI18n(ID)
   if (!undo) return null
@@ -1461,7 +1461,7 @@ function SkillsPane({ section = 'tools' }) {
 
   // -- undo window (D29) ---------------------------------------------------
   useEffect(() => {
-    if (!undo) return undefined
+    if (!undo || undo.durable) return undefined
     const timer = setTimeout(() => setUndo(null), Math.max(0, undo.expires - Date.now()))
     return () => clearTimeout(timer)
   }, [undo])
@@ -1656,13 +1656,13 @@ function SkillsPane({ section = 'tools' }) {
   const busy = taskBusy || toggleMutation.isPending || repairMutation.isPending || repairAllMutation.isPending || bulkMutation.isPending
 
   // -- imperative bulk runner with undo capture ------------------------------
-  // entries: [{ tool, ids, enabled }]; undoActions: [{ skill, tool, enabled }]
-  // carrying the RESTORE polarity captured before the change.
+  // Undo is based only on persisted backend changes, never intended actions.
   const runBulkEntries = useCallback(
-    async (entries, undoActions) => {
+    async (entries) => {
       setTaskBusy(true)
       let changed = 0
       let failed = 0
+      const receipts = []
       try {
         for (const entry of entries) {
           if (!entry.ids.length) continue
@@ -1672,8 +1672,12 @@ function SkillsPane({ section = 'tools' }) {
               body: { skills: entry.ids, tool: entry.tool, enabled: entry.enabled }
             })
             if (res && res.ok) {
-              changed += res.changed || 0
+              changed += res.receipt ? res.receipt.changed || 0 : res.changed || 0
               failed += res.failed || 0
+              if (res.receipt && res.receipt.undo_available) {
+                receipts.push({ kind: 'receipt', receipt_id: res.receipt.receipt_id, count: res.receipt.changed })
+              }
+              if (res.receipt_error) host.notify({ kind: 'error', message: res.receipt_error })
             } else {
               failed += entry.ids.length
             }
@@ -1687,9 +1691,7 @@ function SkillsPane({ section = 'tools' }) {
         qc.invalidateQueries({ queryKey: DIFF_KEY })
         qc.invalidateQueries({ queryKey: DRIFT_KEY })
       }
-      if (undoActions && undoActions.length) {
-        setUndo({ actions: undoActions, count: undoActions.length, expires: Date.now() + 30000 })
-      }
+      setUndo(receipts.length ? { actions: receipts, count: receipts.reduce((sum, r) => sum + r.count, 0), durable: true } : null)
       host.notify({
         kind: failed ? 'error' : 'success',
         message: failed ? t('toastBulk', changed, failed) : t('toastBulkDone', changed)
@@ -1701,56 +1703,32 @@ function SkillsPane({ section = 'tools' }) {
 
   const onUndo = useCallback(() => {
     if (!undo) return
-    const byKey = new Map()
-    const reverts = []
-    for (const action of undo.actions) {
-      if (action.kind && action.kind !== 'toggle') {
-        reverts.push(action)
-        continue
-      }
-      const key = `${action.tool}|${action.enabled}`
-      const entry = byKey.get(key) || { tool: action.tool, enabled: action.enabled, ids: [] }
-      entry.ids.push(action.skill)
-      byKey.set(key, entry)
-    }
     setUndo(null)
     setTaskBusy(true)
     ;(async () => {
-      const entries = Array.from(byKey.values())
-      for (const action of reverts) {
-        const path =
-          action.kind === 'revert-push'
-            ? '/conflict/revert-push'
-            : action.kind === 'revert-pull'
-              ? '/conflict/revert-pull'
-              : '/conflict/revert-adopt'
+      for (const action of undo.actions) {
+        const path = action.kind === 'receipt' ? '/bulk/undo'
+          : action.kind === 'revert-push' ? '/conflict/revert-push'
+          : action.kind === 'revert-pull' ? '/conflict/revert-pull'
+          : '/conflict/revert-adopt'
         try {
-          await pluginCtx.rest(path, { method: 'POST', body: action })
-        } catch (_err) {
-          host.notify({ kind: 'error', message: t('undoFailed') })
-        }
+          const result = await pluginCtx.rest(path, {
+            method: 'POST', body: action.kind === 'receipt' ? { receipt_id: action.receipt_id } : action
+          })
+          if (!result || result.ok !== true || result.failed || result.receipt_error) {
+            host.notify({ kind: 'error', message: result && (result.error || result.receipt_error) || t('undoFailed') })
+          } else host.notify({ kind: 'success', message: t('toastBulkDone', result.changed || 1) })
+        } catch (error) { host.notifyError(error, t('undoFailed')) }
       }
-      if (entries.length) await runBulkEntries(entries)
     })().finally(() => {
       setTaskBusy(false)
       qc.invalidateQueries({ queryKey: STATE_KEY })
       qc.invalidateQueries({ queryKey: DIFF_KEY })
       qc.invalidateQueries({ queryKey: DRIFT_KEY })
     })
-  }, [undo, runBulkEntries, qc, t])
+  }, [undo, qc, t])
 
   // -- presets (D20/D21) ------------------------------------------------------
-  const captureEnableUndo = (ids, tool) => {
-    const byId = new Map(skills.map(s => [s.id, s]))
-    const undoActions = []
-    for (const id of ids) {
-      const s = byId.get(id)
-      const st = s && s.tools[tool] ? s.tools[tool].state : 'missing'
-      if (st !== 'enabled') undoActions.push({ skill: id, tool: tool, enabled: false })
-    }
-    return undoActions
-  }
-
   const applyEnablePreset = preset => {
     const ids = skills
       .filter(s => preset.catRe && preset.catRe.test(s.category))
@@ -1767,20 +1745,14 @@ function SkillsPane({ section = 'tools' }) {
       confirmLabel: t('applyPreset'),
       destructive: false,
       action: () => {
-        const undoActions = []
-        const entries = targets.map(tool => {
-          undoActions.push(...captureEnableUndo(ids, tool.id))
-          return { tool: tool.id, ids: ids, enabled: true }
-        })
-        runBulkEntries(entries, undoActions)
+        const entries = targets.map(tool => ({ tool: tool.id, ids: ids, enabled: true }))
+        runBulkEntries(entries)
       }
     })
   }
 
   const applyMinimalPreset = () => {
-    const byId = new Map(skills.map(s => [s.id, s]))
     const entries = []
-    const undoActions = []
     let total = 0
     for (const tool of linkTools) {
       if (tool.present === false) continue
@@ -1789,7 +1761,6 @@ function SkillsPane({ section = 'tools' }) {
         .map(s => s.id)
       if (!ids.length) continue
       total += ids.length
-      for (const id of ids) undoActions.push({ skill: id, tool: tool.id, enabled: true })
       entries.push({ tool: tool.id, ids: ids, enabled: false })
     }
     if (!total) {
@@ -1801,7 +1772,7 @@ function SkillsPane({ section = 'tools' }) {
       description: t('minimalDesc', total),
       confirmLabel: t('applyPreset'),
       destructive: true,
-      action: () => runBulkEntries(entries, undoActions)
+      action: () => runBulkEntries(entries)
     })
   }
 
@@ -1856,12 +1827,8 @@ function SkillsPane({ section = 'tools' }) {
       confirmLabel: t('applyPreset'),
       destructive: false,
       action: () => {
-        const undoActions = []
-        const entries = targets.map(tool => {
-          undoActions.push(...captureEnableUndo(ids, tool.id))
-          return { tool: tool.id, ids: ids, enabled: true }
-        })
-        runBulkEntries(entries, undoActions)
+        const entries = targets.map(tool => ({ tool: tool.id, ids: ids, enabled: true }))
+        runBulkEntries(entries)
         setPresetText('')
         setShowPresetImport(false)
       }
@@ -2179,17 +2146,14 @@ function SkillsPane({ section = 'tools' }) {
   }
 
   const onArrivalLink = toolIds => {
-    const byId = new Map(skills.map(s => [s.id, s]))
-    const undoActions = []
     const entries = toolIds
       .filter(id => linkTools.some(tool => tool.id === id))
       .map(toolId => {
-        undoActions.push(...captureEnableUndo(arrivals, toolId))
         return { tool: toolId, ids: arrivals.slice(), enabled: true }
       })
     markSkillsSeen(arrivals)
     arrivalsAtom.set([])
-    runBulkEntries(entries, undoActions)
+    runBulkEntries(entries)
   }
 
   const onArrivalDismiss = () => {
@@ -2216,29 +2180,23 @@ function SkillsPane({ section = 'tools' }) {
   const onRowAll = useCallback(
     skill => {
       const targets = linkTools.filter(tool => tool.present !== false)
-      const undoActions = []
-      const entries = targets.map(tool => {
-        undoActions.push(...captureEnableUndo([skill.id], tool.id))
-        return { tool: tool.id, ids: [skill.id], enabled: true }
-      })
-      runBulkEntries(entries, undoActions)
+      const entries = targets.map(tool => ({ tool: tool.id, ids: [skill.id], enabled: true }))
+      runBulkEntries(entries)
     },
-    [linkTools, captureEnableUndo, runBulkEntries]
+    [linkTools, runBulkEntries]
   )
 
   const onRowNone = useCallback(
     skill => {
       const entries = []
-      const undoActions = []
       for (const tool of linkTools) {
         if (tool.present === false) continue
         const st = skill.tools[tool.id]
         if (st && (st.state === 'enabled' || st.state === 'broken-link')) {
-          undoActions.push({ skill: skill.id, tool: tool.id, enabled: true })
           entries.push({ tool: tool.id, ids: [skill.id], enabled: false })
         }
       }
-      runBulkEntries(entries, undoActions)
+      runBulkEntries(entries)
     },
     [linkTools, runBulkEntries]
   )
@@ -2891,6 +2849,7 @@ function BulkReceipt({ receipt, tool }) {
     children: [
       jsx('div', { className: 'mb-1 font-medium', children: t('bulkReceiptTitle', tool.label, details.changed || 0, details.failed || 0, details.refused || 0) }),
       details.receipt_id ? jsx('div', { className: 'mb-1 text-muted-foreground', children: t('bulkReceiptId', details.receipt_id) }) : null,
+      receipt.error ? jsx('div', { role: 'alert', className: 'text-(--ui-text-danger)', children: receipt.error }) : null,
       results.map(result => jsx('div', {
         'data-bulk-result': result.skill,
         className: result.ok ? 'text-muted-foreground' : 'text-(--ui-text-danger)',
@@ -3155,6 +3114,7 @@ function ToolsOverview({ layout }) {
   const [confirm, setConfirm] = useState(null)
   const [undo, setUndo] = useState(null)
   const [receipt, setReceipt] = useState(null)
+  const [lastReceiptId, setLastReceiptId] = useState(() => storeGet('lastBulkReceipt', null))
   const [taskBusy, setTaskBusy] = useState(false)
   const arrivals = useValue(arrivalsAtom)
   const [autoLink, setAutoLinkState] = useState(() => getAutoLinkPrefs())
@@ -3195,7 +3155,7 @@ function ToolsOverview({ layout }) {
   const overviewProblems = problemTotals.broken + problemTotals.foreign + problemTotals.unmanaged
 
   useEffect(() => {
-    if (!undo) return undefined
+    if (!undo || undo.durable) return undefined
     const timer = setTimeout(() => setUndo(null), Math.max(0, undo.expires - Date.now()))
     return () => clearTimeout(timer)
   }, [undo])
@@ -3226,14 +3186,17 @@ function ToolsOverview({ layout }) {
         return
       }
       const resultReceipt = data.receipt || {}
-      const undoActions = (Array.isArray(resultReceipt.undone_by) ? resultReceipt.undone_by : [])
-        .map(item => ({ skill: item.skill, tool: vars.tool.id, enabled: item.enabled }))
-      if (undoActions.length) {
-        setUndo({ actions: undoActions, count: undoActions.length, expires: Date.now() + 30000 })
+      setUndo(resultReceipt.undo_available ? {
+        receiptId: resultReceipt.receipt_id, count: resultReceipt.changed || 0, durable: true
+      } : null)
+      if (resultReceipt.receipt_id) {
+        storeSet('lastBulkReceipt', resultReceipt.receipt_id)
+        setLastReceiptId(resultReceipt.receipt_id)
       }
-      setReceipt({ tool: vars.tool, results: Array.isArray(data.results) ? data.results : [], receipt: resultReceipt })
+      setReceipt({ tool: vars.tool, results: Array.isArray(data.results) ? data.results : [], receipt: resultReceipt, error: data.receipt_error })
+      if (data.receipt_error) host.notify({ kind: 'error', message: data.receipt_error })
       haptic('tap')
-      host.notify({ kind: resultReceipt.failed ? 'error' : 'success', message: t('toastBulk', resultReceipt.changed || 0, resultReceipt.failed || 0) })
+      host.notify({ kind: resultReceipt.failed || data.receipt_error ? 'error' : 'success', message: t('toastBulk', resultReceipt.changed || 0, resultReceipt.failed || 0) })
     },
     onError: err => host.notifyError(err, t('bulkFailed')),
     onSettled: () => {
@@ -3283,33 +3246,37 @@ function ToolsOverview({ layout }) {
     }
   })
 
+  const showReceipt = response => {
+    if (!response || response.ok !== true || !response.receipt) throw new Error(response && response.error || t('undoFailed'))
+    const details = response.receipt
+    const tool = tools.find(item => item.id === details.tool) || { id: details.tool, label: details.tool }
+    const results = response.results || (details.items || []).map(item => ({ ...item, state: item.to }))
+    setReceipt({ tool: tool, results: results, receipt: details, error: response.receipt_error })
+    setUndo(details.undo_available ? { receiptId: details.receipt_id, count: details.changed, durable: true } : null)
+  }
+
+  const loadLastReceipt = () => {
+    if (!lastReceiptId) return
+    setTaskBusy(true)
+    pluginCtx.rest('/bulk/receipt?receipt_id=' + encodeURIComponent(lastReceiptId))
+      .then(showReceipt).catch(error => host.notifyError(error, t('receiptLoadFailed')))
+      .finally(() => setTaskBusy(false))
+  }
+
   const onUndo = useCallback(() => {
     if (!undo) return
-    const byEnabled = new Map()
-    for (const action of undo.actions) {
-      const entry = byEnabled.get(action.enabled) || []
-      entry.push(action.skill)
-      byEnabled.set(action.enabled, entry)
-    }
-    setUndo(null)
     setTaskBusy(true)
-    Promise.all(Array.from(byEnabled.entries()).map(([enabled, skillIds]) =>
-      pluginCtx.rest('/bulk/apply', {
-        method: 'POST', body: { skills: skillIds, tool: undo.actions[0].tool, enabled: enabled }
+    pluginCtx.rest('/bulk/undo', { method: 'POST', body: { receipt_id: undo.receiptId } })
+      .then(response => {
+        showReceipt(response)
+        host.notify({ kind: response.failed || response.receipt_error ? 'error' : 'success',
+          message: response.receipt_error || t('toastBulk', response.changed || 0, response.failed || 0) })
+      }).catch(error => host.notifyError(error, t('undoFailed'))).finally(() => {
+        setTaskBusy(false)
+        qc.invalidateQueries({ queryKey: STATE_KEY })
+        qc.invalidateQueries({ queryKey: DIFF_KEY })
+        qc.invalidateQueries({ queryKey: DRIFT_KEY })
       })
-    )).then(responses => {
-      const response = responses[responses.length - 1]
-      if (response && response.receipt) {
-        const tool = tools.find(item => item.id === response.receipt.tool) || { id: response.receipt.tool, label: response.receipt.tool }
-        setReceipt({ tool: tool, results: response.results || [], receipt: response.receipt })
-      }
-      host.notify({ kind: 'success', message: t('toastBulkDone', undo.count) })
-    }).catch(err => host.notifyError(err, t('undoFailed'))).finally(() => {
-      setTaskBusy(false)
-      qc.invalidateQueries({ queryKey: STATE_KEY })
-      qc.invalidateQueries({ queryKey: DIFF_KEY })
-      qc.invalidateQueries({ queryKey: DRIFT_KEY })
-    })
   }, [undo, qc, t])
 
   const busy = taskBusy || planMutation.isPending || applyMutation.isPending || toggleMutation.isPending
@@ -3407,6 +3374,7 @@ function ToolsOverview({ layout }) {
         className: 'flex flex-wrap items-center gap-2 border-b border-(--ui-stroke-secondary) px-4 py-3',
         children: [
           jsx('h2', { className: 'font-medium', children: t('ccTools') }),
+          lastReceiptId ? jsx(Button, { variant: 'secondary', size: 'xs', disabled: busy, onClick: loadLastReceipt, children: t('lastChange') }) : null,
           jsx(Badge, { variant: 'outline', size: 'xs', children: t('skillsCount', skills.length) }),
           overviewProblems ? jsx(Badge, { variant: 'warn', size: 'xs', children: t('overviewProblems', overviewProblems) }) : null,
           layout === 'wide'
@@ -4154,6 +4122,8 @@ export default {
         alwaysAuto: 'Auto-link new skills for this tool (opt-in)',
         linkChecked: n => `Link ${n} skill(s)`,
         toastAutoLinked: n => `Auto-linked ${n} new skill(s)`,
+        lastChange: 'Last change',
+        receiptLoadFailed: 'Could not load the receipt. Fully restart Hermes if the backend was just updated.',
         undoAvail: n => `${n} change(s) applied`,
         undo: 'Undo',
         presets: 'Presets',
