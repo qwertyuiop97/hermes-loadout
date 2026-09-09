@@ -1,0 +1,4 @@
+{
+  "diff": {"ok": true, "counts": {"broken": 2, "foreign": 1, "unmanaged": 3, "unlinked": 4}},
+  "drift": {"ok": true, "count": 5, "drifted": []}
+}

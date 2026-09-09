@@ -14,6 +14,24 @@ export const host = {
   notify: opts => { S().notifications.push(opts) },
   notifyError: (err, fallback) => { S().notifications.push({ kind: 'error', message: fallback || String(err) }) },
   navigate: p => { S().navigations.push(p) },
+  openWorkspace: (id, options) => {
+    const rec = {
+      id,
+      dock: options?.dock,
+      title: options?.title,
+      minWidth: options?.minWidth,
+      uncloseable: options?.uncloseable,
+      render: options?.render,
+      onClose: options?.onClose
+    }
+    const workspaces = (S().workspaces = S().workspaces || [])
+    workspaces.push(rec)
+    S().activeWorkspace = rec
+    return () => {
+      S().workspaceCloses = (S().workspaceCloses || 0) + 1
+      if (typeof rec.onClose === 'function') rec.onClose()
+    }
+  },
   state: {}
 }
 
@@ -44,7 +62,7 @@ export function useQuery({ queryKey }) {
   }
   if (queryKey[1] === 'drift') {
     if (mode === 'error') return { data: undefined, isLoading: false, isError: true, error: new Error('x') }
-    return { data: S().driftList || { ok: true, drifted: [], count: 0 }, isLoading: false, isPending: false, isError: false, error: null, refetch: () => {} }
+    return { data: S().drift || S().driftList || { ok: true, drifted: [], count: 0 }, isLoading: false, isPending: false, isError: false, error: null, refetch: () => {} }
   }
   if (queryKey[1] === 'state') {
     if (mode === 'loading') return { data: undefined, isLoading: true, isPending: true, isError: false, error: null, refetch: () => {} }
@@ -87,11 +105,18 @@ export function usePluginI18n(id) {
 
 export const atom = initial => {
   const a = {
+    _subs: new Set(),
     get: () => ((S().atomStore = S().atomStore || new Map()).get(a) ?? initial),
     set: v => {
       ;(S().atomStore = S().atomStore || new Map()).set(a, v)
+      for (const fn of a._subs) fn(v)
+    },
+    subscribe: fn => {
+      a._subs.add(fn)
+      return () => a._subs.delete(fn)
     }
   }
+  ;(S().atoms = S().atoms || []).push(a)
   return a
 }
 export const useValue = a => (typeof a === 'function' ? a() : a.get())

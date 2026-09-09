@@ -1,0 +1,7 @@
+{
+  "ok": true,
+  "skills_root_exists": true,
+  "tools": [{"id": "hermes", "label": "Hermes", "present": true, "special": "config"}],
+  "counts": {"skills": 1, "unlinked": 1},
+  "skills": [{"id": "test/alpha", "name": "alpha", "category": "test", "tools": {"hermes": {"state": "enabled"}}}]
+}

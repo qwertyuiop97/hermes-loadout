@@ -34,9 +34,11 @@ ln -sfn "$FRONT/node_modules/react-dom" "$FRONT/staging/node_modules/react-dom"
 # fresh plugin copy each run (like a hot reload)
 cp "$REPO/desktop/plugin.js" "$FRONT/staging/plugin.js"
 cp "$HERE/render_harness_body.mjs" "$FRONT/render_harness_body.mjs"
+cp "$HERE/workspace_harness_body.mjs" "$FRONT/workspace_harness_body.mjs"
 # committed render fixtures (screenshot-shaped 105-skill state) ride along
 rm -rf "$FRONT/fixtures"
 cp -R "$HERE/fixtures" "$FRONT/fixtures"
 
 cd "$FRONT"
-PLUGIN_SRC="$FRONT/staging/plugin.js" STAGING_PLUGIN="$FRONT/staging/plugin.js" exec node render_harness_body.mjs
+PLUGIN_SRC="$FRONT/staging/plugin.js" STAGING_PLUGIN="$FRONT/staging/plugin.js" node render_harness_body.mjs
+PLUGIN_SRC="$FRONT/staging/plugin.js" STAGING_PLUGIN="$FRONT/staging/plugin.js" node workspace_harness_body.mjs
