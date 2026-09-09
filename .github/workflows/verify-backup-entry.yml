@@ -1,0 +1,61 @@
+name: verify backup entry protection
+on:
+  pull_request:
+    paths: ['.github/workflows/verify-backup-entry.yml']
+permissions:
+  contents: read
+jobs:
+  verify:
+    if: github.head_ref == 'astra/switchboard-alpha-hardening' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: windows-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - name: Apply the exact reviewed backup fix
+        shell: python
+        run: |
+          from pathlib import Path
+          import hashlib
+          path = Path('dashboard/plugin_api.py')
+          text = path.read_text(encoding='utf-8')
+          assert hashlib.sha256(text.encode()).hexdigest() == '2b03993c4de23562326f2b8ededde84b11ceefb457670aaf2e915b349f6c7b06'
+          old = "            backup = path.with_name(f'{path.name}.bak.hermes-loadout.{stamp}{suffix}')\n            try:\n"
+          new = "            backup = path.with_name(f'{path.name}.bak.hermes-loadout.{stamp}{suffix}')\n            # Windows may follow an existing dangling reparse point even with\n            # O_EXCL. Check the entry itself, not whether its target exists.\n            if os.path.lexists(backup):\n                continue\n            try:\n"
+          assert text.count(old) == 1
+          updated = text.replace(old, new)
+          assert hashlib.sha256(updated.encode()).hexdigest() == 'eb65de6e559a9a89ad23d66bb1df950bd2104daf95fe28a7b69969fea7ef7a4e'
+          test_path = Path('tests/test_backup_integrity.py')
+          tests = test_path.read_text(encoding='utf-8')
+          assert hashlib.sha256(tests.encode()).hexdigest() == '7b65496e5b8f1d5942060551b2b6a54a2f3585ee31b479d38b150a0c8dd5ad2c'
+          tests = tests.replace("self.source.write_bytes(b'fixture-private-value')", "self.source.write_bytes(b'fixture-private-value\\r\\nline\\n\\x00end')")
+          tests = tests.replace("self.assertEqual(first.read_bytes(), b'fixture-private-value')", "self.assertEqual(first.read_bytes(), b'fixture-private-value\\r\\nline\\n\\x00end')")
+          tests = tests.replace('        occupied.symlink_to(external)\n', '        occupied.symlink_to(external)\n        original_target = os.readlink(occupied)\n')
+          tests = tests.replace('                self.assertTrue(occupied.is_symlink())\n', '                self.assertTrue(occupied.is_symlink())\n                self.assertEqual(os.readlink(occupied), original_target)\n')
+          assert hashlib.sha256(tests.encode()).hexdigest() == 'a35cc6781499a401c5e322982421c846ee8d5d90a93af158988cbf8c5dd75235'
+          path.write_bytes(updated.encode())
+          test_path.write_bytes(tests.encode())
+      - name: Verify Windows backup and full backend contracts
+        shell: bash
+        run: |
+          python -m pip install --quiet -r tests/requirements-http.txt
+          python -m unittest discover -s tests -p 'test_backup_integrity.py' -v
+          python -m unittest discover -s tests -p 'test_*.py' -v
+          git diff --check
+      - name: Commit only tested source files
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          test "$(git ls-remote origin refs/heads/astra/switchboard-alpha-hardening | cut -f1)" = "$EXPECTED_HEAD"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- dashboard/plugin_api.py tests/test_backup_integrity.py
+          git commit -m 'fix: preserve dangling backup entries on Windows'
+          git push origin HEAD:refs/heads/astra/switchboard-alpha-hardening
