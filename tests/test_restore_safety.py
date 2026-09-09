@@ -22,7 +22,7 @@ class RestoreSafetyTests(unittest.TestCase):
         self.core.toggle('apple/apple-notes', 'codex', True)
 
     def backup(self):
-        path = self.fx.codex / (self.name + '.hermes-loadout-backup-20260909-120000')
+        path = self.core._new_tool_backup(self.fx.codex, self.name)
         path.mkdir()
         (path / 'SKILL.md').write_text('Original local skill', encoding='utf-8')
         return path
@@ -41,7 +41,7 @@ class RestoreSafetyTests(unittest.TestCase):
     def test_backup_symlink_is_not_treated_as_a_real_preserved_directory(self):
         outside = self.fx.tmp / 'unrelated'
         outside.mkdir()
-        backup = self.fx.codex / (self.name + '.hermes-loadout-backup-20260909-120000')
+        backup = self.core._new_tool_backup(self.fx.codex, self.name)
         backup.symlink_to(outside, target_is_directory=True)
         with self.assertRaises(pa.LoadoutError):
             self.core.revert_push('codex', self.name, str(backup))

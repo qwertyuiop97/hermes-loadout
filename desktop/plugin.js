@@ -253,7 +253,7 @@ function ToolCell({ skill, tool, st, onToggle, onRepair, busy }) {
   const state = st ? st.state : 'missing'
   const isHermes = tool.special === 'config'
   const checked = state === 'enabled'
-  const locked = state === 'foreign-link' || state === 'unmanaged-dir'
+  const locked = !!tool.read_only || state === 'foreign-link' || state === 'unmanaged-dir'
   const broken = state === 'broken-link'
 
   let tip = ''
@@ -555,7 +555,7 @@ function ToolFilter({ tools, active, onChange, layout }) {
 }
 
 // ---------------------------------------------------------------------------
-// v2 — presets (D20/D21), arrival + auto-link machinery (D22/D23), undo (D29)
+// Named selections, read-only discovery notifications, and change receipts
 // ---------------------------------------------------------------------------
 
 const BUILT_IN_PRESETS = [
@@ -563,32 +563,6 @@ const BUILT_IN_PRESETS = [
   { id: 'writing', label: 'Writing', catRe: /(creative|note-taking|email|research)/i },
   { id: 'minimal', label: 'Minimal', disableAll: true }
 ]
-
-function getAutoLinkPrefs() {
-  try {
-    return JSON.parse(storeGet('autoLink', '{}')) || {}
-  } catch (_err) {
-    return {}
-  }
-}
-
-// V3-7: a pref value is `true` (all categories), '' (all), or a category
-// regex string. A skill matches when the pattern is empty/all or its
-// category matches the pattern (case-insensitive; invalid patterns never
-// match — they surface in the Setup panel as typed text, not crashes).
-function autoLinkMatches(pref, category) {
-  if (pref === true || pref === '' || pref === undefined) return true
-  if (typeof pref !== 'string') return false
-  try {
-    return new RegExp(pref, 'i').test(category)
-  } catch (_err) {
-    return false
-  }
-}
-
-function setAutoLinkPrefs(prefs) {
-  storeSet('autoLink', JSON.stringify(prefs || {}))
-}
 
 function markSkillsSeen(ids) {
   let seen = []
@@ -662,40 +636,6 @@ function useBackgroundSync() {
       /* watch prefs are optional */
     }
   }, [state, t])
-
-  const autoLinkRef = useRef(false)
-  useEffect(() => {
-    if (!arrivals.length || !state || !state.ok || autoLinkRef.current) return
-    const prefs = getAutoLinkPrefs()
-    const tools = presentLinkTools(state).filter(tool => prefs[tool.id] && tool.present !== false)
-    if (!tools.length) return
-    autoLinkRef.current = true
-    const skills = Array.isArray(state.skills) ? state.skills : []
-    const byId = new Map(skills.map(skill => [skill.id, skill]))
-    const valid = arrivals.filter(id => byId.has(id))
-    ;(async () => {
-      let changed = 0
-      for (const tool of tools) {
-        const wanted = valid.filter(id => autoLinkMatches(prefs[tool.id], byId.get(id).category || ''))
-        if (!wanted.length) continue
-        try {
-          const result = await pluginCtx.rest('/toggle-bulk', {
-            method: 'POST',
-            body: { skills: wanted, tool: tool.id, enabled: true }
-          })
-          if (result && result.ok) changed += result.changed || 0
-        } catch (_err) {
-          /* the invalidate below reconciles per-tool failures */
-        }
-      }
-      markSkillsSeen(arrivals)
-      arrivalsAtom.set([])
-      autoLinkRef.current = false
-      if (changed) host.notify({ kind: 'success', message: t('toastAutoLinked', changed) })
-      qc.invalidateQueries({ queryKey: STATE_KEY })
-      qc.invalidateQueries({ queryKey: DIFF_KEY })
-    })()
-  }, [arrivals, state, t, qc])
 
   const watchRef = useRef({ initialized: false, broken: null, drift: null })
   useEffect(() => {
@@ -1123,11 +1063,11 @@ function ProtectedEntriesPanel({ diff, tools }) {
 }
 
 // Setup / onboarding panel — create tool dirs, add custom tools, manage
-// auto-link prefs, and find copies to adopt. Purely user-initiated (opt-in).
+// Discovery is observational. Import and activation require separate reviews.
 function SetupPanel({
-  allTools, tools, onClose, onEnsureDir, onAddTool, busy, autoLink, onAutoLink, adopt, onScanAdopt, onAdoptTool,
+  allTools, tools, onClose, onEnsureDir, onAddTool, busy, adopt, onScanAdopt, onAdoptTool,
   watchPrefs, onWatchPref, onBlueprintExport, onBlueprintFile, blueprintPreview, onBlueprintApply,
-  backups, onScanBackups, onRestoreBackup, onAutoLinkPattern
+  backups, onScanBackups, onRestoreBackup
 }) {
   const t = usePluginI18n(ID)
   const [label, setLabel] = useState('')
@@ -1179,22 +1119,6 @@ function SetupPanel({
         ] })
       ] }),
       jsxs('div', { className: 'mt-2', children: [
-        jsx('div', { className: 'mb-1 text-muted-foreground', children: t('autoLinkDesc') }),
-        jsxs('div', { className: 'flex flex-wrap gap-1', children: linkTools.map(tool =>
-          jsx('button', {
-            type: 'button',
-            onClick: () => onAutoLink(tool.id),
-            className: cn(
-              'rounded-[4px] px-1.5 py-0.5 text-[0.6875rem] transition-colors',
-              autoLink[tool.id]
-                ? 'bg-primary/10 font-medium text-primary'
-                : 'text-muted-foreground hover:bg-(--chrome-action-hover) hover:text-foreground'
-            ),
-            children: autoLink[tool.id] ? `⚡ ${tool.label}` : tool.label
-          }, tool.id)
-        ) })
-      ] }),
-      jsxs('div', { className: 'mt-2', children: [
         jsx('div', { className: 'mb-1 text-muted-foreground', children: t('watchDesc') }),
         jsxs('div', { className: 'flex flex-wrap items-center gap-1', children: [
           jsx('button', {
@@ -1204,31 +1128,8 @@ function SetupPanel({
               'rounded-[4px] px-1.5 py-0.5 text-[0.6875rem] transition-colors',
               watchPrefs.on ? 'bg-primary/10 font-medium text-primary' : 'text-muted-foreground hover:bg-(--chrome-action-hover) hover:text-foreground'
             ),
-            children: watchPrefs.on ? '⚡ ' + t('watchOn') : t('watchOff')
+            children: watchPrefs.on ? t('watchOn') : t('watchOff')
           }),
-          linkTools.map(tool =>
-            jsxs('span', { className: 'inline-flex items-center gap-1', children: [
-              jsx('button', {
-                type: 'button',
-                onClick: () => onAutoLink(tool.id),
-                className: cn(
-                  'rounded-[4px] px-1.5 py-0.5 text-[0.6875rem] transition-colors',
-                  autoLink[tool.id]
-                    ? 'bg-primary/10 font-medium text-primary'
-                    : 'text-muted-foreground hover:bg-(--chrome-action-hover) hover:text-foreground'
-                ),
-                children: autoLink[tool.id] ? '⚡ ' + tool.label : tool.label
-              }, 'al-' + tool.id),
-              autoLink[tool.id]
-                ? jsx('input', {
-                    value: typeof autoLink[tool.id] === 'string' ? autoLink[tool.id] : '',
-                    placeholder: t('autoLinkPattern'),
-                    className: 'h-5 w-28 rounded-[4px] border border-(--ui-stroke-secondary) bg-transparent px-1 text-[0.625rem]',
-                    onChange: e => onAutoLinkPattern(tool.id, e && e.target ? e.target.value : e)
-                  }, 'alp-' + tool.id)
-                : null
-            ] }, 'alw-' + tool.id)
-          ),
           watchPrefs.on
             ? ['arrivals', 'broken', 'drift'].map(cls =>
                 jsx('button', {
@@ -1337,71 +1238,17 @@ function SetupPanel({
 }
 
 // Arrival banner — new skills detected since last visit. Never auto-enables
-// unless a tool has an explicit auto-link preference (D22/D23).
-function ArrivalBanner({ arrivals, tools, autoLink, onLink, onDismiss, onAutoLink, busy }) {
+// Discovery never changes activation.
+function ArrivalBanner({ arrivals, onDismiss, busy }) {
   const t = usePluginI18n(ID)
-  const [selected, setSelected] = useState(() => new Set())
-  const linkTools = tools.filter(tool => tool.special !== 'config')
-  const toggleSel = id => {
-    setSelected(prev => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
-  }
-  const sample = arrivals.slice(0, 3).join(', ')
-  return jsxs('div', {
-    className: 'mx-3 mb-2 rounded-md border border-(--ui-stroke-secondary) bg-background p-2 text-xs',
-    children: [
-      jsxs('div', { className: 'flex items-center gap-2', children: [
-        jsx(StatusDot, { tone: 'good' }),
-        jsx('span', { className: 'font-medium', children: t('arrivalsTitle', arrivals.length) }),
-        jsx(Button, {
-          variant: 'ghost', size: 'xs', className: 'ml-auto', disabled: busy,
-          onClick: onDismiss, children: t('dismiss')
-        })
-      ] }),
-      jsx('div', { className: 'mt-0.5 truncate text-muted-foreground', children: sample }),
-      jsxs('div', { className: 'mt-1.5 flex flex-wrap items-center gap-1', children: [
-        linkTools.map(tool =>
-          jsxs('span', { className: 'inline-flex items-center gap-1', children: [
-            jsx('button', {
-              type: 'button',
-              onClick: () => toggleSel(tool.id),
-              className: cn(
-                'rounded-[4px] px-1.5 py-0.5 text-[0.6875rem] transition-colors',
-                selected.has(tool.id)
-                  ? 'bg-primary/10 font-medium text-primary'
-                  : 'text-muted-foreground hover:bg-(--chrome-action-hover) hover:text-foreground'
-              ),
-              children: tool.label
-            }),
-            jsx(Tip, {
-              label: t('alwaysAuto'),
-              children: jsx('button', {
-                type: 'button',
-                onClick: () => onAutoLink(tool.id),
-                className: cn(
-                  'rounded-[4px] px-1 py-0.5 text-[0.625rem] transition-colors',
-                  autoLink[tool.id]
-                    ? 'bg-primary/10 font-medium text-primary'
-                    : 'text-muted-foreground hover:bg-(--chrome-action-hover) hover:text-foreground'
-                ),
-                children: '⚡'
-              })
-            })
-          ] }, tool.id)
-        ),
-        jsx(Button, {
-          variant: 'secondary', size: 'xs', className: 'ml-auto',
-          disabled: busy || selected.size === 0,
-          onClick: () => onLink(Array.from(selected)),
-          children: t('linkChecked', arrivals.length)
-        })
-      ] })
-    ]
-  })
+  return jsxs('div', { className: 'mx-3 mb-2 rounded-md border border-(--ui-stroke-secondary) p-3 text-xs', children: [
+    jsxs('div', { className: 'flex flex-wrap items-center gap-2', children: [
+      jsx('strong', { children: t('arrivalsTitle', arrivals.length) }),
+      jsx(Button, { variant: 'ghost', size: 'xs', disabled: busy, onClick: onDismiss, children: t('dismiss') })
+    ] }),
+    jsx('p', { className: 'mt-1 text-muted-foreground', children: 'New library items were found. Your application selections have not changed.' }),
+    jsx('p', { className: 'mt-1 break-words', children: arrivals.slice(0, 3).join(', ') })
+  ] })
 }
 
 // Durable bulk receipts are undoable until superseded; legacy backup actions expire.
@@ -1439,7 +1286,6 @@ function SkillsPane({ section = 'tools' }) {
   const arrivals = useValue(arrivalsAtom)
   const [showSetup, setShowSetup] = useState(() => storeGet('setupDismissed', false) !== true)
   const [undo, setUndo] = useState(null)
-  const [autoLink, setAutoLinkState] = useState(() => getAutoLinkPrefs())
   const [adopt, setAdopt] = useState(null)
   const [showPresetImport, setShowPresetImport] = useState(false)
   const [presetText, setPresetText] = useState('')
@@ -2161,20 +2007,7 @@ function SkillsPane({ section = 'tools' }) {
     arrivalsAtom.set([])
   }
 
-  const onToggleAutoLink = toolId => {
-    const prefs = getAutoLinkPrefs()
-    if (prefs[toolId]) delete prefs[toolId]
-    else prefs[toolId] = true
-    setAutoLinkPrefs(prefs)
-    setAutoLinkState({ ...prefs })
-  }
 
-  const onAutoLinkPattern = (toolId, pattern) => {
-    const prefs = getAutoLinkPrefs()
-    prefs[toolId] = pattern.trim() === '' ? true : pattern
-    setAutoLinkPrefs(prefs)
-    setAutoLinkState({ ...prefs })
-  }
 
   // per-skill all/none across every present link tool (#5)
   const onRowAll = useCallback(
@@ -2484,13 +2317,10 @@ function SkillsPane({ section = 'tools' }) {
             onEnsureDir: onEnsureDir,
             onAddTool: onAddTool,
             busy: busy,
-            autoLink: autoLink,
-            onAutoLink: onToggleAutoLink,
             allTools: allTools,
             adopt: adopt,
             onScanAdopt: onScanAdopt,
             onAdoptTool: onAdoptTool,
-            onAutoLinkPattern: onAutoLinkPattern,
             watchPrefs: watchPrefs,
             onWatchPref: (cls, value) => {
               const next = { ...watchPrefs, [cls]: value }
@@ -2509,10 +2339,8 @@ function SkillsPane({ section = 'tools' }) {
           ? jsx(ArrivalBanner, {
               arrivals: arrivals,
               tools: tools,
-              autoLink: autoLink,
               onLink: onArrivalLink,
               onDismiss: onArrivalDismiss,
-              onAutoLink: onToggleAutoLink,
               busy: busy
             })
           : null,
@@ -2780,7 +2608,7 @@ function ToolCard({ tool, counts, busy, onManage, onEnableAll, onDisableAll }) {
           })
         ]
       }),
-      tool.path_error || tool.read_only ? jsx('p', { role: 'alert', className: 'text-xs text-(--ui-text-warning)', children: tool.path_error || tool.notes || t('libraryReviewCustom') }) : null,
+      tool.path_error || tool.read_only ? jsx('p', { role: 'alert', className: 'text-xs text-(--ui-text-warning)', children: tool.path_error || (tool.catalog_bypasses && tool.catalog_bypasses.length ? 'Catalog bypass: review the broad link in Issues before changing this application.' : tool.notes || t('libraryReviewCustom')) }) : null,
       tool.shared_with?.length ? jsx('p', { className: 'text-xs text-(--ui-text-warning)', children: t('sharedDirectoryWarning') }) : null,
       jsxs('div', {
         className: 'grid grid-cols-3 gap-2 text-xs',
@@ -3275,7 +3103,6 @@ function ToolsOverview({ layout }) {
   const [lastReceiptId, setLastReceiptId] = useState(() => storeGet('lastBulkReceipt', null))
   const [taskBusy, setTaskBusy] = useState(false)
   const arrivals = useValue(arrivalsAtom)
-  const [autoLink, setAutoLinkState] = useState(() => getAutoLinkPrefs())
   const [arrivalBusy, setArrivalBusy] = useState(false)
   const stateQuery = useQuery({
     queryKey: STATE_KEY,
@@ -3457,13 +3284,6 @@ function ToolsOverview({ layout }) {
     markSkillsSeen(arrivals)
     arrivalsAtom.set([])
   }
-  const onToggleAutoLink = toolId => {
-    const prefs = getAutoLinkPrefs()
-    if (prefs[toolId]) delete prefs[toolId]
-    else prefs[toolId] = true
-    setAutoLinkPrefs(prefs)
-    setAutoLinkState({ ...prefs })
-  }
   const sharedConfirm = jsx(ConfirmDialog, {
     open: !!confirm,
     onClose: () => setConfirm(null),
@@ -3562,14 +3382,12 @@ function ToolsOverview({ layout }) {
             ]
           })
         : null,
-      arrivals.length && !Object.values(autoLink).some(Boolean)
+      arrivals.length
         ? jsx(ArrivalBanner, {
             arrivals: arrivals,
             tools: tools,
-            autoLink: autoLink,
             onLink: onArrivalLink,
             onDismiss: onArrivalDismiss,
-            onAutoLink: onToggleAutoLink,
             busy: busy || arrivalBusy
           })
         : null,
@@ -3786,8 +3604,8 @@ function FirstRunWizard() {
     setFolderInput('')
   }
   const runScan = () => {
-    const tools = selectedTools.size ? Array.from(selectedTools) : knownToolIds.slice(0, 1)
-    if (!tools.length) return
+    const tools = Array.from(selectedTools)
+    if (!tools.length && !scanRoots.length) return
     saveProgress('scanning')
     scanMutation.mutate({ tools: tools, scan_roots: scanRoots.slice(), category: category })
   }
@@ -3798,7 +3616,7 @@ function FirstRunWizard() {
     action: () => {
       setConfirm(null)
       setStep('apply')
-      applyMutation.mutate({ entries: chosen.map(row => ({ name: row.name, source: row.source, tool: row.tool == null ? null : row.tool })), category: category })
+      applyMutation.mutate({ plan_id: plan.plan_id, entries: chosen.map(row => ({ name: row.name, source: row.source, tool: row.tool == null ? null : row.tool })), category: category })
     }
   })
   const undoAdoption = () => {
@@ -4300,8 +4118,6 @@ export default {
         toolAdded: label => `${label} added`,
         toolAddFailed: 'Could not save the tool',
         dirCreated: label => `Created skills folder for ${label}`,
-        autoLinkDesc: 'Auto-link: new skills are linked automatically (opt-in per tool; optional category regex)',
-        autoLinkPattern: 'category regex…',
         adoptScan: 'Find copies to adopt',
         adoptCounts: (a, d) => `${a} adoptable copies, ${d} drifted`,
         adoptAll: 'Adopt…',
@@ -4311,7 +4127,6 @@ export default {
         adoptFailed: 'Adoption scan failed',
         arrivalsTitle: n => `${n} new skill(s) found`,
         dismiss: 'Ignore',
-        alwaysAuto: 'Auto-link new skills for this tool (opt-in)',
         linkChecked: n => `Link ${n} skill(s)`,
         toastAutoLinked: n => `Auto-linked ${n} new skill(s)`,
         lastChange: 'Last change',

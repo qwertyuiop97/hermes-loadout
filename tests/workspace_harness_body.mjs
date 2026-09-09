@@ -435,7 +435,7 @@ ok(html.includes('Claude Desktop') && html.includes('Codex') && html.includes('d
 
 channel.atoms[0].set('advanced')
 html = renderToString(workspace.render())
-ok(html.includes('Set up your tools') && html.includes('Watch mode') && html.includes('Machine blueprint') && html.includes('Export blueprint') && html.includes('List backups') && html.includes('Auto-link:'), 'Advanced mounts setup, watch, blueprint, backup, and auto-link controls')
+ok(html.includes('Set up your tools') && html.includes('Watch mode') && html.includes('Machine blueprint') && html.includes('Export blueprint') && html.includes('List backups') && !html.includes('Auto-link:'), 'Advanced retains explicit setup and recovery, never automatic activation')
 
 channel.atoms[1].set(['new/arriving-skill'])
 channel.atoms[0].set('tools')

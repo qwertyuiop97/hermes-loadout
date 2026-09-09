@@ -174,7 +174,11 @@ class RouteRoundTrip(unittest.TestCase):
         self.assertTrue(body["ok"])
         codex = next(t for t in body["tools"] if t["tool"] == "codex")
         self.assertIn("http-local-skill", [e["name"] for e in codex["entries"]])
-        r = self.client.post(f"{base}/import/apply", json={"tool": "codex", "names": ["http-local-skill"]})
+        refused = self.client.post(f"{base}/import/apply", json={"tool": "codex", "names": ["http-local-skill"]})
+        self.assertEqual(refused.json()["code"], "review-required")
+        preview = self.client.post(f"{base}/import/plan", json={"tools": ["codex"]}).json()
+        chosen = [row for row in preview["adoptable"] if row["name"] == "http-local-skill"]
+        r = self.client.post(f"{base}/import/apply", json={"plan_id": preview["plan_id"], "entries": chosen})
         self.assertEqual(r.json()["adopted"], 1)
         self.assertTrue((self.fx.home / "skills" / "imported" / "http-local-skill" / "SKILL.md").is_file())
         # drift route answers
@@ -207,7 +211,7 @@ class RouteRoundTrip(unittest.TestCase):
             f"{base}/apply-plan",
             json={
                 "entries": [{"name": entry["name"], "source": entry["source"], "tool": entry["tool"]}],
-                "category": "wizard",
+                "category": "wizard", "plan_id": plan["plan_id"],
             },
         )
         self.assertEqual(applied.status_code, 200)

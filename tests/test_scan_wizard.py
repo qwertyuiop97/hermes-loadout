@@ -108,7 +108,7 @@ class ScanWizardTest(unittest.TestCase):
         chosen = [selected(row) for row in plan["adoptable"]]
         make_skill(self.scan_a, "arrived-later")
 
-        applied = self.core.import_apply_plan(chosen, "wizard")
+        applied = self.core.import_apply_plan(chosen, "wizard", plan_id=plan["plan_id"])
 
         self.assertEqual({row["name"] for row in applied["results"] if row["ok"]}, {"from-tool", "from-folder"})
         self.assertFalse((self.fx.home / "skills" / "wizard" / "arrived-later").exists())
@@ -122,7 +122,7 @@ class ScanWizardTest(unittest.TestCase):
         entry = next(row for row in plan["adoptable"] if row["name"] == "selected-tool-root")
         self.assertEqual(entry["tool"], "grok")
 
-        applied = self.core.import_apply_plan([selected(entry)], "wizard")
+        applied = self.core.import_apply_plan([selected(entry)], "wizard", plan_id=plan["plan_id"])
 
         self.assertEqual(applied["adopted"], 1)
         self.assertTrue((self.fx.grok / "selected-tool-root").is_symlink())
@@ -133,7 +133,7 @@ class ScanWizardTest(unittest.TestCase):
         entry = next(row for row in plan["adoptable"] if row["name"] == "became-conflict")
         make_skill(self.fx.home / "skills" / "late", "became-conflict", "canonical arrived")
 
-        applied = self.core.import_apply_plan([selected(entry)], "imported")
+        applied = self.core.import_apply_plan([selected(entry)], "imported", plan_id=plan["plan_id"])
 
         result = applied["results"][0]
         self.assertFalse(result["ok"])
@@ -148,7 +148,7 @@ class ScanWizardTest(unittest.TestCase):
         shutil.rmtree(source)
         os.symlink(self.fx.foreign_target, source)
 
-        result = self.core.import_apply_plan([selected(entry)], "imported")["results"][0]
+        result = self.core.import_apply_plan([selected(entry)], "imported", plan_id=plan["plan_id"])["results"][0]
 
         self.assertFalse(result["ok"])
         self.assertEqual(result["code"], "foreign-link")
@@ -162,7 +162,7 @@ class ScanWizardTest(unittest.TestCase):
             for row in protected
         }
 
-        applied = self.core.import_apply_plan([selected(row) for row in protected], "imported")
+        applied = self.core.import_apply_plan([selected(row) for row in protected], "imported", plan_id=plan["plan_id"])
 
         self.assertEqual(applied["receipt"]["refused"], 3)
         self.assertTrue(all(not row["ok"] for row in applied["results"]))
@@ -176,7 +176,7 @@ class ScanWizardTest(unittest.TestCase):
         make_skill(self.fx.codex, "tool-adopt")
         make_skill(self.scan_a, "plain-adopt")
         plan = self.core.import_plan(["codex"], [str(self.scan_a)], "wizard")
-        applied = self.core.import_apply_plan([selected(row) for row in plan["adoptable"]], "wizard")
+        applied = self.core.import_apply_plan([selected(row) for row in plan["adoptable"]], "wizard", plan_id=plan["plan_id"])
 
         receipt = applied["receipt"]
         self.assertTrue(receipt["receipt_id"])
@@ -203,7 +203,7 @@ class ScanWizardTest(unittest.TestCase):
         request = selected(entry)
         request["api_key"] = secret
 
-        applied = self.core.import_apply_plan([request], "imported")
+        applied = self.core.import_apply_plan([request], "imported", plan_id=plan["plan_id"])
 
         destination = self.fx.home / "skills" / "imported" / "plain-only"
         self.assertTrue(destination.is_dir())

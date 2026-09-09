@@ -91,7 +91,7 @@ class ImportDriftTests(unittest.TestCase):
         self.assertTrue(link.is_symlink())
         self.assertTrue(pa.same_path(Path(os.readlink(link)), dest.parent.resolve()))
         # original preserved as a backup dir, never deleted
-        backups = list(self.fx.codex.glob("my-local-skill.hermes-loadout-backup-*"))
+        backups = list(self.core._tool_backup_root(self.fx.codex).glob("my-local-skill.bak.hermes-loadout.*"))
         self.assertEqual(len(backups), 1)
         self.assertTrue((backups[0] / "SKILL.md").is_file())
         # the new skill shows up in /state and is linkable everywhere
@@ -105,19 +105,16 @@ class ImportDriftTests(unittest.TestCase):
         self.assertEqual(r["adopted"], 0)
         self.assertFalse(r["results"][0]["ok"])
         self.assertTrue(r["results"][0].get("conflict"))
-        self.assertIn("already exists", r["results"][0]["error"])
+        self.assertEqual(r["results"][0]["code"], "drifted")
         # nothing changed
         self.assertTrue(self.drifted.is_dir() and not self.drifted.is_symlink())
         self.assertFalse((self.fx.home / "skills" / "imported" / "architecture-diagram").exists())
 
     def test_import_apply_rejects_unknown_and_keeps_state(self) -> None:
-        r = self.core.import_apply("codex", ["nope", "my-local-skill", 42])
-        self.assertEqual(r["adopted"], 1)
-        self.assertFalse(r["results"][0]["ok"])
-        self.assertFalse(r["results"][2]["ok"])
-        self.assertTrue(r["results"][1]["ok"])
-        # adopted one still fine
-        self.assertTrue((self.fx.home / "skills" / "imported" / "my-local-skill" / "SKILL.md").is_file())
+        with self.assertRaises(pa.LoadoutError):
+            self.core.import_apply("codex", ["nope", "my-local-skill", 42])
+        self.assertTrue(self.local.is_dir() and not self.local.is_symlink())
+        self.assertFalse((self.fx.home / "skills" / "imported" / "my-local-skill").exists())
 
     def test_import_apply_bad_category_and_missing_dir(self) -> None:
         r = call(self.core.import_apply, "codex", ["my-local-skill"], "../escape")
@@ -142,13 +139,13 @@ class ImportDriftTests(unittest.TestCase):
         finally:
             os.symlink = orig
         self.assertEqual(r["adopted"], 0)
-        self.assertIn("link swap failed", r["results"][0]["error"])
+        self.assertEqual(r["results"][0]["code"], "copy-failed")
         # copy rolled back out of the tree
         self.assertFalse((self.fx.home / "skills" / "imported" / "my-local-skill").exists())
         # original restored exactly where it was, backup cleaned up by restore
         self.assertTrue(self.local.is_dir())
         self.assertFalse(self.local.is_symlink())
-        self.assertEqual(list(self.fx.codex.glob("my-local-skill.hermes-loadout-backup-*")), [])
+        self.assertEqual(list(self.core._tool_backup_root(self.fx.codex).glob("my-local-skill.bak.hermes-loadout.*")), [])
 
     def test_drift_reports_differing_copies(self) -> None:
         d = self.core.drift()
@@ -276,7 +273,7 @@ class DriftPushTests(unittest.TestCase):
                 self.fx.home / "skills" / "creative" / "architecture-diagram",
             )
         )
-        backups = list(self.fx.codex.glob("architecture-diagram.hermes-loadout-backup-*"))
+        backups = list(self.core._tool_backup_root(self.fx.codex).glob("architecture-diagram.bak.hermes-loadout.*"))
         self.assertEqual(len(backups), 1)
         self.assertIn("local drifted edit", (backups[0] / "SKILL.md").read_text())
         # drift is resolved
