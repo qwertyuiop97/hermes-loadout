@@ -295,6 +295,11 @@ const applied = channel.restCalls.filter(call => call.path === '/bulk/apply').at
 ok(JSON.stringify(applied.body.skills) === JSON.stringify(planned.body.skills.slice(0, 3)), 'apply uses the exact immutable would_change ids returned by the plan')
 treeText = JSON.stringify(interactive.toJSON())
 ok(treeText.includes('2 changed, 1 failed') && treeText.includes('Became protected after preview'), 'receipt exposes changed totals and per-item partial failure')
+const singleToolContainer = interactive.root.findByProps({ 'data-single-tool': 'grok' })
+const singleToolShell = interactive.root.findByProps({ 'data-single-tool-shell': 'true' })
+const bulkReceipt = interactive.root.findByProps({ 'data-bulk-receipt': 'grok' })
+const singleToolLayout = interactive.root.findByProps({ 'data-single-tool-layout': 'true' })
+ok(singleToolLayout.findAllByProps({ 'data-single-tool': 'grok' }).length === 1 && singleToolLayout.findAllByProps({ 'data-single-tool-shell': 'true' }).length === 1 && singleToolLayout.findAllByProps({ 'data-bulk-receipt': 'grok' }).length === 1 && singleToolShell.findAllByProps({ 'data-bulk-receipt': 'grok' }).length === 0 && singleToolShell.props.className.includes('min-h-0') && singleToolShell.props.className.includes('flex-1'), 'single-tool receipt is a visible sibling of the scrollable SingleToolView container')
 ok(channel.invalidated.includes('state') && channel.invalidated.includes('diff'), 'apply invalidates state and diff so counts refresh from backend state')
 const undoButton = interactive.root.findAllByType('button').find(node => node.children.join('') === 'Undo')
 await act(async () => { undoButton.props.onClick(); await Promise.resolve(); await Promise.resolve() })
@@ -390,6 +395,7 @@ ok(!html.includes('Search skills'), 'Sets is a distinct section, not the Tools c
 report.data.run()
 html = renderToString(channel.activeWorkspace.render())
 ok(html.includes('architecture-diagram') && html.includes('Use Hermes'), 'Problems mounts the live drift panel')
+ok(html.includes('Repair all') && html.includes('data-broken-entry'), 'Problems exposes reachable repair actions for broken entries')
 
 mcp.data.run()
 html = renderToString(channel.activeWorkspace.render())
@@ -399,6 +405,12 @@ ok((html.match(/role="switch"/g) || []).length === 9, 'MCP keeps nine live proje
 channel.atoms[0].set('advanced')
 html = renderToString(workspace.render())
 ok(html.includes('Set up your tools') && html.includes('Watch mode') && html.includes('Machine blueprint') && html.includes('Export blueprint') && html.includes('List backups') && html.includes('Auto-link:'), 'Advanced mounts setup, watch, blueprint, backup, and auto-link controls')
+
+channel.atoms[1].set(['new/arriving-skill'])
+channel.atoms[0].set('tools')
+html = renderToString(workspace.render())
+ok(html.includes('1 new skill(s) found') && html.includes('new/arriving-skill'), 'Tools renders the arrivals banner on the daily surface')
+channel.atoms[1].set([])
 
 const sdk = await import(new URL('./node_modules/@hermes/plugin-sdk/index.js', 'file://' + STAGING).href)
 const realOpenWorkspace = sdk.host.openWorkspace

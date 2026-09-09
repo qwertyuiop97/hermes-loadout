@@ -1025,6 +1025,42 @@ function DriftPanel({ drift, tools, onPush, onPull, onKeepBoth, busy }) {
   })
 }
 
+function BrokenLinksPanel({ skills, tools, onRepair, onRepairAll, busy }) {
+  const t = usePluginI18n(ID)
+  const toolById = new Map(tools.map(tool => [tool.id, tool]))
+  const broken = []
+  skills.forEach(skill => {
+    Object.keys(skill.tools || {}).forEach(toolId => {
+      const entry = skill.tools[toolId]
+      if (entry && entry.state === 'broken-link') {
+        broken.push({ skill: skill, tool: toolById.get(toolId) || { id: toolId, label: toolId } })
+      }
+    })
+  })
+  if (!broken.length) {
+    return jsx(EmptyState, { title: t('brokenEmpty'), description: t('brokenDesc') })
+  }
+  return jsxs('div', {
+    className: 'flex flex-col gap-2 px-3 pb-4',
+    children: [
+      jsxs('div', { className: 'flex items-center gap-2 px-1 text-xs text-muted-foreground', children: [
+        jsx('span', { children: t('brokenDesc') }),
+        jsx(Button, { variant: 'secondary', size: 'xs', className: 'ml-auto', disabled: busy, onClick: onRepairAll, children: t('repairAll') })
+      ] }),
+      broken.map(item => jsxs('div', {
+        'data-broken-entry': `${item.skill.id}:${item.tool.id}`,
+        className: 'flex items-center gap-2 rounded-md border border-(--ui-stroke-secondary) p-2 text-xs',
+        children: [
+          jsx(StatusDot, { tone: 'warn' }),
+          jsx('span', { className: 'min-w-0 flex-1 truncate font-medium', children: item.skill.name }),
+          jsx('span', { className: 'text-muted-foreground', children: item.tool.label }),
+          jsx(Button, { variant: 'secondary', size: 'xs', disabled: busy, onClick: () => onRepair(item.skill, item.tool), children: t('repair') })
+        ]
+      }, `${item.skill.id}:${item.tool.id}`))
+    ]
+  })
+}
+
 // Setup / onboarding panel — create tool dirs, add custom tools, manage
 // auto-link prefs, and find copies to adopt. Purely user-initiated (opt-in).
 function SetupPanel({
@@ -2397,14 +2433,17 @@ function SkillsPane({ section = 'tools' }) {
       children: [
         jsx(ScrollArea, {
           className: 'min-h-0 flex-1',
-          children: jsx(DriftPanel, {
-            drift: drift,
-            tools: tools,
-            onPush: onPushDrift,
-            onPull: onPullDrift,
-            onKeepBoth: onKeepBothDrift,
-            busy: busy
-          })
+          children: jsxs('div', { children: [
+            jsx(BrokenLinksPanel, { skills: skills, tools: tools, onRepair: onRepair, onRepairAll: onRepairAll, busy: busy }),
+            jsx(DriftPanel, {
+              drift: drift,
+              tools: tools,
+              onPush: onPushDrift,
+              onPull: onPullDrift,
+              onKeepBoth: onKeepBothDrift,
+              busy: busy
+            })
+          ] })
         }),
         jsx(UndoBanner, { undo: undo, onUndo: onUndo, busy: busy }),
         sharedConfirm
@@ -3051,6 +3090,9 @@ function ToolsOverview({ layout }) {
   const [undo, setUndo] = useState(null)
   const [receipt, setReceipt] = useState(null)
   const [taskBusy, setTaskBusy] = useState(false)
+  const arrivals = useValue(arrivalsAtom)
+  const [autoLink, setAutoLinkState] = useState(() => getAutoLinkPrefs())
+  const [arrivalBusy, setArrivalBusy] = useState(false)
   const stateQuery = useQuery({
     queryKey: STATE_KEY,
     queryFn: () => (pluginCtx ? pluginCtx.rest('/state') : Promise.reject(new Error('no backend'))),
@@ -3205,6 +3247,32 @@ function ToolsOverview({ layout }) {
   }, [undo, qc, t])
 
   const busy = taskBusy || planMutation.isPending || applyMutation.isPending || toggleMutation.isPending
+  const onArrivalLink = toolIds => {
+    if (!arrivals.length || !toolIds.length) return
+    setArrivalBusy(true)
+    Promise.all(toolIds.map(tool => pluginCtx.rest('/toggle-bulk', {
+      method: 'POST', body: { skills: arrivals.slice(), tool: tool, enabled: true }
+    }))).then(() => {
+      markSkillsSeen(arrivals)
+      arrivalsAtom.set([])
+      host.notify({ kind: 'success', message: t('toastAutoLinked', arrivals.length) })
+    }).catch(err => host.notifyError(err, t('bulkFailed'))).finally(() => {
+      setArrivalBusy(false)
+      qc.invalidateQueries({ queryKey: STATE_KEY })
+      qc.invalidateQueries({ queryKey: DIFF_KEY })
+    })
+  }
+  const onArrivalDismiss = () => {
+    markSkillsSeen(arrivals)
+    arrivalsAtom.set([])
+  }
+  const onToggleAutoLink = toolId => {
+    const prefs = getAutoLinkPrefs()
+    if (prefs[toolId]) delete prefs[toolId]
+    else prefs[toolId] = true
+    setAutoLinkPrefs(prefs)
+    setAutoLinkState({ ...prefs })
+  }
   const sharedConfirm = jsx(ConfirmDialog, {
     open: !!confirm,
     onClose: () => setConfirm(null),
@@ -3217,16 +3285,17 @@ function ToolsOverview({ layout }) {
 
   if (selectedTool) {
     return jsxs('div', {
+      'data-single-tool-layout': 'true',
       className: 'flex h-full min-w-0 flex-col',
       children: [
-        jsx(SingleToolView, {
+        jsx('div', { 'data-single-tool-shell': 'true', className: 'min-h-0 min-w-0 flex-1', children: jsx(SingleToolView, {
           tool: selectedTool,
           skills: skills,
           busy: busy,
           onBack: () => setSelectedTool(null),
           onToggle: (skill, enabled) => toggleMutation.mutate({ skill: skill, tool: selectedTool, enabled: enabled }),
           onBulk: (skillIds, enabled, scope) => openBulkPlan(selectedTool, enabled, skillIds, scope)
-        }),
+        }) }),
         receipt ? jsx(BulkReceipt, { receipt: receipt, tool: receipt.tool }) : null,
         jsx(UndoBanner, { undo: undo, onUndo: onUndo, busy: busy }),
         sharedConfirm
@@ -3297,6 +3366,17 @@ function ToolsOverview({ layout }) {
               ] }),
               jsx(Button, { variant: 'primary', size: 'xs', onClick: () => ccSectionAtom.set('onboarding'), children: t('startSetup') })
             ]
+          })
+        : null,
+      arrivals.length && !Object.values(autoLink).some(Boolean)
+        ? jsx(ArrivalBanner, {
+            arrivals: arrivals,
+            tools: tools,
+            autoLink: autoLink,
+            onLink: onArrivalLink,
+            onDismiss: onArrivalDismiss,
+            onAutoLink: onToggleAutoLink,
+            busy: busy || arrivalBusy
           })
         : null,
       jsx(ScrollArea, { className: 'min-h-0 flex-1', children: body }),
@@ -3919,6 +3999,9 @@ export default {
         totalTip: 'Total skills discovered under the Hermes skills root',
         brokenTip: 'Symlinks pointing at nothing — repair them',
         unlinkedTip: 'Skills not linked into any coding tool',
+        brokenEmpty: 'No broken links',
+        brokenDesc: 'Broken skill links can be recreated from the Hermes source.',
+        repair: 'Repair',
         repairAll: 'Repair all',
         repairAllTitle: 'Repair all broken links?',
         repairAllDesc:
