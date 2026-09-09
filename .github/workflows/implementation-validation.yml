@@ -1,0 +1,33 @@
+name: implementation validation
+
+# Temporary, private-branch-only verification aid. Removed before final review.
+on:
+  push:
+    branches: [astra/catalog-scopes-safety]
+    paths:
+      - .github/workflows/implementation-validation.yml
+      - .implementation/**
+
+permissions:
+  contents: read
+
+jobs:
+  source-snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Archive tracked source only
+        shell: bash
+        run: |
+          git rev-parse HEAD > source-commit.txt
+          git ls-files -z | tar --null --files-from=- -czf repository-source.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: repository-source
+          path: |
+            repository-source.tar.gz
+            source-commit.txt
+          retention-days: 1
+          if-no-files-found: error
