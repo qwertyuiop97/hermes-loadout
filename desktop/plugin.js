@@ -2430,201 +2430,7 @@ function SkillsPane({ section = 'tools' }) {
     })
   }
 
-  if (section === 'sets') {
-    return jsxs('div', {
-      className: 'flex h-full min-w-0 flex-col gap-2 p-3 text-sm',
-      children: [
-        jsx('div', { className: 'text-xs text-muted-foreground', children: t('toolsLandingHint') }),
-        jsxs('div', {
-          className: 'flex flex-wrap items-center gap-1',
-          children: [
-            jsx('span', { className: 'mr-1 text-[0.625rem] uppercase tracking-wider text-muted-foreground', children: t('presets') }),
-            BUILT_IN_PRESETS.map(preset =>
-              jsx('button', {
-                type: 'button',
-                onClick: () => (preset.disableAll ? applyMinimalPreset() : applyEnablePreset(preset)),
-                disabled: busy,
-                className: 'rounded-[4px] border border-(--ui-stroke-secondary) px-1.5 py-0.5 text-[0.6875rem] text-muted-foreground hover:bg-(--chrome-action-hover) hover:text-foreground',
-                children: preset.label
-              }, preset.id)
-            ),
-            jsx(Button, { variant: 'secondary', size: 'xs', disabled: busy, onClick: () => setShowPresetImport(v => !v), children: t('presetImport') }),
-            jsx(Button, { variant: 'secondary', size: 'xs', disabled: busy, onClick: downloadPresetFile, children: t('downloadPreset') }),
-            jsx(Button, { variant: 'secondary', size: 'xs', disabled: busy, onClick: exportPreset, children: t('copyPreset') })
-          ]
-        }),
-        showPresetImport
-          ? jsxs('div', {
-              className: 'rounded-md border border-(--ui-stroke-secondary) p-2 text-xs',
-              children: [
-                jsx(Input, { value: presetText, onChange: e => setPresetText(e && e.target ? e.target.value : e), placeholder: t('pasteHint'), className: 'h-6 w-full text-xs' }),
-                jsx(Button, { variant: 'secondary', size: 'xs', disabled: busy || !presetText.trim(), onClick: importPreset, children: t('applyPreset') })
-              ]
-            })
-          : null,
-        jsx(UndoBanner, { undo: undo, onUndo: onUndo, busy: busy }),
-        sharedConfirm
-      ]
-    })
-  }
-
-  return jsxs('div', {
-    ref: rootRef,
-    className: 'flex h-full min-w-0 flex-col text-sm',
-    children: [
-      header,
-      showSetup
-        ? jsx(SetupPanel, {
-            tools: tools,
-            onClose: () => {
-              setShowSetup(false)
-              storeSet('setupDismissed', true)
-            },
-            onEnsureDir: onEnsureDir,
-            onAddTool: onAddTool,
-            busy: busy,
-            autoLink: autoLink,
-            onAutoLink: onToggleAutoLink,
-            allTools: allTools,
-            adopt: adopt,
-            onScanAdopt: onScanAdopt,
-            onAdoptTool: onAdoptTool,
-            onAutoLinkPattern: onAutoLinkPattern,
-            watchPrefs: watchPrefs,
-            onWatchPref: (cls, value) => {
-              const next = { ...watchPrefs, [cls]: value }
-              setWatchPrefs(next)
-            },
-            onBlueprintExport: onBlueprintExport,
-            onBlueprintFile: onBlueprintFile,
-            blueprintPreview: blueprintPreview,
-            onBlueprintApply: onBlueprintApply,
-            backups: backups,
-            onScanBackups: onScanBackups,
-            onRestoreBackup: onRestoreBackup
-          })
-        : null,
-      arrivals.length
-        ? jsx(ArrivalBanner, {
-            arrivals: arrivals,
-            tools: tools,
-            autoLink: autoLink,
-            onLink: onArrivalLink,
-            onDismiss: onArrivalDismiss,
-            onAutoLink: onToggleAutoLink,
-            busy: busy
-          })
-        : null,
-      jsx(UndoBanner, { undo: undo, onUndo: onUndo, busy: busy }),
-      jsxs('div', {
-        className: 'flex flex-wrap items-center gap-1 px-3 pb-2',
-        children: [
-          jsx('span', { className: 'mr-1 text-[0.625rem] uppercase tracking-wider text-muted-foreground', children: t('presets') }),
-          BUILT_IN_PRESETS.map(preset =>
-            jsx(
-              'button',
-              {
-                type: 'button',
-                onClick: () => (preset.disableAll ? applyMinimalPreset() : applyEnablePreset(preset)),
-                disabled: busy,
-                className: cn(
-                  'rounded-[4px] border border-(--ui-stroke-secondary) px-1.5 py-0.5 text-[0.6875rem] transition-colors',
-                  'text-muted-foreground hover:bg-(--chrome-action-hover) hover:text-foreground'
-                ),
-                children: preset.label
-              },
-              preset.id
-            )
-          ),
-          jsx('button', {
-            type: 'button',
-            onClick: () => setShowPresetImport(v => !v),
-            disabled: busy,
-            className: 'rounded-[4px] border border-(--ui-stroke-secondary) px-1.5 py-0.5 text-[0.6875rem] text-muted-foreground transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground',
-            children: t('presetImport')
-          }),
-          jsx('button', {
-            type: 'button',
-            onClick: downloadPresetFile,
-            disabled: busy,
-            className: 'rounded-[4px] border border-(--ui-stroke-secondary) px-1.5 py-0.5 text-[0.6875rem] text-muted-foreground transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground',
-            children: t('downloadPreset')
-          }),
-          jsx('label', {
-            className: cn(
-              'cursor-pointer rounded-[4px] border border-(--ui-stroke-secondary) px-1.5 py-0.5 text-[0.6875rem] text-muted-foreground transition-colors',
-              'hover:bg-(--chrome-action-hover) hover:text-foreground',
-              busy && 'opacity-50'
-            ),
-            children: [
-              t('importFile'),
-              jsx('input', {
-                type: 'file',
-                accept: '.json,application/json',
-                className: 'hidden',
-                onChange: e => {
-                  const file = e && e.target && e.target.files ? e.target.files[0] : null
-                  importPresetFile(file)
-                  e.target.value = ''
-                }
-              }, 'preset-file-input')
-            ]
-          }),
-          jsx('button', {
-            type: 'button',
-            onClick: exportPreset,
-            disabled: busy,
-            className: 'rounded-[4px] border border-(--ui-stroke-secondary) px-1.5 py-0.5 text-[0.6875rem] text-muted-foreground transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground',
-            children: t('copyPreset')
-          })
-        ]
-      }),
-      showPresetImport
-        ? jsxs('div', {
-            className: 'mx-3 mb-2 rounded-md border border-(--ui-stroke-secondary) p-2 text-xs',
-            children: [
-              jsx('div', { className: 'mb-1 text-muted-foreground', children: t('pasteHint') }),
-              jsx(Input, {
-                value: presetText,
-                onChange: e => setPresetText(e && e.target ? e.target.value : e),
-                placeholder: '{"version": 1, "name": "…", "skills": ["…"], "tools": ["…"]}',
-                className: 'h-6 w-full text-xs'
-              }),
-              jsx('div', { className: 'mt-1 flex justify-end' }),
-              jsx(Button, {
-                variant: 'secondary',
-                size: 'xs',
-                disabled: busy || !presetText.trim(),
-                onClick: importPreset,
-                children: t('applyPreset')
-              })
-            ]
-          })
-        : null,
-      jsx(ScrollArea, { className: 'min-h-0 flex-1', children: body }),
-      allAbsent && !showSetup && state && state.ok
-        ? jsxs('div', {
-            className: 'mx-3 mb-3 flex items-center gap-2 rounded-md border border-(--ui-stroke-secondary) px-2 py-1.5 text-xs',
-            children: [
-              jsx('span', { className: 'text-muted-foreground', children: t('setupNudge') }),
-              jsx(Button, {
-                variant: 'secondary', size: 'xs', className: 'ml-auto',
-                onClick: () => setShowSetup(true), children: t('setup')
-              })
-            ]
-          })
-        : null,
-      jsx(ConfirmDialog, {
-        open: !!confirm,
-        onClose: () => setConfirm(null),
-        onConfirm: confirm ? confirm.action : () => undefined,
-        title: confirm ? confirm.title : '',
-        description: confirm ? confirm.description : undefined,
-        confirmLabel: confirm ? confirm.confirmLabel : undefined,
-        destructive: confirm ? confirm.destructive : false
-      })
-    ]
-  })
+  return jsx(SectionPlaceholder, { title: t('ccTools'), hint: t('toolsLandingHint') })
 }
 
 // ---------------------------------------------------------------------------
@@ -3080,12 +2886,135 @@ function SingleToolView({ tool, skills, busy, onBack, onToggle, onBulk }) {
   })
 }
 
+function ExpertMatrix({ skills, tools, busy, onToggle }) {
+  const t = usePluginI18n(ID)
+  const [rawQuery, setRawQuery] = useState('')
+  const query = useDebounced(rawQuery, 200).trim().toLowerCase()
+  const [showDescriptions, setShowDescriptions] = useState(false)
+  const categories = useMemo(() => Array.from(new Set(skills.map(skill => skill.category))), [skills])
+  const [collapsed, setCollapsed] = useState(() => new Set(categories))
+  const groups = useMemo(() => {
+    const grouped = new Map()
+    for (const skill of skills) {
+      if (
+        query &&
+        skill.name.toLowerCase().indexOf(query) === -1 &&
+        skill.category.toLowerCase().indexOf(query) === -1 &&
+        (skill.description || '').toLowerCase().indexOf(query) === -1
+      ) {
+        continue
+      }
+      if (!grouped.has(skill.category)) grouped.set(skill.category, [])
+      grouped.get(skill.category).push(skill)
+    }
+    return Array.from(grouped.entries()).map(([category, rows]) => ({ category: category, skills: rows }))
+  }, [skills, query])
+  const toggleCategory = category => setCollapsed(previous => {
+    const next = new Set(previous)
+    if (next.has(category)) next.delete(category)
+    else next.add(category)
+    return next
+  })
+
+  return jsxs('div', {
+    'data-expert-matrix': 'true',
+    className: 'flex min-h-0 min-w-0 flex-1 flex-col',
+    children: [
+      jsxs('div', { className: 'flex flex-wrap items-center gap-2 border-b border-(--ui-stroke-secondary) px-4 py-3', children: [
+        jsx('h3', { className: 'font-medium', children: t('matrixTitle') }),
+        jsx(SearchField, {
+          placeholder: t('searchPlaceholder'),
+          value: rawQuery,
+          onChange: setRawQuery,
+          containerClassName: 'ml-auto min-w-[220px]',
+          'aria-label': t('searchPlaceholder')
+        }),
+        jsxs('label', { className: 'flex items-center gap-2 text-xs text-muted-foreground', children: [
+          jsx('input', {
+            type: 'checkbox',
+            checked: showDescriptions,
+            onChange: event => setShowDescriptions(event.target.checked),
+            'aria-label': t('showDescriptions')
+          }),
+          t('showDescriptions')
+        ] })
+      ] }),
+      jsx('div', { className: 'min-h-0 min-w-0 flex-1 overflow-auto', children: groups.length
+        ? jsxs('table', { className: 'w-max min-w-full border-separate border-spacing-0 text-xs', children: [
+            jsx('thead', { children: jsxs('tr', { children: [
+              jsx('th', {
+                scope: 'col',
+                className: 'sticky left-0 top-0 z-30 min-w-[220px] border-b border-r border-(--ui-stroke-secondary) bg-background px-3 py-2 text-left font-medium',
+                children: t('matrixTitle')
+              }),
+              tools.map(tool => jsx('th', {
+                scope: 'col',
+                'data-matrix-tool': tool.id,
+                className: 'sticky top-0 z-20 min-w-[112px] border-b border-(--ui-stroke-secondary) bg-background px-2 py-2 text-center font-medium',
+                children: tool.label
+              }, tool.id))
+            ] }) }),
+            groups.map(group => {
+              const isCollapsed = !query && collapsed.has(group.category)
+              return jsxs('tbody', { children: [
+                jsx('tr', { children: jsx('th', {
+                  colSpan: tools.length + 1,
+                  scope: 'rowgroup',
+                  className: 'sticky left-0 border-b border-(--ui-stroke-secondary) bg-background px-3 py-2 text-left',
+                  children: jsxs('button', {
+                    type: 'button',
+                    'aria-expanded': !isCollapsed,
+                    onClick: () => toggleCategory(group.category),
+                    className: 'flex items-center gap-2 font-medium',
+                    children: [`${isCollapsed ? '▸' : '▾'} ${group.category}`, jsx(Badge, { variant: 'outline', size: 'xs', children: String(group.skills.length) }, 'count')]
+                  })
+                }) }),
+                isCollapsed ? null : group.skills.map(skill => jsxs('tr', {
+                  'data-matrix-skill': skill.id,
+                  className: 'hover:bg-(--chrome-action-hover)',
+                  children: [
+                    jsx('th', {
+                      scope: 'row',
+                      className: 'sticky left-0 z-10 max-w-[280px] border-b border-r border-(--ui-stroke-secondary) bg-background px-3 py-2 text-left font-normal',
+                      children: jsxs('span', { className: 'block min-w-0', children: [
+                        jsx('span', { className: 'block truncate font-medium', children: skill.name }),
+                        showDescriptions && skill.description
+                          ? jsx('span', { className: 'block truncate text-muted-foreground', children: skill.description })
+                          : null
+                      ] })
+                    }),
+                    tools.map(tool => {
+                      const entry = skill.tools && skill.tools[tool.id]
+                      const stateName = entry ? entry.state : 'missing'
+                      const locked = stateName === 'foreign-link' || stateName === 'unmanaged-dir'
+                      return jsx('td', {
+                        className: 'border-b border-(--ui-stroke-secondary) px-2 py-2 text-center',
+                        children: jsx(Switch, {
+                          size: 'xs',
+                          checked: stateName === 'enabled',
+                          disabled: busy || locked,
+                          'aria-label': `${skill.name} — ${tool.label}`,
+                          onCheckedChange: enabled => onToggle(skill, tool, enabled)
+                        })
+                      }, tool.id)
+                    })
+                  ]
+                }, skill.id))
+              ] }, group.category)
+            })
+          ] })
+        : jsx(EmptyState, { title: t('noMatchTitle'), description: t('noMatchDesc') }) })
+    ]
+  })
+}
+
 function ToolsOverview({ layout }) {
   const t = usePluginI18n(ID)
   const qc = useQueryClient()
   const onboarding = storeGet(ONBOARDING_KEY, { version: ONBOARDING_VERSION, complete: false })
   const onboardingComplete = onboarding && onboarding.version === ONBOARDING_VERSION && onboarding.complete === true
   const [selectedTool, setSelectedTool] = useState(null)
+  const [viewMode, setViewMode] = useState('cards')
   const [confirm, setConfirm] = useState(null)
   const [undo, setUndo] = useState(null)
   const [receipt, setReceipt] = useState(null)
@@ -3130,6 +3059,10 @@ function ToolsOverview({ layout }) {
     const timer = setTimeout(() => setUndo(null), Math.max(0, undo.expires - Date.now()))
     return () => clearTimeout(timer)
   }, [undo])
+
+  useEffect(() => {
+    if (layout !== 'wide') setViewMode('cards')
+  }, [layout])
 
   const countsFor = toolId => {
     let off = 0
@@ -3279,6 +3212,13 @@ function ToolsOverview({ layout }) {
     })
   } else if (state && state.ok && !state.skills_root_exists) {
     body = jsx(EmptyState, { title: t('noRootTitle'), description: t('noRootDesc') })
+  } else if (layout === 'wide' && viewMode === 'matrix') {
+    body = jsx(ExpertMatrix, {
+      skills: skills,
+      tools: tools,
+      busy: busy,
+      onToggle: (skill, tool, enabled) => toggleMutation.mutate({ skill: skill, tool: tool, enabled: enabled })
+    })
   } else {
     body = jsx('div', {
       className: cn('grid gap-3 p-4', layout === 'narrow' ? 'grid-cols-1' : 'grid-cols-2'),
@@ -3302,7 +3242,15 @@ function ToolsOverview({ layout }) {
           jsx('h2', { className: 'font-medium', children: t('ccTools') }),
           jsx(Badge, { variant: 'outline', size: 'xs', children: t('skillsCount', skills.length) }),
           overviewProblems ? jsx(Badge, { variant: 'warn', size: 'xs', children: t('overviewProblems', overviewProblems) }) : null,
-          jsx(Button, { variant: 'secondary', size: 'xs', className: 'ml-auto', onClick: () => ccSectionAtom.set('onboarding'), children: t('scanAndImport') }),
+          layout === 'wide'
+            ? jsx(Button, {
+                variant: 'secondary', size: 'xs', className: 'ml-auto',
+                'aria-pressed': viewMode === 'matrix',
+                onClick: () => setViewMode(current => current === 'cards' ? 'matrix' : 'cards'),
+                children: viewMode === 'matrix' ? t('ccTools') : t('matrixToggle')
+              })
+            : null,
+          jsx(Button, { variant: 'secondary', size: 'xs', className: layout === 'wide' ? undefined : 'ml-auto', onClick: () => ccSectionAtom.set('onboarding'), children: t('scanAndImport') }),
           jsx(Button, { variant: 'secondary', size: 'xs', onClick: () => ccSectionAtom.set('advanced'), children: t('addToolAction') })
         ]
       }),
@@ -3765,6 +3713,7 @@ function ControlCenter() {
   const renderBody = bodies[active] || (() => jsx(SectionPlaceholder, { title: t('ccTools'), hint: t('toolsLandingHint') }))
   return jsxs('div', {
     ref: rootRef,
+    'data-layout': layout,
     className: 'flex h-full min-w-0 flex-col text-sm',
     children: [
       jsx(BackgroundHost, {}),
@@ -3808,6 +3757,9 @@ export default {
         refresh: 'Refresh',
         retry: 'Retry',
         ccTitle: 'Skills Control Center',
+        matrixToggle: 'Matrix',
+        matrixTitle: 'Expert matrix',
+        showDescriptions: 'Show descriptions',
         ccTools: 'Tools',
         ccSets: 'Sets',
         ccProblems: 'Problems',

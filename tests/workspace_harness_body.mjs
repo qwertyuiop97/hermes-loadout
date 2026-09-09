@@ -156,8 +156,56 @@ ok(html.includes('/Users/demo/.hermes/skills') && html.includes('/Users/demo/.co
 ok(html.includes('45 on / 105') && html.includes('60</div><div class="text-muted-foreground">off'), 'Hermes card counts enabled and off correctly')
 ok(html.includes('79 on / 105') && html.includes('13</div><div class="text-muted-foreground">off') && html.includes('13</div><div class="text-muted-foreground">problems'), 'Claude card counts enabled, off, and problems correctly')
 ok((html.match(/role="switch"/g) || []).length === 0 && !html.includes('Search skills'), 'Tools overview replaces the transitional skill matrix')
+ok(!html.includes('data-expert-matrix'), 'default Tools render stays in tool-first cards mode')
+ok(!['Watch mode', 'Export blueprint', 'List backups', 'category regex…'].some(value => html.includes(value)), 'Tools overview excludes Advanced watch, blueprint, backup, and auto-link controls')
 ok(html.includes('Add Tool'), 'Tools overview keeps absent optional targets reachable through Add Tool')
 ok(html.includes('data-onboarding-entry="true"') && html.includes('Start setup'), 'incomplete onboarding exposes a dedicated Tools entry point')
+
+const previousResizeObserver = globalThis.ResizeObserver
+class FakeRO {
+  constructor(cb) { this.cb = cb }
+  observe(_element) { this.cb([{ contentRect: { width: 900 } }]) }
+  disconnect() {}
+}
+globalThis.ResizeObserver = FakeRO
+let matrix
+await act(async () => {
+  matrix = TestRenderer.create(workspace.render(), { createNodeMock: () => ({}) })
+  await Promise.resolve()
+})
+ok(matrix.root.findByProps({ 'data-layout': 'wide' }), 'ResizeObserver fixture drives the Control Center to wide layout')
+const matrixToggle = matrix.root.findAllByType('button').find(node => node.children.join('') === 'Matrix')
+ok(!!matrixToggle, 'wide Tools exposes the optional Matrix toggle')
+await act(async () => { matrixToggle.props.onClick() })
+ok(matrix.root.findByProps({ 'data-expert-matrix': 'true' }), 'Matrix toggle renders ExpertMatrix as a Tools sub-state')
+const matrixHeaders = matrix.root.findAll(node => node.props['data-matrix-tool'])
+ok(matrixHeaders.length === presentTools.length && presentTools.every(tool => matrixHeaders.some(node => node.props['data-matrix-tool'] === tool.id)), 'matrix has a column for every present tool including Hermes')
+ok(!matrixHeaders.some(node => node.props['data-matrix-tool'] === 'kimi'), 'absent optional Kimi is not a matrix column')
+ok(matrix.root.findAll(node => node.props['data-matrix-skill']).length === 0, '105-skill matrix categories start collapsed')
+const matrixSearch = matrix.root.findByProps({ placeholder: 'Search skills…' })
+await act(async () => {
+  matrixSearch.props.onChange('test-driven-development')
+  await new Promise(resolve => setTimeout(resolve, 230))
+})
+ok(matrix.root.findAll(node => node.props['data-matrix-skill']).length === 1, 'matrix search reaches matching skills across collapsed categories')
+await act(async () => {
+  matrix.root.findByProps({ placeholder: 'Search skills…' }).props.onChange('')
+  await new Promise(resolve => setTimeout(resolve, 230))
+})
+const matrixCategories = matrix.root.findAll(node => node.type === 'button' && node.props['aria-expanded'] === false)
+await act(async () => { matrixCategories.forEach(node => node.props.onClick()) })
+const matrixRows = matrix.root.findAll(node => node.props['data-matrix-skill'])
+const matrixSwitches = matrix.root.findAll(node => node.props.role === 'switch')
+ok(matrixRows.length === state.skills.length, 'expanding matrix categories exposes the complete 105-skill catalog')
+ok(matrixSwitches.length === state.skills.length * presentTools.length && matrixRows.every(row => {
+  const skill = state.skills.find(item => item.id === row.props['data-matrix-skill'])
+  const switches = row.findAll(node => node.props.role === 'switch')
+  return switches.length === presentTools.length && switches.every((node, index) => node.props['aria-label'].includes(skill.name) && node.props['aria-label'].includes(presentTools[index].label))
+}), 'every matrix cell switch has a skill-and-tool accessible label')
+ok(!JSON.stringify(matrix.toJSON()).includes(state.skills[0].description), 'matrix descriptions are hidden by default')
+matrix.unmount()
+if (previousResizeObserver === undefined) delete globalThis.ResizeObserver
+else globalThis.ResizeObserver = previousResizeObserver
 
 let interactive
 await act(async () => { interactive = TestRenderer.create(workspace.render()) })
@@ -315,7 +363,7 @@ ok((html.match(/role="switch"/g) || []).length === 9, 'MCP keeps nine live proje
 
 channel.atoms[0].set('advanced')
 html = renderToString(workspace.render())
-ok(html.includes('Set up your tools') && html.includes('Watch mode') && html.includes('Machine blueprint'), 'Advanced mounts setup, watch, blueprint, and backup controls')
+ok(html.includes('Set up your tools') && html.includes('Watch mode') && html.includes('Machine blueprint') && html.includes('Export blueprint') && html.includes('List backups') && html.includes('Auto-link:'), 'Advanced mounts setup, watch, blueprint, backup, and auto-link controls')
 
 const sdk = await import(new URL('./node_modules/@hermes/plugin-sdk/index.js', 'file://' + STAGING).href)
 const realOpenWorkspace = sdk.host.openWorkspace
