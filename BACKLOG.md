@@ -30,7 +30,7 @@ until items 6-12 pass their acceptance gates.
 11. [x] Information architecture cleanup — primary sections Tools, Sets, Problems,
     and MCP; move blueprints, backups, watch mode, custom paths, and auto-link regexes
     under Advanced; keep an expert Matrix view only for sufficiently wide containers.
-12. [ ] Performance, accessibility, and safety gates — validate 100+ skills, keyboard
+12. [x] Performance, accessibility, and safety gates — validate 100+ skills, keyboard
     use, focus/labels, reduced motion, atomic/rollback behavior, Python 3.9 core
     compatibility, HTTP routes, and installed-Hermes smoke behavior.
 13. [ ] Alpha packaging and solo validation — execute the repeatable dogfood script,
