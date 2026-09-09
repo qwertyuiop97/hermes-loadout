@@ -40,7 +40,7 @@ export const cn = (...args) => args.filter(Boolean).join(' ')
 
 export const Button = (props) => el('button', { onClick: props.onClick, disabled: props.disabled, 'data-variant': props.variant, 'data-size': props.size }, props.children)
 export const Badge = (props) => el('span', { 'data-variant': props.variant, 'data-size': props.size }, props.children)
-export const Switch = (props) => el('button', { role: 'switch', 'aria-label': props['aria-label'], 'aria-checked': props.checked ? 'true' : 'false', disabled: props.disabled || undefined, 'data-size': props.size }, null)
+export const Switch = (props) => el('button', { role: 'switch', 'aria-label': props['aria-label'], 'aria-checked': props.checked ? 'true' : 'false', disabled: props.disabled || undefined, 'data-size': props.size, onClick: () => { if (!props.disabled && props.onCheckedChange) props.onCheckedChange(!props.checked) } }, null)
 export const StatusDot = (props) => el('span', { 'data-tone': props.tone }, null)
 export const EmptyState = (props) => el('div', {}, el('div', {}, props.title), props.description ? el('div', {}, props.description) : null, props.children ?? null)
 export const ErrorState = (props) => el('div', {}, el('div', {}, props.title), typeof props.description === 'string' ? el('div', {}, props.description) : null, props.children ?? null)
@@ -76,33 +76,28 @@ export function useQuery({ queryKey }) {
 export function useMutation(opts) {
   return {
     isPending: false,
-    mutate: vars => {
-      const prev = S().state
-      opts.onMutate && opts.onMutate(vars)
-      const finish = result => {
-        if (result && result.ok) opts.onSuccess && opts.onSuccess(result, vars, { previous: prev })
-        else opts.onError && opts.onError(new Error((result && result.error) || 'mutation failed'), vars, { previous: prev })
-        opts.onSettled && opts.onSettled()
-        return result
-      }
+    mutate: async vars => {
+      let context
       try {
-        const result = opts.mutationFn ? opts.mutationFn(vars) : (S().mutationResult || { ok: true })
-        return result && typeof result.then === 'function'
-          ? result.then(finish).catch(error => {
-              opts.onError && opts.onError(error, vars, { previous: prev })
-              opts.onSettled && opts.onSettled()
-            })
-          : finish(result)
+        context = opts.onMutate ? await opts.onMutate(vars) : undefined
+        const result = opts.mutationFn ? await opts.mutationFn(vars) : (S().mutationResult || { ok: true })
+        // React Query calls onSuccess for resolved HTTP-200 error envelopes too.
+        if (opts.onSuccess) await opts.onSuccess(result, vars, context)
+        return result
       } catch (error) {
-        opts.onError && opts.onError(error, vars, { previous: prev })
-        opts.onSettled && opts.onSettled()
+        if (opts.onError) await opts.onError(error, vars, context)
+      } finally {
+        if (opts.onSettled) await opts.onSettled()
       }
     }
   }
 }
 
 export const useQueryClient = () => ({
-  setQueryData: (key, up) => { S().patchedKeys = S().patchedKeys || []; S().patchedKeys.push(key[1]) },
+  setQueryData: (key, up) => {
+    S().patchedKeys = S().patchedKeys || []; S().patchedKeys.push(key[1])
+    if (key[1] === 'state') S().state = typeof up === 'function' ? up(S().state) : up
+  },
   getQueryData: () => S().state,
   cancelQueries: async () => {},
   invalidateQueries: ({ queryKey }) => { S().invalidated = S().invalidated || []; S().invalidated.push(queryKey[1]) }

@@ -76,6 +76,7 @@ plugin.register({
     if (path === '/diff') return channel.diff
     if (path === '/drift') return channel.drift
     if (path === '/mcp/state') return channel.mcpState
+    if (path === '/toggle' && channel.holdToggle) return new Promise((resolve, reject) => { channel.releaseToggle = channel.toggleTransportError ? () => reject(new Error('fixture transport error')) : () => resolve({ ok: false, error: 'fixture refusal' }) })
     if (path === '/import/plan') {
       if (channel.holdScan) return new Promise(resolve => { channel.resolveScan = resolve })
       return channel.scanResponse || scanPlan
@@ -262,6 +263,25 @@ ok(singleSwitches.every(node => node.type === 'button' && typeof node.props['ari
 const singleCategoryButtons = interactive.root.findAll(node => node.type === 'button' && typeof node.props['aria-expanded'] === 'boolean')
 ok(singleCategoryButtons.length === 8 && singleCategoryButtons.every(node => node.children.join('').trim().length > 0), 'single-tool category buttons expose aria-expanded and a visible name')
 
+// Exercise real promise semantics: both a server refusal and a rejected request
+// must restore the visible switch after the optimistic cache update.
+for (const transportError of [false, true]) {
+  channel.holdToggle = true
+  channel.toggleTransportError = transportError
+  const before = channel.state
+  const control = interactive.root.findAll(node => node.props.role === 'switch' && !node.props.disabled)[0]
+  const label = control.props['aria-label']
+  const checked = control.props['aria-checked']
+  await act(async () => { control.props.onClick(); await Promise.resolve(); await Promise.resolve() })
+  await act(async () => { interactive.update(workspace.render()) })
+  ok(interactive.root.findAll(node => node.props.role === 'switch' && node.props['aria-label'] === label)[0].props['aria-checked'] !== checked, 'pending skill toggle displays its optimistic value')
+  await act(async () => { channel.releaseToggle(); await Promise.resolve(); await Promise.resolve() })
+  await act(async () => { interactive.update(workspace.render()) })
+  ok(channel.state === before && interactive.root.findAll(node => node.props.role === 'switch' && node.props['aria-label'] === label)[0].props['aria-checked'] === checked, `${transportError ? 'transport error' : 'HTTP-200 refusal'} restores the visible switch and cache`)
+  ok(channel.notifications.at(-1).kind === 'error', 'failed optimistic mutation is announced as an error')
+}
+channel.holdToggle = false
+
 const search = interactive.root.findByProps({ placeholder: 'Search skills…' })
 await act(async () => {
   search.props.onChange('test-driven-development')
@@ -425,6 +445,23 @@ html = renderToString(channel.activeWorkspace.render())
 ok(html.includes('MCP servers') && html.includes('chrome-devtools'), 'MCP mounts the live MCP pane')
 ok((html.match(/role="switch"/g) || []).length === 9, 'MCP keeps nine live projection switches')
 ok(html.includes('Claude Desktop') && html.includes('Codex') && html.includes('drifted'), 'MCP labels both supported clients and surfaces drift from either writer')
+
+let mcpInteractive
+await act(async () => { mcpInteractive = TestRenderer.create(channel.activeWorkspace.render()) })
+const mcpCallsBefore = channel.restCalls.length
+await act(async () => { mcpInteractive.root.findAll(node => node.props.role === 'switch' && node.props['aria-label'] === 'docs — Codex')[0].props.onClick() })
+ok(mcpInteractive.root.findAllByProps({ role: 'dialog' }).length === 1 && channel.restCalls.length === mcpCallsBefore, 'drifted MCP toggle previews confirmation without a write')
+await act(async () => { mcpInteractive.root.findByProps({ role: 'dialog' }).findAllByType('button').find(node => node.children.join('') === 'Cancel').props.onClick() })
+ok(channel.restCalls.length === mcpCallsBefore, 'cancelled MCP overwrite performs no write')
+await act(async () => { mcpInteractive.root.findAll(node => node.props.role === 'switch' && node.props['aria-label'] === 'docs — Codex')[0].props.onClick() })
+await act(async () => { mcpInteractive.root.findByProps({ role: 'dialog' }).findAllByType('button').find(node => node.children.join('') !== 'Cancel').props.onClick(); await Promise.resolve() })
+ok(channel.restCalls.at(-1).path === '/mcp/codex/sync' && channel.restCalls.at(-1).body.force === true, 'confirmed MCP drift sends the explicit overwrite flag')
+const cleanMcp = channel.mcpState
+channel.mcpState = { ...cleanMcp, writers: { ...cleanMcp.writers, claude: { ...cleanMcp.writers.claude, error: 'Invalid configuration; repair and refresh' } } }
+await act(async () => { mcpInteractive.update(channel.activeWorkspace.render()) })
+ok(mcpInteractive.root.findAll(node => node.props.role === 'switch' && node.props['aria-label'].endsWith(' — Claude')).every(node => node.props.disabled) && JSON.stringify(mcpInteractive.toJSON()).includes('repair and refresh'), 'invalid writer is visibly disabled without blocking other MCP clients')
+channel.mcpState = cleanMcp
+await act(async () => { mcpInteractive.unmount() })
 
 channel.atoms[0].set('advanced')
 html = renderToString(workspace.render())

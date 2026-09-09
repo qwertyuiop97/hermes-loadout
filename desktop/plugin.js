@@ -2645,7 +2645,7 @@ function McpPane() {
             children: Object.keys(st.writers).map(wid =>
               jsxs('span', { className: 'inline-flex items-center gap-1', children: [
                 jsx(StatusDot, { tone: st.writers[wid].present ? 'good' : 'muted' }),
-                jsx('span', { className: 'truncate', children: t('mcpWriterLine', st.writers[wid].label, st.writers[wid].present ? '' : t('dirAbsentTip')) })
+                jsx('span', { className: 'break-words', children: st.writers[wid].error ? st.writers[wid].label + ': ' + st.writers[wid].error : t('mcpWriterLine', st.writers[wid].label, st.writers[wid].present ? '' : t('dirAbsentTip')) })
               ] }, wid)
             )
           })
@@ -2665,10 +2665,10 @@ function McpPane() {
       className: 'flex flex-col gap-2 px-3',
       children: [0, 1, 2, 3].map(i => jsx(Skeleton, { className: 'h-8 w-full' }, 'mcp-sk-' + i))
     })
-  } else if (stateQuery.isError) {
+  } else if (stateQuery.isError || (st && st.ok === false)) {
     body = jsx(ErrorState, {
       title: t('errorTitle'),
-      description: stateQuery.error && stateQuery.error.message ? stateQuery.error.message : t('errorDesc'),
+      description: st && st.error ? st.error : stateQuery.error && stateQuery.error.message ? stateQuery.error.message : t('errorDesc'),
       children: jsx(Button, {
         variant: 'secondary', size: 'xs',
         onClick: () => stateQuery.refetch(), children: t('retry')
@@ -2704,13 +2704,14 @@ function McpPane() {
               writers.map(writer => {
                 const wstate = row.writers[writer.id] || 'missing'
                 const wdrifted = wstate === 'drifted'
+                const writerError = st.writers && st.writers[writer.id] && st.writers[writer.id].error
                 return jsxs('span', { className: 'inline-flex items-center justify-between gap-1', children: [
                   jsx('span', { className: 'text-[0.625rem] text-muted-foreground', children: writer.label }),
                   jsxs('span', { className: 'inline-flex items-center gap-1', children: [
                     jsx(Switch, {
                       size: 'xs',
                       checked: wstate === 'enabled',
-                      disabled: busyName !== null,
+                      disabled: busyName !== null || !!writerError || wstate === 'error',
                       'aria-label': row.name + ' — ' + writer.label,
                       onCheckedChange: next => {
                         if (next && !wdrifted) {
@@ -2721,7 +2722,7 @@ function McpPane() {
                             description: t('mcpOverwriteDesc'),
                             confirmLabel: t('mcpSync'),
                             destructive: false,
-                            action: () => run(row.name, writer.syncPath, { name: row.name }, 'mcpSynced', writer.label)
+                            action: () => run(row.name, writer.syncPath, { name: row.name, force: true }, 'mcpSynced', writer.label)
                           })
                         } else if (!wdrifted) {
                           run(row.name, writer.removePath, { name: row.name }, 'mcpRemoved', writer.label)
@@ -2740,7 +2741,13 @@ function McpPane() {
                       ? jsx(Button, {
                           variant: 'secondary', size: 'xs', className: 'h-4 px-1 text-[0.625rem]',
                           disabled: busyName !== null,
-                          onClick: () => run(row.name, writer.syncPath, { name: row.name }, 'mcpSynced', writer.label),
+                          onClick: () => setConfirm({
+                            title: t('mcpSyncTitle', row.name, writer.label),
+                            description: t('mcpOverwriteDesc'),
+                            confirmLabel: t('mcpSync'),
+                            destructive: false,
+                            action: () => run(row.name, writer.syncPath, { name: row.name, force: true }, 'mcpSynced', writer.label)
+                          }),
                           children: t('mcpSync')
                         })
                       : null
@@ -3265,11 +3272,22 @@ function ToolsOverview({ layout }) {
 
   const toggleMutation = useMutation({
     mutationFn: vars => pluginCtx.rest('/toggle', { method: 'POST', body: { skill: vars.skill.id, tool: vars.tool.id, enabled: vars.enabled } }),
-    onSuccess: data => {
-      if (!data || data.ok !== true) host.notify({ kind: 'error', message: data && data.error ? data.error : t('toggleFailed') })
-      else haptic('tap')
+    onMutate: async vars => {
+      await qc.cancelQueries({ queryKey: STATE_KEY })
+      const previous = qc.getQueryData(STATE_KEY)
+      patchSkillTool(qc, vars.skill.id, vars.tool.id, vars.enabled ? 'enabled' : (vars.tool.id === 'hermes' ? 'disabled' : 'missing'))
+      return { previous }
     },
-    onError: err => host.notifyError(err, t('toggleFailed')),
+    onSuccess: (data, vars, context) => {
+      if (!data || data.ok !== true) {
+        if (context && context.previous) qc.setQueryData(STATE_KEY, context.previous)
+        host.notify({ kind: 'error', message: data && data.error ? data.error : t('toggleFailed') })
+      } else haptic('tap')
+    },
+    onError: (err, vars, context) => {
+      if (context && context.previous) qc.setQueryData(STATE_KEY, context.previous)
+      host.notifyError(err, t('toggleFailed'))
+    },
     onSettled: () => {
       qc.invalidateQueries({ queryKey: STATE_KEY })
       qc.invalidateQueries({ queryKey: DIFF_KEY })
@@ -3297,7 +3315,8 @@ function ToolsOverview({ layout }) {
         const tool = tools.find(item => item.id === response.receipt.tool) || { id: response.receipt.tool, label: response.receipt.tool }
         setReceipt({ tool: tool, results: response.results || [], receipt: response.receipt })
       }
-      host.notify({ kind: 'success', message: t('toastBulkDone', undo.count) })
+      const failed = responses.some(item => !item || item.ok !== true || (item.receipt && item.receipt.failed))
+      host.notify({ kind: failed ? 'error' : 'success', message: failed ? t('undoFailed') : t('toastBulkDone', undo.count) })
     }).catch(err => host.notifyError(err, t('undoFailed'))).finally(() => {
       setTaskBusy(false)
       qc.invalidateQueries({ queryKey: STATE_KEY })
@@ -3312,7 +3331,11 @@ function ToolsOverview({ layout }) {
     setArrivalBusy(true)
     Promise.all(toolIds.map(tool => pluginCtx.rest('/toggle-bulk', {
       method: 'POST', body: { skills: arrivals.slice(), tool: tool, enabled: true }
-    }))).then(() => {
+    }))).then(responses => {
+      if (responses.some(item => !item || item.ok !== true || item.failed)) {
+        host.notify({ kind: 'error', message: t('bulkFailed') })
+        return
+      }
       markSkillsSeen(arrivals)
       arrivalsAtom.set([])
       host.notify({ kind: 'success', message: t('toastAutoLinked', arrivals.length) })
