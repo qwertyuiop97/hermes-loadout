@@ -18,7 +18,7 @@ until items 6-12 pass their acceptance gates.
 7. [x] Responsive product shell — make the contributed side pane a compact summary;
    make the route/workspace surface the management UI; support narrow, split, and
    wide containers without hidden tools, clipped descriptions, or ambiguous switches.
-8. [ ] Tool-first overview — default to one card/row per detected tool with enabled,
+8. [x] Tool-first overview — default to one card/row per detected tool with enabled,
    disabled, and issue counts plus Manage, Enable all, and Disable all actions.
 9. [ ] Single-tool management + bulk planning — one switch per skill for the selected
    tool; selection/category/all operations; dry-run preview, protected-entry report,
