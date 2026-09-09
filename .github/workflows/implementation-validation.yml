@@ -37,7 +37,7 @@ jobs:
         shell: bash
         run: |
           python - <<'PY'
-          import hashlib, json, pathlib, subprocess
+          import base64, gzip, hashlib, io, json, pathlib, subprocess
           meta = pathlib.Path('.implementation/change.json')
           if not meta.exists():
               raise SystemExit(0)
@@ -51,8 +51,19 @@ jobs:
               target = pathlib.Path(name)
               actual = hashlib.sha256(target.read_bytes()).hexdigest() if target.exists() else None
               assert actual == expected, 'Source changed: ' + name
-          subprocess.run(['git', 'apply', '--check', '--index', '.implementation/change.diff'], check=True)
-          subprocess.run(['git', 'apply', '--index', '.implementation/change.diff'], check=True)
+          patch = pathlib.Path('.implementation/change.diff')
+          if spec.get('encoding') == 'gzip+base64':
+              encoded = base64.b64decode(patch.read_text().strip(), validate=True)
+              with gzip.GzipFile(fileobj=io.BytesIO(encoded)) as stream:
+                  decoded = stream.read(1000001)
+              assert len(decoded) <= 1000000, 'Patch exceeds bounded transport size'
+              assert hashlib.sha256(decoded).hexdigest() == spec['patch_sha256'], 'Patch checksum differs'
+              patch = pathlib.Path('/tmp/switchboard-reviewed.diff')
+              patch.write_bytes(decoded)
+          else:
+              assert 'encoding' not in spec, 'Unsupported patch encoding'
+          subprocess.run(['git', 'apply', '--check', '--index', str(patch)], check=True)
+          subprocess.run(['git', 'apply', '--index', str(patch)], check=True)
           names = subprocess.check_output(['git', 'diff', '--cached', '--name-only'], text=True).splitlines()
           assert set(names) == set(spec['before_sha256']), 'Patch file list differs from reviewed manifest'
           PY
