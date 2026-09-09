@@ -160,11 +160,16 @@ unknown ids, non-boolean `enabled` → rejected). All mutations are logged to
 ## Tests — receipts
 
 ```
-python3 -m unittest tests.test_plugin_api        # 46 tests — core round-trips
-./.venv/bin/python -m unittest tests.test_routes_http   # 9 tests — real FastAPI HTTP round-trips
+python3 -m unittest discover -s tests -v         # complete Python discovery suite
+./.venv/bin/python -m unittest tests.test_routes_http -v # real FastAPI HTTP round-trips
 python3 tests/check_frontend.py                  # SDK-constraint static checks
-./tests/run_render_harness.sh                    # 19 assertions — real React renderToString of the pane
+./tests/run_render_harness.sh                    # real React renderToString checks of the pane
 ```
+
+Local baseline verified 2026-09-08: 121 Python tests discovered (110 passed and 11 HTTP
+tests skipped when FastAPI/httpx are absent from system Python); the same 11 HTTP
+tests pass in `.venv`; the render harness passes 49 checks. Treat these as a
+dated baseline, not a hardcoded expectation—new behavior should add coverage.
 
 Covered: link/unlink/repair/diff round-trips per tool · absent-dir creation ·
 broken-link repair (including links to moved/deleted skills, by name) ·
@@ -174,7 +179,7 @@ paths) · hermes config editing across YAML shapes (block list, inline list,
 scalar, null, missing keys, comments preserved, CRLF preserved, timestamped
 backup) · cache invalidation · concurrent toggles · mutation logging · every
 HTTP route · ESM parse / zero JSX / only-allowed imports / all rendered
-identifiers imported / no hardcoded colors / no `localStorage`/`document` ·
+identifiers imported / no hardcoded colors / no web-storage persistence ·
 pane renders loading skeleton, error banner, empty states, filters, bulk
 actions, unicode, badges.
 
@@ -189,8 +194,8 @@ actions, unicode, badges.
 | Grok | ✅ | ✅ | ✅ | ✅ (create-dir-and-link) |
 | ZCode | ✅ | ✅ | ✅ | ✅ (create-dir-and-link) |
 
-Rows were verified through the core test suite (46 tests) and the HTTP suite
-(9 tests); each link/unlink round-trip runs for every tool id, and
+Rows are verified through the core and HTTP suites; each link/unlink round-trip
+runs for every tool id, and
 `ensure-tool-dir` covers the absent-dir column for every link tool. Grok's
 real-dir / foreign-link refusal paths get dedicated tests. The desktop half's
 staging render harness verifies the pane against a fixture shaped like the Air
@@ -299,7 +304,9 @@ Then hit **Retry** in the pane (the pane detects this exact failure and shows th
 
 - Hermes desktop app (disk-plugin capable build) with `@hermes/plugin-sdk`
 - The gateway process (for `plugin_api.py`; FastAPI ships with Hermes)
-- Python ≥ 3.10 to run the test suite; Node ≥ 18 for the render harness
+- Python 3.9+ for the dependency-free core/import contract; the full local/CI
+  development environment currently runs on newer Python. Node ≥ 18 is required
+  for the render harness.
 - No third-party runtime dependencies — the backend core is stdlib-only
 
 ## License

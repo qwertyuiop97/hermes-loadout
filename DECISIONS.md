@@ -2,6 +2,10 @@
 
 One line per material decision: what + why. Newest last.
 
+Entries D1-D39 are historical through v3.0. D40 and later plus
+`IMPLEMENTATION_PLAN.md` supersede earlier scope and UX choices when they
+conflict; established safety and file-format facts remain in force.
+
 - **D1 — Docs verified live, treated as authoritative.** Downloaded the Desktop Plugin SDK doc (938 lines) from the hermes-agent repo, fetched the plugins user-guide + example-plugins repo, and read the local template at `~/.hermes/skills/autonomous-ai-agents/hermes-agent/templates/plugin.js` plus the real desktop SDK source at `~/.hermes/hermes-agent/apps/desktop/src/sdk/index.ts` to confirm component props (Switch/Badge/StatusDot/EmptyState/ErrorState/SearchField/ConfirmDialog/SegmentedControl/Skeleton/PaletteContribution). No guessing against the SDK.
 - **D2 — This Pro is NOT canonical; nothing real was mutated.** The brief said `~/.hermes` here is mostly empty — it is actually a full live install. All reads were reference-only; every mutation test runs against `/tmp` fixtures. The Air's layout (via the brief) plus verified conventions here drive the design.
 - **D3 — `skills.disabled` stores BARE skill names.** Verified in the live `config.yaml` (`- airtable`, `- apple-notes` …), not `category/name`. The hermes tool therefore matches membership by bare name, matching hermes' own semantics.
@@ -41,3 +45,9 @@ One line per material decision: what + why. Newest last.
 - **D37 — Q4 resolved (a):** presets remain local built-ins + shareable file format (as shipped); no community feed.
 - **D38 — Q5 resolved (b):** dual-gate stays notice-only (the pane's gateway-restart remedy), no core-side change.
 - **D39 — version drift fix:** the 2.1.0 bump missed `plugin.yaml` (only the code constant changed), so the two manifests disagreed after the v2.1 increment. Both now bump together in the same commit; caught during the MCP-tab version bump.
+- **D40 — Stabilization is tool-first.** The default experience becomes a tool overview with counts and bulk entry points because the current 100+ skill matrix is too dense for the Hermes split layout. The full matrix remains an optional expert view on sufficiently wide surfaces.
+- **D41 — Compact pane and workspace have different jobs.** The contributed side pane is a status/shortcut surface; the `/skills-toggle` workspace is the complete Control Center. Both must remain usable if Hermes exposes only the pane or cannot open the workspace programmatically.
+- **D42 — Hermes stays canonical.** First-run discovery may scan known or owner-added folders, but those locations are import/adoption sources or tool targets, not competing canonical stores. Every adoption operation is previewed before mutation.
+- **D43 — Backend-authored bulk plans supersede D30's client-only preview.** Bulk operations return exact affected, unchanged, protected, and failed item ids; apply consumes a reviewed plan or equivalent validated request, records a receipt, and provides precise undo/restore guidance.
+- **D44 — Autonomous execution with a material escalation threshold.** Hermes decides routine implementation, copy, layout, and test details from repository evidence and may use configured bots or independent review without requiring MOA consultation. It contacts the owner only for unresolved choices that materially change product behavior, canonical storage, compatibility/public APIs, safety/data-loss boundaries, permissions/secrets/external publishing, or irreversible/destructive actions; non-blocking questions never pause safe work.
+- **D45 — Model routing is capability-based and token-aware.** A fast main orchestrator such as DeepSeek Flash is acceptable; stronger specialists handle architecture, difficult debugging, filesystem safety, and independent review, with Grok 4.6 used for the required challenge reviews. Context and test runs stay bounded, but token savings never waive acceptance, safety, accessibility, or live-Hermes evidence.

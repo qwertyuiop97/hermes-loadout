@@ -1,4 +1,7 @@
-# PROPOSAL-v3.md — skills-toggle v3 (proposal only, awaiting approval)
+# PROPOSAL-v3.md — skills-toggle v3 (approved historical proposal)
+
+> Historical record. The approved v3 work described here has been implemented;
+> `BACKLOG.md` and `IMPLEMENTATION_PLAN.md` now control current work.
 
 Status: **APPROVED 2026-09-06** — ship 1, 2, 4, 5, 6 first, then 3, 7, 8.
 Owner decisions on the four questions: blueprint apply is ADDITIVE-ONLY

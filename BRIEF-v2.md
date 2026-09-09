@@ -1,5 +1,8 @@
 # skills-toggle v2 brief (reasoning-pass revision)
 
+> Historical v2 specification. It explains earlier decisions but is superseded
+> for current work by `BACKLOG.md` and `IMPLEMENTATION_PLAN.md`.
+
 ## Context
 Hermes desktop plugin (pane + Python backend), unified package at
 `~/.hermes/plugins/skills-toggle/`. Source of truth: `~/.hermes/skills/`.

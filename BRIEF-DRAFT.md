@@ -1,4 +1,7 @@
-# skills-toggle v2 brief (draft by Hermes — needs a reasoning pass)
+# skills-toggle v2 brief (superseded historical draft)
+
+> Superseded historical draft. Do not use this file as the current work queue or
+> acceptance specification; use `BACKLOG.md` and `IMPLEMENTATION_PLAN.md`.
 
 ## Context
 Hermes desktop plugin (pane + Python backend), unified package at

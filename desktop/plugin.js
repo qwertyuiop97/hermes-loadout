@@ -748,7 +748,7 @@ function SetupPanel({
                   onBlueprintFile(file)
                   e.target.value = ''
                 }
-              })
+              }, 'blueprint-file-input')
             ]
           })
         ] }),
@@ -2078,7 +2078,7 @@ function SkillsPane() {
                   importPresetFile(file)
                   e.target.value = ''
                 }
-              })
+              }, 'preset-file-input')
             ]
           }),
           jsx('button', {
