@@ -65,6 +65,7 @@ const DRIFT_KEY = [ID, 'drift']
 const MCP_KEY = [ID, 'mcp']
 const ccSectionAtom = atom('tools')
 const arrivalsAtom = atom([])
+const watchPrefsEpochAtom = atom(0)
 const WORKSPACE_ID = 'skills-toggle.control-center'
 let workspaceDispose = null
 let bgHosted = false
@@ -135,7 +136,7 @@ export function summaryProblemTotals(diff, drift) {
   return {
     broken: counts.broken || 0,
     drifted: drift && drift.ok ? drift.count || 0 : 0,
-    foreign: (counts.foreign || 0) + (counts.unmanaged || 0),
+    foreign: counts.foreign || 0,
     unmanaged: counts.unmanaged || 0,
     unlinked: counts.unlinked || 0
   }
@@ -575,6 +576,7 @@ function useBackgroundSync() {
   const t = usePluginI18n(ID)
   const qc = useQueryClient()
   const arrivals = useValue(arrivalsAtom)
+  const watchPrefsEpoch = useValue(watchPrefsEpochAtom)
   const stateQuery = useQuery({
     queryKey: STATE_KEY,
     queryFn: () => (pluginCtx ? pluginCtx.rest('/state') : Promise.reject(new Error('no backend'))),
@@ -694,7 +696,7 @@ function useBackgroundSync() {
     if (prefs.broken && broken > watchRef.current.broken) notify(t('watchBrokenTitle'), t('watchBrokenBody', broken))
     if (prefs.drift && driftCount > watchRef.current.drift) notify(t('watchDriftTitle'), t('watchDriftBody', driftCount))
     watchRef.current = { initialized: true, broken: broken, drift: driftCount }
-  }, [diff, drift, t])
+  }, [diff, drift, t, watchPrefsEpoch])
 }
 
 function BackgroundRunner() {
@@ -793,7 +795,8 @@ function CompactSummaryPane() {
   const rows = [hermes || { id: 'hermes', label: 'Hermes', special: 'config' }, ...linkTools]
   const enabled = countEnabledByTool(state)
   const problems = summaryProblemTotals(diffQuery.data, driftQuery.data)
-  const problemTotal = problems.broken + problems.drifted + problems.foreign + problems.unlinked
+  const protectedProblems = problems.foreign + problems.unmanaged
+  const problemTotal = problems.broken + problems.drifted + protectedProblems + problems.unlinked
   const skillList = state && state.ok && Array.isArray(state.skills) ? state.skills : []
   const rowProblems = toolId => skillList.reduce((count, skill) => {
     const entry = skill.tools && skill.tools[toolId]
@@ -865,7 +868,7 @@ function CompactSummaryPane() {
                 className: 'inline-flex items-center gap-2',
                 children: [
                   jsx(StatusDot, { tone: 'warn' }),
-                  t('problemLine', problems.broken, problems.drifted, problems.foreign, problems.unlinked)
+                  t('problemLine', problems.broken, problems.drifted, protectedProblems, problems.unlinked)
                 ]
               })
             })
@@ -1316,6 +1319,7 @@ function SkillsPane({ section = 'tools' }) {
   const setWatchPrefs = next => {
     setWatchPrefsState(next)
     storeSet('watchPrefs', JSON.stringify(next))
+    watchPrefsEpochAtom.set(watchPrefsEpochAtom.get() + 1)
   }
   const [blueprintBp, setBlueprintBp] = useState(null)
   const [blueprintPreview, setBlueprintPreview] = useState(null)
@@ -2273,6 +2277,86 @@ function SkillsPane({ section = 'tools' }) {
     destructive: confirm ? confirm.destructive : false
   })
 
+  if (section === 'sets') {
+    const presetControls = jsxs('div', {
+      className: 'flex flex-wrap items-center gap-2 p-3',
+      children: [
+        jsx('span', { className: 'mr-1 text-xs font-medium', children: t('presets') }),
+        BUILT_IN_PRESETS.map(preset =>
+          jsx('button', {
+            type: 'button',
+            onClick: () => (preset.disableAll ? applyMinimalPreset() : applyEnablePreset(preset)),
+            disabled: busy,
+            className: 'rounded-[4px] border border-(--ui-stroke-secondary) px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground',
+            children: preset.label
+          }, preset.id)
+        ),
+        jsx(Button, {
+          variant: 'secondary', size: 'xs', disabled: busy,
+          onClick: () => setShowPresetImport(value => !value), children: t('presetImport')
+        }),
+        jsx(Button, {
+          variant: 'secondary', size: 'xs', disabled: busy,
+          onClick: downloadPresetFile, children: t('downloadPreset')
+        }),
+        jsx('label', {
+          className: cn(
+            'cursor-pointer rounded-[4px] border border-(--ui-stroke-secondary) px-2 py-1 text-xs text-muted-foreground transition-colors',
+            'hover:bg-(--chrome-action-hover) hover:text-foreground',
+            busy && 'opacity-50'
+          ),
+          children: [
+            t('importFile'),
+            jsx('input', {
+              type: 'file',
+              accept: '.json,application/json',
+              className: 'hidden',
+              onChange: event => {
+                const file = event && event.target && event.target.files ? event.target.files[0] : null
+                importPresetFile(file)
+                event.target.value = ''
+              }
+            }, 'sets-preset-file')
+          ]
+        }),
+        jsx(Button, {
+          variant: 'secondary', size: 'xs', disabled: busy,
+          onClick: exportPreset, children: t('copyPreset')
+        })
+      ]
+    })
+    return jsxs('div', {
+      className: 'flex h-full min-w-0 flex-col text-sm',
+      children: [
+        presetControls,
+        showPresetImport
+          ? jsxs('div', {
+              className: 'mx-3 mb-2 rounded-md border border-(--ui-stroke-secondary) p-2 text-xs',
+              children: [
+                jsx('div', { className: 'mb-1 text-muted-foreground', children: t('pasteHint') }),
+                jsx(Input, {
+                  value: presetText,
+                  onChange: event => setPresetText(event && event.target ? event.target.value : event),
+                  placeholder: '{"version": 1, "name": "…", "skills": ["…"], "tools": ["…"]}',
+                  className: 'h-6 w-full text-xs'
+                }),
+                jsx(Button, {
+                  variant: 'secondary', size: 'xs', disabled: busy || !presetText.trim(),
+                  onClick: importPreset, children: t('applyPreset')
+                })
+              ]
+            })
+          : null,
+        jsx(ScrollArea, {
+          className: 'min-h-0 flex-1',
+          children: jsx(EmptyState, { title: t('ccSets'), description: t('toolsLandingHint') })
+        }),
+        jsx(UndoBanner, { undo: undo, onUndo: onUndo, busy: busy }),
+        sharedConfirm
+      ]
+    })
+  }
+
   if (section === 'problems') {
     return jsxs('div', {
       className: 'flex h-full min-w-0 flex-col text-sm',
@@ -2302,7 +2386,7 @@ function SkillsPane({ section = 'tools' }) {
           className: 'min-h-0 flex-1',
           children: jsx(SetupPanel, {
             tools: tools,
-            onClose: () => undefined,
+            onClose: () => ccSectionAtom.set('tools'),
             onEnsureDir: onEnsureDir,
             onAddTool: onAddTool,
             busy: busy,
