@@ -175,6 +175,36 @@ class RouteRoundTrip(unittest.TestCase):
         r = self.client.post(f"{base}/config/tools", json={"id": "hermes", "label": "X", "dir": "~/y"})
         self.assertFalse(r.json()["ok"])
 
+    def test_import_plan_and_apply_plan_roundtrip(self) -> None:
+        base = "/api/plugins/skills-toggle/import"
+        scan_root = self.fx.tmp / "http-scan-root"
+        source = scan_root / "http-planned-skill"
+        source.mkdir(parents=True)
+        (source / "SKILL.md").write_text(
+            "---\nname: http-planned-skill\ndescription: planned\n---\nbody", encoding="utf-8"
+        )
+        planned = self.client.post(
+            f"{base}/plan",
+            json={"tools": ["codex"], "scan_roots": [str(scan_root)], "category": "wizard"},
+        )
+        self.assertEqual(planned.status_code, 200)
+        plan = planned.json()
+        self.assertTrue(plan["ok"])
+        entry = next(row for row in plan["adoptable"] if row["name"] == "http-planned-skill")
+
+        applied = self.client.post(
+            f"{base}/apply-plan",
+            json={
+                "entries": [{"name": entry["name"], "source": entry["source"], "tool": entry["tool"]}],
+                "category": "wizard",
+            },
+        )
+        self.assertEqual(applied.status_code, 200)
+        body = applied.json()
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["receipt"]["adopted"], 1)
+        self.assertTrue((self.fx.home / "skills" / "wizard" / "http-planned-skill" / "SKILL.md").is_file())
+
     def test_mcp_routes(self) -> None:
         base = "/api/plugins/skills-toggle"
         # hermes config has no mcp_servers in the fixture -> empty catalog

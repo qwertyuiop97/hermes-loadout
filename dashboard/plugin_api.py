@@ -27,6 +27,8 @@ Routes mount under ``/api/plugins/skills-toggle/``:
     POST /repair-all      → fix every broken link that points into the skills tree
     POST /ensure-tool-dir → {tool} create a missing tool skills dir
     GET  /diff            → skills unlinked everywhere + dangling/foreign/unmanaged links
+    POST /import/plan     → read-only multi-source adoption preview
+    POST /import/apply-plan → exact-entry adoption + durable restore receipt
 
 Design rules (see DECISIONS.md):
   * Hermes (~/.hermes/skills/<category>/<name>/SKILL.md) is the source of truth.
@@ -1444,6 +1446,319 @@ class SkillsToggleCore:
         drifted = sum(t.get("drifted", 0) for t in per_tool)
         return {"ok": True, "tools": per_tool, "counts": {"adoptable": adoptable, "drifted": drifted}}
 
+    @staticmethod
+    def _validate_import_category(category: object) -> str:
+        if not isinstance(category, str) or not re.match(r"^[^/\0]+$", category) or category in (".", ".."):
+            raise SkillsToggleError(f"invalid category {category!r}", "invalid-category")
+        return category
+
+    def import_plan(self, tool_ids: object, scan_roots: object, category: object = "imported") -> dict:
+        """Build a mutation-free adoption plan across known tool dirs and
+        owner-selected roots. Selected roots are read sources only; they never
+        alter the canonical Hermes destination."""
+        category = self._validate_import_category(category)
+        if not isinstance(tool_ids, list) or not tool_ids:
+            raise SkillsToggleError("'tools' must be a non-empty list", "invalid-body")
+        ordered_tools = []
+        for tool_id in tool_ids:
+            tool_id = self._validate_tool(tool_id)
+            if tool_id == "hermes":
+                raise SkillsToggleError("hermes has no importable dir", "no-dir")
+            if tool_id not in ordered_tools:
+                ordered_tools.append(tool_id)
+        if not isinstance(scan_roots, list):
+            raise SkillsToggleError("'scan_roots' must be a list", "invalid-body")
+
+        refused = []
+        sources = []
+        seen_roots = set()
+        known_tool_roots = {}
+        for known_tool_id in self.tools:
+            if known_tool_id == "hermes":
+                continue
+            known_root = self.tool_dir(known_tool_id)
+            if known_root is not None and known_root.is_dir():
+                known_tool_roots.setdefault(_canonical(str(known_root)), known_tool_id)
+        for tool_id in ordered_tools:
+            root = self.tool_dir(tool_id)
+            if root is None or not root.is_dir():
+                refused.append({"root": str(root) if root is not None else None, "tool": tool_id, "code": "not-dir"})
+                continue
+            canonical = _canonical(str(root))
+            if canonical not in seen_roots:
+                sources.append({"root": root, "source": str(root), "tool": tool_id})
+                seen_roots.add(canonical)
+
+        selected = []
+        for raw_root in scan_roots:
+            if not isinstance(raw_root, str) or not raw_root.strip():
+                refused.append({"root": str(raw_root), "code": "invalid-root"})
+                continue
+            try:
+                root = expand_path(raw_root)
+            except (OSError, ValueError):
+                refused.append({"root": raw_root, "code": "invalid-root"})
+                continue
+            if root.is_symlink():
+                refused.append({"root": raw_root, "code": "symlink-root"})
+                continue
+            if not root.is_dir():
+                refused.append({"root": raw_root, "code": "not-dir"})
+                continue
+            selected.append({"raw": raw_root, "root": root, "canonical": _canonical(str(root))})
+
+        # Overlapping owner roots would scan one subtree twice and make source
+        # identity ambiguous. Keep the outer root and explicitly refuse nested
+        # selections. Known tool dirs are exact scan locations, not recursive.
+        for candidate in selected:
+            nested = any(
+                candidate["canonical"] != other["canonical"]
+                and is_inside(candidate["root"], other["root"])
+                for other in selected
+            )
+            if nested:
+                refused.append({"root": candidate["raw"], "code": "nested-root"})
+                continue
+            if candidate["canonical"] in seen_roots:
+                continue
+            sources.append({
+                "root": candidate["root"], "source": str(candidate["root"]),
+                "tool": known_tool_roots.get(candidate["canonical"]),
+            })
+            seen_roots.add(candidate["canonical"])
+
+        skills = self._scan_skills()
+        entries = []
+        for source in sources:
+            root = source["root"]
+            try:
+                children = sorted(root.iterdir())
+            except OSError:
+                refused.append({"root": source["source"], "tool": source["tool"], "code": "unreadable"})
+                continue
+            for child in children:
+                # iterdir is one level only, but retain an explicit boundary
+                # check so future scanner changes cannot introduce traversal.
+                if not same_path(child.parent, root):
+                    refused.append({"root": source["source"], "path": str(child), "code": "outside-root"})
+                    continue
+                info = self._classify_entry(child, skills)
+                if not info:
+                    continue
+                row = dict(info)
+                row.update({
+                    "source": source["source"],
+                    "tool": source["tool"],
+                    "path": str(child),
+                    "conflict": bool(info.get("conflict")),
+                    "drifted": bool(info.get("drifted")),
+                })
+                if row["kind"] == "managed-mismatch":
+                    row["kind"] = "name-conflict"
+                    row["conflict"] = True
+                elif row["kind"] == "unmanaged-skill" and row["conflict"]:
+                    row["kind"] = "drifted" if row["drifted"] else "identical-duplicate"
+                entries.append(row)
+
+        grouped = {}
+        for row in entries:
+            grouped.setdefault(row["name"], []).append(row)
+        duplicate_groups = []
+        for name, rows in grouped.items():
+            if len(rows) < 2:
+                continue
+            duplicate_groups.append({
+                "name": name,
+                "entries": [{"source": row["source"], "tool": row["tool"], "kind": row["kind"]} for row in rows],
+            })
+            for row in rows:
+                row["conflict"] = True
+                if row["kind"] == "unmanaged-skill":
+                    row["kind"] = "name-conflict"
+
+        adoptable = [row for row in entries if row["kind"] == "unmanaged-skill" and not row["conflict"]]
+        conflicts = [row for row in entries if row["conflict"]]
+        drifted = [row for row in entries if row["drifted"]]
+        kinds = {}
+        for row in entries:
+            kinds[row["kind"]] = kinds.get(row["kind"], 0) + 1
+        return {
+            "ok": True,
+            "category": category,
+            "entries": entries,
+            "adoptable": adoptable,
+            "conflicts": conflicts,
+            "drifted": drifted,
+            "refused": refused,
+            "duplicate_groups": duplicate_groups,
+            "totals": {
+                "sources": len(sources), "entries": len(entries), "adoptable": len(adoptable),
+                "conflicts": len(conflicts), "drifted": len(drifted), "refused": len(refused), "kinds": kinds,
+            },
+        }
+
+    def import_apply_plan(self, entries: object, category: object = "imported") -> dict:
+        """Apply only explicit source/name/tool tuples from a reviewed plan.
+
+        Every source is reclassified while holding the mutation lock. Plain
+        scan roots are copied into Hermes and left untouched; configured tool
+        roots use the legacy copy/backup/link rollback sequence.
+        """
+        with self._lock:
+            category = self._validate_import_category(category)
+            if not isinstance(entries, list) or not entries:
+                raise SkillsToggleError("'entries' must be a non-empty list", "invalid-body")
+
+            requested = []
+            for item in entries:
+                if not isinstance(item, dict):
+                    raise SkillsToggleError("each entry must be an object", "invalid-body")
+                name = item.get("name")
+                source_value = item.get("source")
+                tool_id = item.get("tool")
+                if (
+                    not isinstance(name, str)
+                    or not name
+                    or name in (".", "..")
+                    or "/" in name
+                    or "\\" in name
+                    or "\0" in name
+                ):
+                    raise SkillsToggleError(f"invalid import name {name!r}", "invalid-name")
+                if not isinstance(source_value, str) or not source_value.strip():
+                    raise SkillsToggleError("entry source must be a directory path", "invalid-body")
+                try:
+                    source = expand_path(source_value)
+                except (OSError, ValueError) as exc:
+                    raise SkillsToggleError(f"invalid source {source_value!r}", "invalid-root") from exc
+                if source.is_symlink():
+                    raise SkillsToggleError(f"source {source_value!r} is a symlink", "symlink-root")
+                if not source.is_dir():
+                    raise SkillsToggleError(f"source {source_value!r} is not a directory", "not-dir")
+                if tool_id is not None:
+                    tool_id = self._validate_tool(tool_id)
+                    if tool_id == "hermes":
+                        raise SkillsToggleError("hermes has no importable dir", "no-dir")
+                    configured = self.tool_dir(tool_id)
+                    if configured is None or not configured.is_dir() or not same_path(source, configured):
+                        raise SkillsToggleError(
+                            f"source does not match configured tool dir for {tool_id}", "source-mismatch"
+                        )
+                src = source / name
+                if not same_path(src.parent, source):
+                    raise SkillsToggleError(f"entry {name!r} escapes its source root", "outside-root")
+                requested.append({"name": name, "source": source, "tool": tool_id, "src": src})
+
+            receipt_id = uuid.uuid4().hex[:12]
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            results = []
+            undo = []
+            skills = self._scan_skills()
+            tree_names = {skill["name"] for skill in skills.values()}
+
+            for item in requested:
+                name = item["name"]
+                src = item["src"]
+                info = self._classify_entry(src, skills)
+                if not info or info["kind"] != "unmanaged-skill":
+                    code = info["kind"] if info else "missing-entry"
+                    results.append({
+                        "name": name, "source": str(item["source"]), "tool": item["tool"],
+                        "ok": False, "code": code, "error": "entry is no longer an adoptable skill",
+                        "changed_since_preview": True,
+                    })
+                    continue
+                if info.get("conflict") or name in tree_names:
+                    results.append({
+                        "name": name, "source": str(item["source"]), "tool": item["tool"],
+                        "ok": False, "code": "changed-since-preview",
+                        "error": "a same-name Hermes skill now exists",
+                        "changed_since_preview": True, "conflict": True,
+                    })
+                    continue
+
+                dest_dir = self.skills_root / category
+                dest = dest_dir / name
+                if dest.exists() or dest.is_symlink():
+                    results.append({
+                        "name": name, "source": str(item["source"]), "tool": item["tool"],
+                        "ok": False, "code": "changed-since-preview",
+                        "error": f"destination {dest} now exists", "changed_since_preview": True,
+                    })
+                    continue
+                try:
+                    dest_dir.mkdir(parents=True, exist_ok=True)
+                    shutil.copytree(src, dest, symlinks=True)
+                except OSError as exc:
+                    shutil.rmtree(dest, ignore_errors=True)
+                    results.append({
+                        "name": name, "source": str(item["source"]), "tool": item["tool"],
+                        "ok": False, "code": "copy-failed", "error": f"copy failed: {exc}",
+                        "changed_since_preview": False,
+                    })
+                    continue
+
+                backup = None
+                if item["tool"] is not None:
+                    backup_path = item["source"] / f"{name}.skills-toggle-backup-{stamp}"
+                    try:
+                        os.rename(src, backup_path)
+                        os.symlink(str(dest.resolve()), str(src))
+                        backup = str(backup_path)
+                    except OSError as exc:
+                        try:
+                            if src.is_symlink():
+                                src.unlink()
+                            if backup_path.is_dir() and not src.exists():
+                                os.rename(backup_path, src)
+                        except OSError:
+                            pass
+                        shutil.rmtree(dest, ignore_errors=True)
+                        results.append({
+                            "name": name, "source": str(item["source"]), "tool": item["tool"],
+                            "ok": False, "code": "link-swap-failed", "error": f"link swap failed: {exc}",
+                            "changed_since_preview": False,
+                        })
+                        continue
+                    undo.append({"path": str(src), "backup": backup, "kind": "restore-tool-entry"})
+                else:
+                    undo.append({"path": str(dest), "backup": None, "kind": "remove-canonical-copy"})
+
+                skill_id = f"{category}/{name}"
+                result = {
+                    "name": name, "source": str(item["source"]), "tool": item["tool"],
+                    "ok": True, "code": "adopted", "skill": skill_id, "path": str(dest),
+                    "backup": backup, "changed_since_preview": False,
+                }
+                results.append(result)
+                tree_names.add(name)
+                skills[skill_id] = {"name": name, "category": category, "dir": dest}
+
+            adopted = sum(1 for row in results if row["ok"])
+            refused_codes = {
+                "broken-link", "foreign-link", "unmanaged-dir", "managed", "managed-mismatch",
+                "missing-entry", "changed-since-preview",
+            }
+            refused_count = sum(1 for row in results if row.get("code") in refused_codes)
+            failed = len(results) - adopted - refused_count
+            receipt = {
+                "receipt_id": receipt_id, "items": results, "adopted": adopted,
+                "failed": failed, "refused": refused_count, "undo": undo,
+            }
+            # Log only stable identifiers and dispositions. Owner-selected
+            # filesystem paths and unrecognized request fields stay out.
+            self._log(
+                action="import-plan-apply", receipt_id=receipt_id,
+                items=[{"name": row["name"], "tool": row["tool"], "ok": row["ok"], "code": row["code"]} for row in results],
+                adopted=adopted, failed=failed, refused=refused_count,
+            )
+            if adopted:
+                self.invalidate()
+            return {
+                "ok": True, "results": results, "receipt": receipt,
+                "adopted": adopted, "failed": failed, "refused": refused_count,
+            }
+
     def import_apply(self, tool_id: object, names: object, category: str = "imported") -> dict:
         """Adopt unmanaged skills: copy into the skills tree, then replace the
         tool's real dir with a symlink — the original is PRESERVED as a
@@ -1453,8 +1768,7 @@ class SkillsToggleCore:
             raise SkillsToggleError("hermes has no importable dir", "no-dir")
         if not isinstance(names, list) or not names:
             raise SkillsToggleError("'names' must be a non-empty list", "invalid-body")
-        if not isinstance(category, str) or not re.match(r"^[^/\0]+$", category) or category in (".", ".."):
-            raise SkillsToggleError(f"invalid category {category!r}", "invalid-category")
+        category = self._validate_import_category(category)
         skills = self._scan_skills()
         tool_dir = self.tool_dir(tool_id)
         if tool_dir is None or not tool_dir.is_dir():
@@ -2806,6 +3120,23 @@ if APIRouter is not None:
     @router.post("/import/apply")
     async def import_apply(body: dict) -> dict:
         return _call(get_core().import_apply, body.get("tool"), body.get("names"), body.get("category", "imported"))
+
+    @router.post("/import/plan")
+    async def import_plan(body: dict) -> dict:
+        return _call(
+            get_core().import_plan,
+            body.get("tools"),
+            body.get("scan_roots", []),
+            body.get("category", "imported"),
+        )
+
+    @router.post("/import/apply-plan")
+    async def import_apply_plan(body: dict) -> dict:
+        return _call(
+            get_core().import_apply_plan,
+            body.get("entries"),
+            body.get("category", "imported"),
+        )
 
     @router.get("/drift")
     async def drift() -> dict:
