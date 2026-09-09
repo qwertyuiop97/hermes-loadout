@@ -63,6 +63,8 @@ const STATE_KEY = [ID, 'state']
 const DIFF_KEY = [ID, 'diff']
 const DRIFT_KEY = [ID, 'drift']
 const MCP_KEY = [ID, 'mcp']
+const ONBOARDING_KEY = 'onboarding'
+const ONBOARDING_VERSION = 1
 const ccSectionAtom = atom('tools')
 const arrivalsAtom = atom([])
 const watchPrefsEpochAtom = atom(0)
@@ -888,7 +890,7 @@ function CompactSummaryPane() {
               variant: 'secondary',
               size: 'sm',
               className: 'w-full',
-              onClick: () => openControlCenter('tools'),
+              onClick: () => openControlCenter('onboarding'),
               children: t('scan')
             }),
             problemTotal > 0
@@ -3081,6 +3083,8 @@ function SingleToolView({ tool, skills, busy, onBack, onToggle, onBulk }) {
 function ToolsOverview({ layout }) {
   const t = usePluginI18n(ID)
   const qc = useQueryClient()
+  const onboarding = storeGet(ONBOARDING_KEY, { version: ONBOARDING_VERSION, complete: false })
+  const onboardingComplete = onboarding && onboarding.version === ONBOARDING_VERSION && onboarding.complete === true
   const [selectedTool, setSelectedTool] = useState(null)
   const [confirm, setConfirm] = useState(null)
   const [undo, setUndo] = useState(null)
@@ -3298,13 +3302,409 @@ function ToolsOverview({ layout }) {
           jsx('h2', { className: 'font-medium', children: t('ccTools') }),
           jsx(Badge, { variant: 'outline', size: 'xs', children: t('skillsCount', skills.length) }),
           overviewProblems ? jsx(Badge, { variant: 'warn', size: 'xs', children: t('overviewProblems', overviewProblems) }) : null,
-          jsx(Button, { variant: 'secondary', size: 'xs', className: 'ml-auto', onClick: () => ccSectionAtom.set('advanced'), children: t('addToolAction') })
+          jsx(Button, { variant: 'secondary', size: 'xs', className: 'ml-auto', onClick: () => ccSectionAtom.set('onboarding'), children: t('scanAndImport') }),
+          jsx(Button, { variant: 'secondary', size: 'xs', onClick: () => ccSectionAtom.set('advanced'), children: t('addToolAction') })
         ]
       }),
+      !onboardingComplete
+        ? jsxs('div', {
+            'data-onboarding-entry': 'true',
+            className: 'mx-4 mt-3 flex flex-wrap items-center gap-2 rounded-md border border-(--ui-stroke-secondary) p-3',
+            children: [
+              jsxs('div', { className: 'min-w-0 flex-1', children: [
+                jsx('div', { className: 'font-medium', children: t('onboardingEntryTitle') }),
+                jsx('div', { className: 'text-xs text-muted-foreground', children: t('onboardingEntryDesc') })
+              ] }),
+              jsx(Button, { variant: 'primary', size: 'xs', onClick: () => ccSectionAtom.set('onboarding'), children: t('startSetup') })
+            ]
+          })
+        : null,
       jsx(ScrollArea, { className: 'min-h-0 flex-1', children: body }),
       receipt ? jsx(BulkReceipt, { receipt: receipt, tool: receipt.tool }) : null,
       jsx(UndoBanner, { undo: undo, onUndo: onUndo, busy: busy }),
       sharedConfirm
+    ]
+  })
+}
+
+const WIZARD_STEPS = ['welcome', 'sources', 'scanning', 'review', 'choose', 'preview', 'apply', 'receipt']
+
+function wizardState() {
+  const saved = storeGet(ONBOARDING_KEY, {})
+  if (!saved || saved.version !== ONBOARDING_VERSION) {
+    return { version: ONBOARDING_VERSION, complete: false, step: 'welcome', selectedTools: [], scanRoots: [], category: 'imported' }
+  }
+  return {
+    version: ONBOARDING_VERSION,
+    complete: saved.complete === true,
+    step: WIZARD_STEPS.indexOf(saved.step) <= 1 ? saved.step : 'sources',
+    selectedTools: Array.isArray(saved.selectedTools) ? saved.selectedTools : [],
+    scanRoots: Array.isArray(saved.scanRoots) ? saved.scanRoots : [],
+    category: typeof saved.category === 'string' && saved.category ? saved.category : 'imported',
+    lastScan: saved.lastScan
+  }
+}
+
+function ImportPlanPreview({ plan, chosen }) {
+  const t = usePluginI18n(ID)
+  const totals = plan && plan.totals ? plan.totals : {}
+  const refused = plan && Array.isArray(plan.refused) ? plan.refused : []
+  return jsxs('div', {
+    'data-import-preview': 'true',
+    className: 'flex max-h-72 flex-col gap-2 overflow-y-auto text-left text-xs',
+    children: [
+      jsx('div', { className: 'font-medium', children: t('wizardPreviewCounts', chosen.length, totals.sources || 0, totals.conflicts || 0, refused.length) }),
+      chosen.slice(0, 5).map(row => jsxs('div', {
+        'data-import-example': row.name,
+        children: [
+          jsx('div', { className: 'font-medium', children: row.name }),
+          jsx('div', { className: 'break-words text-muted-foreground', children: row.path || `${row.source}/${row.name}` })
+        ]
+      }, `${row.source}-${row.name}`)),
+      refused.length ? jsxs('div', { children: [
+        jsx('div', { className: 'font-medium text-(--ui-text-warning)', children: t('wizardRefusals') }),
+        refused.map((row, index) => jsx('div', {
+          'data-import-refusal': row.code,
+          className: 'break-words text-(--ui-text-warning)',
+          children: t('wizardRefusalLine', row.root || row.path || row.tool || t('unknownPath'), row.code)
+        }, `${row.root || row.path || row.tool}-${index}`))
+      ] }) : null
+    ]
+  })
+}
+
+function ImportReceipt({ response, undoResults }) {
+  const t = usePluginI18n(ID)
+  const receipt = response && response.receipt ? response.receipt : {}
+  const results = response && Array.isArray(response.results) ? response.results : []
+  const undo = Array.isArray(receipt.undo) ? receipt.undo : []
+  return jsxs('div', {
+    'data-import-receipt': receipt.receipt_id || 'receipt',
+    className: 'flex flex-col gap-3',
+    children: [
+      jsxs('div', { className: 'rounded-md border border-(--ui-stroke-secondary) p-3', children: [
+        jsx('div', { className: 'font-medium', children: t('wizardReceiptCounts', receipt.adopted || 0, receipt.failed || 0, receipt.refused || 0) }),
+        receipt.receipt_id ? jsx('div', { className: 'text-xs text-muted-foreground', children: t('bulkReceiptId', receipt.receipt_id) }) : null,
+        results.map(row => jsx('div', {
+          'data-import-result': row.name,
+          className: row.ok ? 'text-xs text-muted-foreground' : 'text-xs text-(--ui-text-danger)',
+          children: t('wizardResultLine', row.name, row.ok ? t('wizardAdopted') : row.error || row.code || t('bulkFailed'))
+        }, `${row.source}-${row.name}`))
+      ] }),
+      jsxs('div', { className: 'rounded-md border border-(--ui-stroke-secondary) p-3', children: [
+        jsx('div', { className: 'font-medium', children: t('wizardUndoTitle') }),
+        jsx('div', { className: 'mb-2 text-xs text-muted-foreground', children: t('wizardUndoDesc') }),
+        undo.map((row, index) => jsx('div', {
+          'data-import-undo': row.kind,
+          className: 'break-words text-xs text-muted-foreground',
+          children: t('wizardUndoLine', row.kind, row.path, row.backup || t('none'))
+        }, `${row.path}-${index}`)),
+        undoResults && undoResults.length ? jsx('div', {
+          'data-import-undo-results': 'true',
+          className: undoResults.some(row => !row.ok) ? 'mt-2 text-xs text-(--ui-text-danger)' : 'mt-2 text-xs text-muted-foreground',
+          children: t('wizardUndoResult', undoResults.filter(row => row.ok).length, undoResults.filter(row => !row.ok).length)
+        }) : null
+      ] })
+    ]
+  })
+}
+
+function FirstRunWizard() {
+  const t = usePluginI18n(ID)
+  const qc = useQueryClient()
+  const saved = wizardState()
+  const [step, setStep] = useState(saved.step || 'welcome')
+  const [selectedTools, setSelectedTools] = useState(() => new Set(saved.selectedTools))
+  const [scanRoots, setScanRoots] = useState(saved.scanRoots)
+  const [folderInput, setFolderInput] = useState('')
+  const [category, setCategory] = useState(saved.category)
+  const [plan, setPlan] = useState(null)
+  const [chosenKeys, setChosenKeys] = useState(() => new Set())
+  const [confirm, setConfirm] = useState(null)
+  const [receipt, setReceipt] = useState(null)
+  const [undoResults, setUndoResults] = useState(null)
+  const stateQuery = useQuery({
+    queryKey: STATE_KEY,
+    queryFn: () => (pluginCtx ? pluginCtx.rest('/state') : Promise.reject(new Error('no backend'))),
+    staleTime: 0,
+    retry: 1
+  })
+  const state = stateQuery.data
+  const knownToolIds = state && state.ok && Array.isArray(state.tools)
+    ? state.tools.filter(tool => tool.id !== 'hermes' && tool.special !== 'config').map(tool => tool.id)
+    : []
+  const detectedTools = state && state.ok && Array.isArray(state.tools)
+    ? state.tools.filter(tool => tool.id !== 'hermes' && tool.special !== 'config' && tool.present)
+    : []
+
+  useEffect(() => {
+    if (selectedTools.size || !detectedTools.length) return
+    setSelectedTools(new Set(detectedTools.map(tool => tool.id)))
+  }, [detectedTools.map(tool => tool.id).join('|')])
+
+  const saveProgress = (nextStep, extra = {}) => {
+    const payload = {
+      version: ONBOARDING_VERSION,
+      complete: false,
+      step: nextStep,
+      selectedTools: Array.from(selectedTools),
+      scanRoots: scanRoots.slice(),
+      category: category,
+      ...extra
+    }
+    storeSet(ONBOARDING_KEY, payload)
+    setStep(nextStep)
+  }
+
+  const entryKey = row => `${row.source}\u0000${row.name}`
+  const entries = plan && Array.isArray(plan.entries) ? plan.entries : []
+  const adoptable = plan && Array.isArray(plan.adoptable) ? plan.adoptable : []
+  const chosen = adoptable.filter(row => chosenKeys.has(entryKey(row)) && (row.tool == null || selectedTools.has(row.tool)))
+  const groupedKinds = [
+    ['managed', 'wizardManaged'], ['unmanaged-skill', 'wizardUnique'],
+    ['identical-duplicate', 'wizardIdentical'], ['drifted', 'wizardDrifted'],
+    ['name-conflict', 'wizardConflicts'], ['broken-link', 'wizardBroken'],
+    ['foreign-link', 'wizardForeign'], ['unmanaged-dir', 'wizardUnmanaged']
+  ]
+
+  const scanMutation = useMutation({
+    mutationFn: vars => pluginCtx.rest('/import/plan', { method: 'POST', body: vars }),
+    onSuccess: data => {
+      if (!data || data.ok !== true) {
+        host.notify({ kind: 'error', message: t('wizardScanFailed') })
+        saveProgress('sources')
+        return
+      }
+      setPlan(data)
+      setChosenKeys(new Set((data.adoptable || []).map(entryKey)))
+      storeSet(ONBOARDING_KEY, {
+        version: ONBOARDING_VERSION, complete: false, step: 'sources',
+        selectedTools: Array.from(selectedTools), scanRoots: scanRoots.slice(), category: category,
+        lastScan: new Date().toISOString()
+      })
+      setStep('review')
+    },
+    onError: err => {
+      host.notifyError(err, t('wizardScanFailed'))
+      saveProgress('sources')
+    }
+  })
+
+  const applyMutation = useMutation({
+    mutationFn: vars => pluginCtx.rest('/import/apply-plan', { method: 'POST', body: vars }),
+    onSuccess: data => {
+      if (!data || data.ok !== true) {
+        host.notify({ kind: 'error', message: t('wizardApplyFailed') })
+        setStep('preview')
+        return
+      }
+      setReceipt(data)
+      setStep('receipt')
+      qc.invalidateQueries({ queryKey: STATE_KEY })
+      qc.invalidateQueries({ queryKey: DIFF_KEY })
+      qc.invalidateQueries({ queryKey: DRIFT_KEY })
+      const details = data.receipt || {}
+      host.notify({ kind: details.failed || details.refused ? 'error' : 'success', message: t('wizardApplied', details.adopted || 0, details.failed || 0, details.refused || 0) })
+    },
+    onError: err => {
+      host.notifyError(err, t('wizardApplyFailed'))
+      setStep('preview')
+    }
+  })
+
+  const toggleTool = toolId => setSelectedTools(previous => {
+    const next = new Set(previous)
+    if (next.has(toolId)) next.delete(toolId)
+    else next.add(toolId)
+    return next
+  })
+  const toggleEntry = row => setChosenKeys(previous => {
+    const next = new Set(previous)
+    const key = entryKey(row)
+    if (next.has(key)) next.delete(key)
+    else next.add(key)
+    return next
+  })
+  const addFolder = () => {
+    const value = folderInput.trim()
+    if (!value || scanRoots.indexOf(value) !== -1) return
+    setScanRoots(previous => previous.concat(value))
+    setFolderInput('')
+  }
+  const runScan = () => {
+    const tools = selectedTools.size ? Array.from(selectedTools) : knownToolIds.slice(0, 1)
+    if (!tools.length) return
+    saveProgress('scanning')
+    scanMutation.mutate({ tools: tools, scan_roots: scanRoots.slice(), category: category })
+  }
+  const startApply = () => setConfirm({
+    title: t('wizardConfirmTitle'),
+    description: jsx(ImportPlanPreview, { plan: plan, chosen: chosen }),
+    confirmLabel: t('wizardConfirmApply'),
+    action: () => {
+      setConfirm(null)
+      setStep('apply')
+      applyMutation.mutate({ entries: chosen.map(row => ({ name: row.name, source: row.source, tool: row.tool == null ? null : row.tool })), category: category })
+    }
+  })
+  const undoAdoption = () => {
+    const details = receipt && receipt.receipt ? receipt.receipt : {}
+    const undo = Array.isArray(details.undo) ? details.undo : []
+    const results = receipt && Array.isArray(receipt.results) ? receipt.results : []
+    const requests = undo.filter(row => row.kind === 'restore-tool-entry' && row.backup).map(action => {
+      const adopted = results.find(row => row.ok && row.tool && (row.backup === action.backup || action.path === `${row.source}/${row.name}`))
+      if (!adopted) return Promise.resolve({ ok: false, error: t('wizardUndoMatchFailed') })
+      return pluginCtx.rest('/conflict/revert-adopt', {
+        method: 'POST', body: { tool: adopted.tool, name: adopted.name, tool_backup: action.backup, skill: adopted.skill }
+      }).catch(error => ({ ok: false, error: error && error.message ? error.message : String(error) }))
+    })
+    if (!requests.length) {
+      setUndoResults([{ ok: false, error: t('wizardManualRestore') }])
+      return
+    }
+    Promise.all(requests).then(rows => {
+      setUndoResults(rows)
+      qc.invalidateQueries({ queryKey: STATE_KEY })
+      qc.invalidateQueries({ queryKey: DIFF_KEY })
+      qc.invalidateQueries({ queryKey: DRIFT_KEY })
+    })
+  }
+  const finish = () => {
+    storeSet(ONBOARDING_KEY, {
+      version: ONBOARDING_VERSION, complete: true, step: 'welcome',
+      selectedTools: Array.from(selectedTools), scanRoots: scanRoots.slice(), category: category,
+      lastScan: new Date().toISOString()
+    })
+    ccSectionAtom.set('tools')
+  }
+
+  const stepIndex = Math.max(0, WIZARD_STEPS.indexOf(step))
+  let body
+  if (step === 'welcome') {
+    body = jsxs('div', { className: 'flex max-w-2xl flex-col gap-3', children: [
+      jsx('h2', { className: 'text-lg font-medium', children: t('wizardWelcomeTitle') }),
+      jsx('p', { className: 'text-sm text-muted-foreground', children: t('wizardWelcomeDesc') }),
+      jsx('p', { className: 'text-sm text-muted-foreground', children: t('wizardBackupPromise') }),
+      jsx(Button, { variant: 'primary', size: 'sm', onClick: () => saveProgress('sources'), children: t('wizardGetStarted') })
+    ] })
+  } else if (step === 'sources') {
+    body = jsxs('div', { className: 'flex max-w-2xl flex-col gap-3', children: [
+      jsx('h2', { className: 'text-lg font-medium', children: t('wizardSourcesTitle') }),
+      jsx('p', { className: 'text-sm text-muted-foreground', children: t('wizardSourcesDesc') }),
+      stateQuery.isPending ? jsx(Skeleton, { className: 'h-24 w-full' }) : detectedTools.map(tool => jsxs('label', {
+        'data-detected-tool': tool.id,
+        className: 'flex items-start gap-2 rounded-md border border-(--ui-stroke-secondary) p-2',
+        children: [
+          jsx('input', { type: 'checkbox', checked: selectedTools.has(tool.id), onChange: () => toggleTool(tool.id), 'aria-label': t('wizardSelectTool', tool.label) }),
+          jsxs('span', { children: [jsx('span', { className: 'block font-medium', children: tool.label }), jsx('span', { className: 'block break-words text-xs text-muted-foreground', children: tool.dir })] })
+        ]
+      }, tool.id)),
+      jsxs('div', { className: 'flex gap-2', children: [
+        jsx(Input, { value: folderInput, onChange: setFolderInput, placeholder: t('wizardFolderPlaceholder'), className: 'flex-1' }),
+        jsx(Button, { variant: 'secondary', size: 'sm', disabled: !folderInput.trim(), onClick: addFolder, children: t('wizardAddFolder') })
+      ] }),
+      scanRoots.map(root => jsxs('div', { 'data-scan-root': root, className: 'flex items-center gap-2 text-xs text-muted-foreground', children: [
+        jsx('span', { className: 'min-w-0 flex-1 break-words', children: root }),
+        jsx(Button, { variant: 'ghost', size: 'xs', onClick: () => setScanRoots(previous => previous.filter(item => item !== root)), children: t('remove') })
+      ] }, root)),
+      jsxs('div', { className: 'flex gap-2', children: [
+        jsx(Button, { variant: 'secondary', size: 'sm', onClick: () => saveProgress('welcome'), children: t('back') }),
+        jsx(Button, { variant: 'primary', size: 'sm', disabled: !selectedTools.size && (!scanRoots.length || !knownToolIds.length), onClick: runScan, children: t('wizardRunScan') })
+      ] })
+    ] })
+  } else if (step === 'scanning') {
+    body = jsxs('div', { 'data-wizard-scanning': 'true', className: 'flex flex-col gap-3', children: [
+      jsx(Skeleton, { className: 'h-16 w-full' }),
+      jsx('h2', { className: 'font-medium', children: t('wizardScanningTitle') }),
+      jsx('p', { className: 'text-sm text-muted-foreground', children: t('wizardScanningDesc') })
+    ] })
+  } else if (step === 'review') {
+    body = jsxs('div', { className: 'flex flex-col gap-3', children: [
+      jsx('h2', { className: 'text-lg font-medium', children: t('wizardReviewTitle') }),
+      plan && Array.isArray(plan.duplicate_groups) && plan.duplicate_groups.length
+        ? jsx('div', { 'data-duplicate-groups': 'true', className: 'rounded-md border border-(--ui-stroke-secondary) p-2 text-xs text-(--ui-text-warning)', children: t('wizardDuplicateGroups', plan.duplicate_groups.length) })
+        : null,
+      jsx('div', { className: 'grid grid-cols-1 gap-2', children: groupedKinds.map(([kind, key]) => {
+        const rows = entries.filter(row => row.kind === kind)
+        return jsxs('section', { 'data-classification': kind, className: 'rounded-md border border-(--ui-stroke-secondary) p-2', children: [
+          jsx('div', { className: 'font-medium', children: `${t(key)} (${rows.length})` }),
+          rows.slice(0, 4).map(row => jsx('div', { className: 'break-words text-xs text-muted-foreground', children: `${row.name} — ${row.path}` }, `${row.source}-${row.name}`))
+        ] }, kind)
+      }) }),
+      jsxs('div', { className: 'flex gap-2', children: [
+        jsx(Button, { variant: 'secondary', size: 'sm', onClick: () => saveProgress('sources'), children: t('wizardRescan') }),
+        jsx(Button, { variant: 'primary', size: 'sm', onClick: () => setStep('choose'), children: t('continue') })
+      ] })
+    ] })
+  } else if (step === 'choose') {
+    body = jsxs('div', { className: 'flex flex-col gap-3', children: [
+      jsx('h2', { className: 'text-lg font-medium', children: t('wizardChooseTitle') }),
+      jsx('div', { className: 'flex flex-wrap gap-2', children: detectedTools.map(tool => jsxs('label', { 'data-manage-tool': tool.id, className: 'flex items-center gap-1 text-xs', children: [
+        jsx('input', { type: 'checkbox', checked: selectedTools.has(tool.id), onChange: () => toggleTool(tool.id), 'aria-label': t('wizardManageTool', tool.label) }), tool.label
+      ] }, tool.id)) }),
+      adoptable.length ? adoptable.map(row => jsxs('label', {
+        'data-adopt-entry': row.name,
+        className: 'flex items-start gap-2 rounded-md border border-(--ui-stroke-secondary) p-2',
+        children: [
+          jsx('input', { type: 'checkbox', checked: chosenKeys.has(entryKey(row)), disabled: row.tool != null && !selectedTools.has(row.tool), onChange: () => toggleEntry(row), 'aria-label': t('wizardSelectEntry', row.name) }),
+          jsxs('span', { children: [jsx('span', { className: 'block font-medium', children: row.name }), jsx('span', { className: 'block break-words text-xs text-muted-foreground', children: row.path })] })
+        ]
+      }, entryKey(row))) : jsx(EmptyState, { title: t('wizardNothingToAdopt'), description: t('wizardNothingDesc') }),
+      entries.some(row => row.conflict || row.kind === 'identical-duplicate' || row.kind === 'drifted')
+        ? jsx('div', { 'data-duplicates-flagged': 'true', className: 'text-xs text-(--ui-text-warning)', children: t('wizardDuplicatesFlagged') })
+        : null,
+      jsxs('div', { className: 'flex gap-2', children: [
+        jsx(Button, { variant: 'secondary', size: 'sm', onClick: () => setStep('review'), children: t('back') }),
+        jsx(Button, { variant: 'primary', size: 'sm', disabled: !chosen.length, onClick: () => setStep('preview'), children: t('wizardReviewPlan') })
+      ] })
+    ] })
+  } else if (step === 'preview') {
+    body = jsxs('div', { className: 'flex max-w-2xl flex-col gap-3', children: [
+      jsx('h2', { className: 'text-lg font-medium', children: t('wizardPreviewTitle') }),
+      jsx(ImportPlanPreview, { plan: plan, chosen: chosen }),
+      jsx('p', { className: 'text-xs text-muted-foreground', children: t('wizardApplySafety') }),
+      jsxs('div', { className: 'flex gap-2', children: [
+        jsx(Button, { variant: 'secondary', size: 'sm', onClick: () => setStep('choose'), children: t('back') }),
+        jsx(Button, { variant: 'primary', size: 'sm', disabled: !chosen.length, onClick: startApply, children: t('wizardApply') })
+      ] })
+    ] })
+  } else if (step === 'apply') {
+    body = jsxs('div', { 'data-wizard-applying': 'true', className: 'flex flex-col gap-3', children: [
+      jsx(Skeleton, { className: 'h-16 w-full' }),
+      jsx('h2', { className: 'font-medium', children: t('wizardApplyingTitle') }),
+      jsx('p', { className: 'text-sm text-muted-foreground', children: t('wizardApplyingDesc') })
+    ] })
+  } else {
+    const undo = receipt && receipt.receipt && Array.isArray(receipt.receipt.undo) ? receipt.receipt.undo : []
+    body = jsxs('div', { className: 'flex max-w-2xl flex-col gap-3', children: [
+      jsx('h2', { className: 'text-lg font-medium', children: t('wizardReceiptTitle') }),
+      jsx(ImportReceipt, { response: receipt, undoResults: undoResults }),
+      jsxs('div', { className: 'flex gap-2', children: [
+        jsx(Button, { variant: 'secondary', size: 'sm', disabled: !undo.length, onClick: undoAdoption, children: t('undo') }),
+        jsx(Button, { variant: 'primary', size: 'sm', onClick: finish, children: t('wizardViewTools') })
+      ] })
+    ] })
+  }
+
+  return jsxs('div', {
+    'data-first-run-wizard': step,
+    className: 'flex h-full min-w-0 flex-col text-sm',
+    children: [
+      jsxs('div', { className: 'flex items-center gap-2 border-b border-(--ui-stroke-secondary) px-4 py-3', children: [
+        jsx(Button, { variant: 'secondary', size: 'xs', onClick: () => ccSectionAtom.set('tools'), children: t('backToTools') }),
+        jsx('span', { className: 'font-medium', children: t('wizardTitle') }),
+        jsx(Badge, { variant: 'outline', size: 'xs', children: t('wizardStep', stepIndex + 1, WIZARD_STEPS.length) })
+      ] }),
+      jsx(ScrollArea, { className: 'min-h-0 flex-1', children: jsx('div', { className: 'p-4', children: body }) }),
+      jsx(ConfirmDialog, {
+        open: !!confirm,
+        onClose: () => setConfirm(null),
+        onConfirm: confirm ? confirm.action : () => undefined,
+        title: confirm ? confirm.title : '',
+        description: confirm ? confirm.description : undefined,
+        confirmLabel: confirm ? confirm.confirmLabel : undefined,
+        destructive: false
+      })
     ]
   })
 }
@@ -3356,6 +3756,7 @@ function ControlCenter() {
   ]
   const bodies = {
     tools: () => jsx(ToolsOverview, { layout: layout }),
+    onboarding: () => jsx(FirstRunWizard, {}),
     sets: () => jsx(SkillsPane, { section: 'sets' }),
     problems: () => jsx(SkillsPane, { section: 'problems' }),
     mcp: () => jsx(McpPane, {}),
@@ -3429,6 +3830,71 @@ export default {
         disableAll: 'Disable all',
         overviewProblems: n => `${n} problems`,
         addToolAction: 'Add Tool',
+        scanAndImport: 'Scan & import',
+        onboardingEntryTitle: 'Bring existing skills into Hermes',
+        onboardingEntryDesc: 'Scan detected tools, review every copy, and choose what Hermes should manage.',
+        startSetup: 'Start setup',
+        wizardTitle: 'First-run scan',
+        wizardStep: (step, total) => `Step ${step} of ${total}`,
+        wizardWelcomeTitle: 'Make Hermes your canonical skills library',
+        wizardWelcomeDesc: 'This guided scan finds skills in your existing tools. You decide what to adopt; scanning never changes files.',
+        wizardBackupPromise: 'When you adopt from a detected tool, the original is moved to a timestamped backup and replaced with a managed link. Originals are never deleted.',
+        wizardGetStarted: 'Get started',
+        wizardSourcesTitle: 'Choose where to scan',
+        wizardSourcesDesc: 'Detected skill folders are ready automatically. Add another folder only when a source is outside a known tool.',
+        wizardSelectTool: label => `Scan ${label}`,
+        wizardManageTool: label => `Manage ${label}`,
+        wizardFolderPlaceholder: '/path/to/another/skills folder',
+        wizardAddFolder: 'Add folder',
+        wizardRunScan: 'Run scan',
+        wizardScanningTitle: 'Scanning selected folders…',
+        wizardScanningDesc: 'This is read-only. Filesystem state will be classified from a fresh backend scan.',
+        wizardScanFailed: 'Could not complete the import scan',
+        wizardReviewTitle: 'Review what was found',
+        wizardDuplicateGroups: n => `${n} duplicate-name group(s) need review and will not be adopted automatically.`,
+        wizardManaged: 'Managed links',
+        wizardUnique: 'Unique copies',
+        wizardIdentical: 'Identical duplicates',
+        wizardDrifted: 'Drifted copies',
+        wizardConflicts: 'Name conflicts',
+        wizardBroken: 'Broken links',
+        wizardForeign: 'Foreign links',
+        wizardUnmanaged: 'Unmanaged entries',
+        wizardRescan: 'Change sources',
+        wizardChooseTitle: 'Choose tools and skills to manage',
+        wizardSelectEntry: name => `Adopt ${name}`,
+        wizardNothingToAdopt: 'No unique copies to adopt',
+        wizardNothingDesc: 'Protected, duplicate, drifted, and already-managed entries remain unchanged.',
+        wizardDuplicatesFlagged: 'Duplicates, drifted copies, and conflicts are clearly flagged and excluded from this adoption.',
+        wizardReviewPlan: 'Review dry run',
+        wizardPreviewTitle: 'Dry-run plan',
+        wizardPreviewCounts: (chosen, sources, conflicts, refused) => `${chosen} selected · ${sources} sources · ${conflicts} conflicts · ${refused} scan refusals`,
+        wizardRefusals: 'Refused scan sources',
+        wizardRefusalLine: (path, code) => `${path} [${code}]`,
+        unknownPath: 'Unknown path',
+        none: 'none',
+        wizardApplySafety: 'Only the exact selected source, name, and tool entries shown here will be submitted. Changed or newly conflicting entries are refused by the backend.',
+        wizardApply: 'Apply plan…',
+        wizardConfirmTitle: 'Adopt these skills into Hermes?',
+        wizardConfirmApply: 'Confirm adoption',
+        wizardApplyingTitle: 'Applying reviewed plan…',
+        wizardApplyingDesc: 'Each entry is rolled back independently if its copy or link swap fails.',
+        wizardApplyFailed: 'Adoption failed; original state was restored where a mutation was interrupted',
+        wizardApplied: (adopted, failed, refused) => `Adopted ${adopted}; ${failed} failed; ${refused} refused`,
+        wizardReceiptTitle: 'Adoption receipt',
+        wizardReceiptCounts: (adopted, failed, refused) => `${adopted} adopted · ${failed} failed · ${refused} refused`,
+        wizardResultLine: (name, result) => `${name} — ${result}`,
+        wizardAdopted: 'Adopted and linked',
+        wizardUndoTitle: 'Undo / restore path',
+        wizardUndoDesc: 'Keep this receipt ID and these paths. Detected-tool adoptions can be undone here; added-folder copies include the canonical path for manual restore review.',
+        wizardUndoLine: (kind, path, backup) => `${kind}: ${path} · backup: ${backup}`,
+        wizardUndoResult: (restored, failed) => `${restored} restored · ${failed} need manual review`,
+        wizardUndoMatchFailed: 'Could not match the restore action to its receipt item',
+        wizardManualRestore: 'This receipt contains only added-folder copies; review the listed canonical paths before removing anything.',
+        wizardViewTools: 'View Tools',
+        remove: 'Remove',
+        back: 'Back',
+        continue: 'Continue',
         toolBulkPreview: (changed, already, refused) => `${changed} will change · ${already} already set · ${refused} protected/refused`,
         bulkSampleTitle: 'Sample changes',
         bulkSampleLine: (name, category, current, next) => `${name} (${category}): ${current} → ${next}`,
