@@ -38,6 +38,7 @@ cp "$HERE/render_harness_body.mjs" "$FRONT/render_harness_body.mjs"
 cp "$HERE/workspace_harness_body.mjs" "$FRONT/workspace_harness_body.mjs"
 cp "$HERE/mutation_harness_body.mjs" "$FRONT/mutation_harness_body.mjs"
 cp "$HERE/client_library_harness_body.mjs" "$FRONT/client_library_harness_body.mjs"
+cp "$HERE/loadout_harness_body.mjs" "$FRONT/loadout_harness_body.mjs"
 # committed render fixtures (screenshot-shaped 105-skill state) ride along
 rm -rf "$FRONT/fixtures"
 cp -R "$HERE/fixtures" "$FRONT/fixtures"
@@ -49,3 +50,5 @@ PLUGIN_SRC="$FRONT/staging/plugin.js" STAGING_PLUGIN="$FRONT/staging/plugin.js" 
 PLUGIN_SRC="$FRONT/staging/plugin.js" STAGING_PLUGIN="$FRONT/staging/plugin.js" node mutation_harness_body.mjs
 
 PLUGIN_SRC="$FRONT/staging/plugin.js" STAGING_PLUGIN="$FRONT/staging/plugin.js" node client_library_harness_body.mjs
+
+PLUGIN_SRC="$FRONT/staging/plugin.js" STAGING_PLUGIN="$FRONT/staging/plugin.js" node loadout_harness_body.mjs

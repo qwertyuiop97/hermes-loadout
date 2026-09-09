@@ -2838,7 +2838,7 @@ class HermesLoadoutCore:
         re.compile(r"^hermes-loadout\.json\.bak\.hermes-loadout\.(\d{8}-\d{6})(?:-\d+)?$"),
         re.compile(r"^(.+)\.hermes-loadout-backup\.(\d{8}-\d{6})(?:-\d+)?$"),
         re.compile(r"^(.+)\.hermes-loadout-backup-(\d{8}-\d{6})$"),
-        re.compile(r"^\.hermes-loadout-(?:backup|reverted)-(.+)-(\d{8}-\d{6})$"),
+        re.compile(r"^\.hermes-loadout-(?:backup|reverted|replaced)-(.+)-(\d{8}-\d{6})$"),
     )
 
     def list_backups(self) -> dict:
@@ -2873,11 +2873,21 @@ class HermesLoadoutCore:
                 except OSError:
                     continue
                 for ln in children:
-                    if re.fullmatch(r"\.hermes-loadout-(?:backup|reverted)-.+-\d{8}-\d{6}", ln.name):
+                    if re.fullmatch(r"\.hermes-loadout-(?:backup|reverted|replaced)-.+-\d{8}-\d{6}", ln.name):
                         if ln.is_dir() and not ln.is_symlink() and is_inside(ln, self.skills_root_resolved):
                             rows.append({"path": str(ln), "kind": "hermes-copy", "name": ln.name, "category": cat_dir.name})
+        if self.skills_root.is_dir():
+            for category in sorted(self.skills_root.iterdir()):
+                if not category.is_dir() or category.name.startswith(".") or not is_inside(category, self.skills_root_resolved):
+                    continue
+                backup_root = self._tool_backup_root(category)
+                for entry in sorted(backup_root.iterdir()) if backup_root.is_dir() else []:
+                    match = re.fullmatch(r"(.+)\.bak\.hermes-loadout\.\d{8}-\d{6}-[a-f0-9]{8}", entry.name)
+                    if match and entry.is_dir() and not entry.is_symlink() and is_inside(entry, backup_root):
+                        rows.append({"path": str(entry), "kind": "canonical-copy", "name": entry.name,
+                                     "category": category.name, "skill_name": match.group(1)})
         rows.sort(key=lambda r: r["path"], reverse=True)
-        return {"ok": True, "backups": rows[:200], "count": len(rows)}
+        return {"ok": True, "backups": rows, "count": len(rows)}
 
     def restore_backup(self, path: object) -> dict:
         """Restore a plugin-created backup. The path must appear in the live
@@ -2927,7 +2937,7 @@ class HermesLoadoutCore:
                 return {"ok": True, "kind": kind, "action": "restored", "name": name}
             if kind == "hermes-copy":
                 # Parse only current-product backup names.
-                m = re.match(r"^\.hermes-loadout-(?:backup|reverted)-(.+)-\d{8}-\d{6}$", row["name"])
+                m = re.match(r"^\.hermes-loadout-(?:backup|reverted|replaced)-(.+)-\d{8}-\d{6}$", row["name"])
                 if not m:
                     raise LoadoutError("cannot parse backup name", "restore-failed")
                 name = m.group(1)
@@ -4013,54 +4023,9 @@ if APIRouter is not None:
     async def diff() -> dict:
         return _core_call("diff")
 
-    @router.post("/toggle")
-    async def toggle(body: dict) -> dict:
-        return _core_call("toggle", body.get("skill"), body.get("tool"), body.get("enabled"))
-
-    @router.post("/toggle-bulk")
-    async def toggle_bulk(body: dict) -> dict:
-        return _core_call("toggle_bulk", body.get("skills"), body.get("tool"), body.get("enabled"))
-
-    @router.post("/bulk/plan")
-    async def bulk_plan(body: dict) -> dict:
-        return _core_call("plan_bulk", body.get("skills"), body.get("tool"), body.get("enabled"))
-
-    @router.post("/bulk/apply")
-    async def bulk_apply(body: dict) -> dict:
-        return _core_call("execute_bulk",
-            body.get("skills"),
-            body.get("tool"),
-            body.get("enabled"),
-            body.get("receipt_id"),
-        )
-
-    @router.get("/bulk/receipt")
-    async def bulk_receipt(receipt_id: str) -> dict:
-        return _core_call("get_bulk_receipt", receipt_id)
-
-    @router.post("/bulk/undo")
-    async def bulk_undo(body: dict) -> dict:
-        return _core_call("undo_bulk", body.get("receipt_id"))
-
-    @router.post("/repair")
-    async def repair(body: dict) -> dict:
-        return _core_call("repair", body.get("skill"), body.get("tool"))
-
-    @router.post("/repair-all")
-    async def repair_all() -> dict:
-        return _core_call("repair_all")
-
-    @router.post("/ensure-tool-dir")
-    async def ensure_tool_dir(body: dict) -> dict:
-        return _core_call("ensure_tool_dir", body.get("tool"))
-
     @router.get("/import/scan")
     async def import_scan() -> dict:
         return _core_call("import_scan")
-
-    @router.post("/import/apply")
-    async def import_apply(body: dict) -> dict:
-        return _service_call("apply_import", body.get("entries"), body.get("category", "imported"), body.get("plan_id"))
 
     @router.post("/import/plan")
     async def import_plan(body: dict) -> dict:
@@ -4086,72 +4051,26 @@ if APIRouter is not None:
     async def mcp_state() -> dict:
         return _call(get_mcp_core().mcp_state)
 
-    @router.post("/mcp/toggle")
-    async def mcp_toggle(body: dict) -> dict:
-        return _call(get_mcp_core().toggle_hermes, body.get("name"), body.get("enabled"))
-
-    @router.post("/mcp/sync")
-    async def mcp_sync(body: dict) -> dict:
-        return _call(get_mcp_core().sync_to_claude, body.get("name"), body.get("force", False))
-
-    @router.post("/mcp/remove")
-    async def mcp_remove(body: dict) -> dict:
-        return _call(get_mcp_core().remove_from_claude, body.get("name"), body.get("force", False))
-
-    @router.post("/mcp/codex/sync")
-    async def mcp_codex_sync(body: dict) -> dict:
-        return _call(get_mcp_core().sync_to_codex, body.get("name"), body.get("force", False))
-
-    @router.post("/mcp/codex/remove")
-    async def mcp_codex_remove(body: dict) -> dict:
-        return _call(get_mcp_core().remove_from_codex, body.get("name"), body.get("force", False))
-
-    @router.get("/blueprint/export")
-    async def blueprint_export() -> dict:
-        return _core_call("blueprint_export")
-
-    @router.post("/blueprint/apply")
-    async def blueprint_apply(body: dict) -> dict:
-        return _core_call("blueprint_apply",
-            body.get("blueprint"),
-            bool(body.get("dry_run", False)),
-        )
-
     @router.get("/backups")
     async def list_backups() -> dict:
-        return _core_call("list_backups")
+        return _service_call("list_backups")
+
+    @router.post("/backups/plan")
+    async def plan_backup_restore(body: dict) -> dict:
+        return _service_call("plan_backup", body.get("path"))
+
+    @router.post("/conflict/plan")
+    async def plan_conflict_resolution(body: dict) -> dict:
+        return _service_call("plan_conflict", body.get("tool"), body.get("name"), body.get("choice"))
+
+    @router.post("/conflict/apply")
+    async def apply_conflict_resolution(body: dict) -> dict:
+        return _service_call("apply_conflict", body.get("plan_id"))
 
     @router.post("/backups/restore")
     async def restore_backup(body: dict) -> dict:
-        return _core_call("restore_backup", body.get("path"))
+        return _service_call("apply_backup", body.get("plan_id"))
 
-    @router.post("/conflict/revert-push")
-    async def revert_push(body: dict) -> dict:
-        return _core_call("revert_push", body.get("tool"), body.get("name"), body.get("tool_backup"))
-
-    @router.post("/conflict/revert-pull")
-    async def revert_pull(body: dict) -> dict:
-        return _core_call("revert_pull",
-            body.get("tool"), body.get("name"), body.get("hermes_backup"), body.get("tool_backup"),
-        )
-
-    @router.post("/conflict/revert-adopt")
-    async def revert_adopt(body: dict) -> dict:
-        return _core_call("revert_adopt",
-            body.get("tool"), body.get("name"), body.get("tool_backup"), body.get("skill"),
-        )
-
-    @router.post("/conflict/pull")
-    async def conflict_pull(body: dict) -> dict:
-        return _core_call("conflict_pull", body.get("tool"), body.get("name"))
-
-    @router.post("/conflict/keep-both")
-    async def conflict_keep_both(body: dict) -> dict:
-        return _core_call("conflict_keep_both", body.get("tool"), body.get("name"))
-
-    @router.post("/drift/push")
-    async def drift_push(body: dict) -> dict:
-        return _core_call("drift_push", body.get("tool"), body.get("name"))
 
 
 else:  # pragma: no cover — non-gateway import (tests); keep attribute defined

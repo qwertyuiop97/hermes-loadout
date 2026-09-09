@@ -259,7 +259,7 @@ class LoadoutService:
 
     def _public_error(self, row, exc):
         code = exc.code if isinstance(exc, self.Error) else 'filesystem-error'
-        status = 'protected' if code in ('foreign-link', 'unmanaged-dir', 'catalog-bypass', 'config-protected', 'read-only') else (
+        status = 'protected' if code in ('protected', 'foreign-link', 'unmanaged-dir', 'catalog-bypass', 'config-protected', 'store-protected', 'read-only') else (
             'conflict' if code in ('conflict', 'drifted', 'changed-since-preview', 'changed-since-apply', 'review-mismatch') else (
                 'failed' if code in ('filesystem-error', 'copy-failed', 'symlink-unsupported', 'recovery-required') else 'unavailable'))
         # Reader/parser exceptions can embed credentials; expose stable explanations only.
@@ -381,8 +381,13 @@ class LoadoutService:
                     if row not in receipt['items']:
                         receipt['items'].append(row)
                     # A mutation followed by receipt-store failure must not masquerade as no change.
-                    if (row.get('status') == 'completed' or (row.get('status') == 'pending' and
-                            self._snapshot(row) != row['before'])):
+                    uncertain = row.get('status') == 'completed'
+                    if row.get('status') == 'pending':
+                        try:
+                            uncertain = self._snapshot(row) != row['before']
+                        except (self.Error, OSError, ValueError):
+                            uncertain = True
+                    if uncertain:
                         receipt['status'] = 'recovery-required'
                         return {'ok': False, 'code': 'recovery-required', 'error': 'A change completed but its recovery record could not be finalized. Preserve the pending record.', 'receipt': self._summary(receipt)}
                     row.update(self._public_error({k: row[k] for k in ('kind', 'app', 'id', 'enabled')}, exc))
@@ -398,7 +403,7 @@ class LoadoutService:
             raise self.Error('The last change record is invalid.', 'record-invalid')
         self._id(receipt.get('receipt_id'))
         for row in receipt['items']:
-            if not isinstance(row, dict) or row.get('kind') not in ('skill', 'mcp', 'import', 'catalog-bypass'):
+            if not isinstance(row, dict) or row.get('kind') not in ('skill', 'mcp', 'import', 'catalog-bypass', 'conflict', 'backup'):
                 raise self.Error('The last change record has an invalid item.', 'record-invalid')
             if row.get('status') != 'completed':
                 continue
@@ -494,6 +499,10 @@ class LoadoutService:
                     re.escape(row['id']) + r'\.bak\.hermes-loadout\.\d{8}-\d{6}-[a-f0-9]{8}')
                 if self.core._skill_fingerprint(Path(row['backup'])) != row['fingerprint']:
                     raise self.Error('The original import backup changed.', 'backup-changed')
+        elif row.get('kind') == 'conflict':
+            self._check_conflict_undo(row)
+        elif row.get('kind') == 'backup':
+            self._check_backup_undo(row)
         else:
             raise self.Error('This receipt has an unknown operation type.', 'record-invalid')
 
@@ -552,10 +561,28 @@ class LoadoutService:
         elif row['kind'] == 'catalog-bypass':
             directory = self.core.tool_dir(row['app'])
             os.symlink(row['before']['target'], directory / row['id'], target_is_directory=row['before']['directory'])
+        elif row['kind'] == 'conflict':
+            directory, canonical = self._check_conflict_undo(row)
+            if row['choice'] == 'source':
+                os.rename(canonical, row['undo_parked'])
+                os.rename(row['canonical_backup'], canonical)
+            self.core._restore_tool_entry(directory, row['id'], Path(row['tool_backup']))
+        elif row['kind'] == 'backup':
+            target = self._check_backup_undo(row)
+            if row['descriptor']['kind'] in self._config_targets():
+                if row['before']['kind'] == 'missing':
+                    target.unlink()
+                else:
+                    self.api._atomic_write_text(target, Path(row['pre_backup']).read_text(encoding='utf-8'))
+                if row['descriptor']['kind'] == 'tools-json':
+                    self.api.reset_core()
+            else:
+                os.rename(target, row['undo_parked'])
+                if row['before']['kind'] != 'missing':
+                    os.rename(row['pre_backup'], target)
         else:  # import, preserve the owned canonical copy outside discovery as well
             destination = Path(row['path'])
-            parked = self._path('undo-copies', create=True) / (uuid.uuid4().hex + '-' + row['id'])
-            parked.parent.mkdir(exist_ok=True, mode=0o700)
+            parked = Path(row['undo_parked'])
             os.rename(destination, parked)
             try:
                 if row.get('source_app'):
@@ -591,6 +618,15 @@ class LoadoutService:
                 progress = None
                 try:
                     self._undo_check(row)
+                    if row['kind'] == 'import':
+                        destination = Path(row['path'])
+                        row['undo_parked'] = str(self.core._new_tool_backup(destination.parent, destination.name))
+                    elif row['kind'] == 'conflict' and row['choice'] == 'source':
+                        destination = Path(row['before']['path'])
+                        row['undo_parked'] = str(self.core._new_tool_backup(destination.parent, destination.name))
+                    elif row['kind'] == 'backup' and row['descriptor']['kind'] not in self._config_targets():
+                        destination = Path(row['target'])
+                        row['undo_parked'] = str(self.core._new_tool_backup(destination.parent, destination.name))
                     progress = {**public, 'status': 'pending', 'original': copy.deepcopy(row)}
                     result['items'].append(progress)
                     self._write('pending-operation.json', result)
@@ -627,6 +663,7 @@ class LoadoutService:
 
     def apply_import(self, entries, category, plan_id):
         with self.core._lock:
+            metadata = self.metadata()  # fail before import if saved labels need repair
             receipt = self._receipt('Import skills', 'import')
             self._write('pending-operation.json', receipt)
 
@@ -644,6 +681,14 @@ class LoadoutService:
                 result = self.core.import_apply_plan(entries, category, plan_id=plan_id, _record=record)
                 if any(row.get('recovery_required') for row in result['results']):
                     return {**result, **self._interrupted(receipt)}
+                for item in receipt['items']:
+                    if item['status'] == 'completed':
+                        # An origin label is informational, never a guess about portability.
+                        source_app = item.get('source_app')
+                        source = self.core.tools.get(source_app, {}).get('label', source_app) if source_app else 'Folder import'
+                        metadata['skills'].setdefault(item['skill'], {})['source'] = source
+                if any(item['status'] == 'completed' for item in receipt['items']):
+                    self._write('inventory-metadata.json', {k: metadata[k] for k in ('version', 'skills')})
                 summary = self._complete(receipt)
                 result.update(operation=summary['receipt'], partial=summary['partial'])
                 return result
@@ -671,3 +716,243 @@ class LoadoutService:
                     return self._interrupted(receipt)
                 self._path('pending-operation.json').unlink()
                 raise
+
+    def _object_state(self, path):
+        """Filesystem evidence only. Never retain configuration contents in receipts."""
+        path = Path(path)
+        entry = self.core._entry_snapshot(path)
+        if entry['kind'] == 'symlink' or not os.path.lexists(path):
+            return entry
+        if path.is_file():
+            if path.stat().st_size > 4 * 1024 * 1024:
+                raise self.Error('The configuration exceeds the 4 MiB review limit.', 'record-invalid')
+            return {'kind': 'file', 'identity': self.core._import_identity(path),
+                    'hash': hashlib.sha256(path.read_bytes()).hexdigest()}
+        if path.is_dir():
+            return {'kind': 'directory', 'identity': self.core._import_identity(path),
+                    'hash': self.core._skill_fingerprint(path)}
+        raise self.Error('This entry is not an ordinary file or skill folder.', 'protected')
+
+    def plan_conflict(self, app, name, choice):
+        with self.core._lock:
+            if choice not in ('library', 'source'):
+                raise self.Error('Choose the library copy or the application copy.', 'invalid-choice')
+            existing, directory, source = self.core._conflict_context(app, name, True)
+            if self.core.catalog_bypasses():
+                raise self.Error('Review catalog bypass links before replacing shared content.', 'catalog-bypass')
+            skill = existing['category'] + '/' + existing['name']
+            canonical = self.core._import_destination(existing['category'], existing['name'])
+            # Ambiguous names, redirected folders, or linked file content need manual review.
+            self.core._validate_skill(skill)
+            if canonical.is_symlink():
+                raise self.Error('The library skill is itself a link. Review its owner separately.', 'protected')
+            self.core._validate_client_skill(existing, app)
+            before = {'source': self._object_state(source), 'canonical': self._object_state(canonical),
+                      'directory': self.api._canonical(str(directory)), 'path': str(canonical)}
+            payload = {'app': app, 'id': name, 'skill': skill, 'choice': choice, 'before': before}
+            plan_id = self.core._new_review('conflict-resolution', payload)
+            reason = ('Replace only the application copy with a link to the library. Preserve the original outside discovery.'
+                      if choice == 'library' else
+                      'Replace the shared library content with this application copy. This affects every app already using the library copy. Preserve both originals; activation stays unchanged.')
+            return {'ok': True, 'plan_id': plan_id, 'label': 'Resolve skill conflict',
+                    'items': [{'kind': 'conflict', 'app': app, 'id': name, 'status': 'replace', 'reason': reason}]}
+
+    def apply_conflict(self, plan_id):
+        with self.core._lock:
+            row = self.core._take_review(plan_id, 'conflict-resolution')
+            existing, directory, source = self.core._conflict_context(row['app'], row['id'], True)
+            canonical = self.core._import_destination(*row['skill'].split('/', 1))
+            if (self.core.catalog_bypasses() or str(canonical) != row['before']['path']
+                    or self.api._canonical(str(directory)) != row['before']['directory']
+                    or self._object_state(source) != row['before']['source']
+                    or self._object_state(canonical) != row['before']['canonical']):
+                raise self.Error('One of the reviewed copies changed. Review both copies again.', 'changed-since-preview')
+            receipt = self._receipt('Resolve skill conflict', 'conflict')
+            row.update(kind='conflict', status='pending', tool_backup=str(self.core._new_tool_backup(directory, row['id'])))
+            if row['choice'] == 'source':
+                row['canonical_backup'] = str(self.core._new_tool_backup(canonical.parent, canonical.name))
+                row['stage'] = str(self.core._new_tool_backup(canonical.parent, canonical.name))
+            receipt['items'].append(row)
+            self._write('pending-operation.json', receipt)
+            try:
+                if row['choice'] == 'source':
+                    self.api.shutil.copytree(source, row['stage'], symlinks=True)
+                    if (self.core._skill_fingerprint(Path(row['stage'])) != row['before']['source']['hash']
+                            or self._object_state(source) != row['before']['source']
+                            or self._object_state(canonical) != row['before']['canonical']):
+                        raise self.Error('A copy changed while being prepared.', 'changed-since-preview')
+                    os.rename(canonical, row['canonical_backup'])
+                    os.rename(row['stage'], canonical)
+                os.rename(source, row['tool_backup'])
+                os.symlink(str(canonical.resolve()), source, target_is_directory=True)
+                row.update(status='completed', ok=True, after={'source': self._object_state(source), 'canonical': self._object_state(canonical)})
+                self._write('pending-operation.json', receipt)
+                return self._complete(receipt)
+            except (self.Error, OSError, ValueError):
+                # Originals are preserved at recorded paths. Do not delete uncertain partial copies.
+                return self._interrupted(receipt)
+
+    def _check_conflict_undo(self, row):
+        self.core._validate_tool(row['app'])
+        directory = self.core.tool_dir(row['app'])
+        canonical = self.core._import_destination(*row['skill'].split('/', 1))
+        source = directory / self.core._entry_name(row['id'])
+        if (self.api._canonical(str(directory)) != row['before']['directory'] or str(canonical) != row['before']['path']
+                or self._object_state(source) != row['after']['source']
+                or self._object_state(canonical) != row['after']['canonical']):
+            raise self.Error('A resolved copy changed afterward. It will be preserved.', 'changed-since-apply')
+        self.core._checked_backup(Path(row['tool_backup']), self.core._tool_backup_root(directory),
+            re.escape(row['id']) + r'\.bak\.hermes-loadout\.\d{8}-\d{6}-[a-f0-9]{8}')
+        if self.core._skill_fingerprint(Path(row['tool_backup'])) != row['before']['source']['hash']:
+            raise self.Error('The original application copy changed.', 'backup-changed')
+        if row['choice'] == 'source':
+            self.core._checked_backup(Path(row['canonical_backup']), self.core._tool_backup_root(canonical.parent),
+                re.escape(canonical.name) + r'\.bak\.hermes-loadout\.\d{8}-\d{6}-[a-f0-9]{8}')
+            if self.core._skill_fingerprint(Path(row['canonical_backup'])) != row['before']['canonical']['hash']:
+                raise self.Error('The original library copy changed.', 'backup-changed')
+        return directory, canonical
+
+    def _config_targets(self):
+        return {'config': self.core.config_path, 'tools-json': self.api.user_config_path(self.core.home),
+                'mcp-codex': self.mcp.codex_config, 'mcp-claude': self.mcp.claude_config}
+
+    def list_backups(self):
+        with self.core._lock, self.mcp._lock:
+            rows = list(self.core.list_backups()['backups'])
+            known = {row['path'] for row in rows}
+            for kind, target in self._config_targets().items():
+                if target is None:
+                    continue
+                pattern = re.escape(target.name) + r'\.bak\.hermes-loadout\.\d{8}-\d{6}(?:-\d+)?'
+                for candidate in target.parent.glob(target.name + '.bak.hermes-loadout.*'):
+                    if (str(candidate) not in known and candidate.is_file() and not candidate.is_symlink()
+                            and re.fullmatch(pattern, candidate.name) and self.api.same_path(candidate.parent, target.parent)):
+                        rows.append({'kind': kind, 'path': str(candidate), 'name': candidate.name})
+            return {'ok': True, 'backups': sorted(rows, key=lambda row: row['path'], reverse=True), 'count': len(rows)}
+
+    def _backup_target(self, row):
+        if row['kind'] in self._config_targets():
+            target = self._config_targets()[row['kind']]
+            if target is None:
+                raise self.Error('The configuration location is unavailable.', 'unavailable')
+            if target.is_symlink():
+                raise self.Error('The configuration is a link. It will not be replaced.', 'protected')
+            return target
+        if row['kind'] == 'tool-link':
+            self.core._validate_tool(row['tool'])
+            target = self.core.tool_dir(row['tool']) / self.core._entry_name(row['skill_name'])
+            if target.is_symlink() and not self.api.is_inside(target, self.core.skills_root_resolved):
+                raise self.Error('The current application link is foreign.', 'foreign-link')
+            return target
+        if row['kind'] in ('hermes-copy', 'canonical-copy'):
+            name = row.get('skill_name')
+            if name is None:
+                match = re.fullmatch(r'\.hermes-loadout-(?:backup|reverted|replaced)-(.+)-\d{8}-\d{6}(?:-\d+)?', row['name'])
+                if not match:
+                    raise self.Error('This preserved filename is invalid.', 'invalid-backup')
+                name = match.group(1)
+            target = self.core._import_destination(row['category'], name)
+            if target.is_symlink():
+                raise self.Error('The library target is a link.', 'protected')
+            # A missing canonical target could unexpectedly activate a skill on restore.
+            self.core._validate_skill(row['category'] + '/' + name)
+            return target
+        raise self.Error('This backup requires manual recovery.', 'invalid-backup')
+
+    def _validate_config_backup(self, kind, source):
+        text = source.read_text(encoding='utf-8')
+        if kind == 'tools-json':
+            data, _ = self.api._read_json_mapping(source, 'tools')
+            self.api._validate_tools_document(data)
+        elif kind == 'mcp-codex':
+            self.api._toml_support().load(text)
+        elif kind == 'mcp-claude':
+            self.api._read_json_mapping(source, 'mcpServers')
+        else:
+            if not text.strip() or not re.search(r'(?m)^[A-Za-z_][A-Za-z0-9_-]*:', text):
+                raise self.Error('The configuration backup is malformed.', 'invalid-backup')
+            self.api.set_disabled_member(text, 'loadout-backup-validation', add=False)
+        return text
+
+    def plan_backup(self, path):
+        with self.core._lock, self.mcp._lock:
+            descriptor = next((row for row in self.list_backups()['backups'] if row['path'] == path), None)
+            if descriptor is None:
+                raise self.Error('Choose a recognized backup from the refreshed list.', 'unknown-backup')
+            source, target = Path(path), self._backup_target(descriptor)
+            if descriptor['kind'] in self._config_targets():
+                self._validate_config_backup(descriptor['kind'], source)
+            row = {'kind': 'backup', 'app': descriptor.get('tool', 'library'), 'id': target.name,
+                   'descriptor': descriptor, 'target': str(target), 'context': self.api._canonical(str(target.parent)),
+                   'before': self._object_state(target), 'source': self._object_state(source)}
+            plan_id = self.core._new_review('backup-restore', row)
+            return {'ok': True, 'plan_id': plan_id, 'label': 'Restore backup', 'items': [
+                {'kind': 'backup', 'app': row['app'], 'id': target.name, 'status': 'replace',
+                 'reason': 'Replace this entire file or skill copy with the reviewed backup, including its saved settings. Preserve the current version for one-step undo.'}]}
+
+    def apply_backup(self, plan_id):
+        with self.core._lock, self.mcp._lock:
+            row = self.core._take_review(plan_id, 'backup-restore')
+            source = Path(row['descriptor']['path'])
+            target = self._backup_target(row['descriptor'])
+            if (str(target) != row['target'] or self.api._canonical(str(target.parent)) != row['context']
+                    or self._object_state(source) != row['source'] or self._object_state(target) != row['before']):
+                raise self.Error('The backup or current entry changed. Review again.', 'changed-since-preview')
+            receipt = self._receipt('Restore backup', 'backup')
+            is_file = row['descriptor']['kind'] in self._config_targets()
+            if is_file:
+                text = self._validate_config_backup(row['descriptor']['kind'], source)
+                row['pre_backup'] = self.core._backup(target)
+            else:
+                row['pre_backup'] = str(self.core._new_tool_backup(target.parent, target.name))
+                row['stage'] = str(self.core._new_tool_backup(target.parent, target.name))
+            row['status'] = 'pending'
+            receipt['items'].append(row)
+            self._write('pending-operation.json', receipt)
+            try:
+                if is_file:
+                    self.api._atomic_write_text(target, text)
+                else:
+                    self.api.shutil.copytree(source, row['stage'], symlinks=True)
+                    if self.core._skill_fingerprint(Path(row['stage'])) != row['source']['hash']:
+                        raise self.Error('The backup changed during the copy.', 'backup-changed')
+                    if self._object_state(target) != row['before']:
+                        raise self.Error('The current entry changed.', 'changed-since-preview')
+                    if os.path.lexists(target):
+                        os.rename(target, row['pre_backup'])
+                    os.rename(row['stage'], target)
+                row.update(status='completed', ok=True, after=self._object_state(target))
+                self._write('pending-operation.json', receipt)
+                result = self._complete(receipt)
+                if row['descriptor']['kind'] == 'tools-json':
+                    self.api.reset_core()
+                return result
+            except (self.Error, OSError, ValueError):
+                return self._interrupted(receipt)
+
+    def _check_backup_undo(self, row):
+        target = self._backup_target(row['descriptor'])
+        if (str(target) != row['target'] or self.api._canonical(str(target.parent)) != row['context']
+                or self._object_state(target) != row['after']):
+            raise self.Error('The restored entry changed afterward. It will be preserved.', 'changed-since-apply')
+        before = row['before']
+        if before['kind'] != 'missing':
+            saved = Path(row['pre_backup'])
+            if row['descriptor']['kind'] in self._config_targets():
+                if (saved.is_symlink() or not self.api.same_path(saved.parent, target.parent)
+                        or not re.fullmatch(re.escape(target.name) + r'\.bak\.hermes-loadout\.\d{8}-\d{6}(?:-\d+)?', saved.name)):
+                    raise self.Error('The pre-restore backup is unsafe.', 'invalid-backup')
+            else:
+                if (not self.api.same_path(saved.parent, self.core._tool_backup_root(target.parent))
+                        or not re.fullmatch(re.escape(target.name) + r'\.bak\.hermes-loadout\.\d{8}-\d{6}-[a-f0-9]{8}', saved.name)):
+                    raise self.Error('The pre-restore backup is unsafe.', 'invalid-backup')
+            if before['kind'] == 'symlink':
+                pointer = Path(before['target'])
+                if not self.api.is_inside(pointer if pointer.is_absolute() else target.parent / pointer, self.core.skills_root_resolved):
+                    raise self.Error('The original pointer is no longer inside the library.', 'invalid-backup')
+            current = self._object_state(saved)
+            if (current.get('kind') != before.get('kind') or
+                    (current.get('hash') != before.get('hash') if before['kind'] in ('file', 'directory') else
+                     current.get('target') != before.get('target'))):
+                raise self.Error('The pre-restore backup changed.', 'backup-changed')
+        return target

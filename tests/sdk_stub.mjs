@@ -47,7 +47,7 @@ export const ErrorState = (props) => el('div', {}, el('div', {}, props.title), t
 export const Input = (props) => el('input', { ...props, onChange: e => props.onChange && props.onChange(e && e.target ? e.target.value : e) })
 export const SearchField = (props) => el('input', { placeholder: props.placeholder, value: props.value, 'aria-label': props['aria-label'], onChange: props.onChange })
 export const Skeleton = (props) => el('div', { 'data-skeleton': 'true', className: props.className }, null)
-export const ScrollArea = (props) => el('div', {}, props.children)
+export const ScrollArea = (props) => el('div', { className: props.className }, props.children)
 export const Separator = () => el('hr', {}, null)
 export const Tip = (props) => el('span', { 'data-tip': String(props.label) }, props.children)
 export const ConfirmDialog = (props) => (props.open ? el('div', { role: 'dialog' }, el('div', {}, props.title), el('div', {}, props.description ?? ''), el('button', { onClick: props.onClose }, 'Cancel'), el('button', { onClick: props.onConfirm }, props.confirmLabel || 'Confirm')) : null)
@@ -62,6 +62,10 @@ export function useQuery({ queryKey }) {
     return () => listeners.delete(fn)
   }, () => channel[field], () => channel[field])
   const mode = S().mode || 'ready'
+  if (['loadouts', 'operation', 'metadata', 'backups'].includes(queryKey[1])) {
+    const defaults = { loadouts: { ok: true, loadouts: [] }, operation: { ok: true, receipt: null, recovery_required: false }, metadata: { ok: true, skills: {}, classifications: ['Portable', 'Hermes-specific', 'Codex-specific', 'Claude-specific', 'Other application-specific', 'Unclassified'] }, backups: { ok: true, backups: [], count: 0 } }
+    return { data: channel[field] || defaults[field], isLoading: mode === 'loading', isPending: mode === 'loading', isError: mode === 'error', error: mode === 'error' ? new Error('Fixture connection failure') : null, refetch: async () => { (channel.refetched ||= []).push(field) } }
+  }
   if (queryKey[1] === 'mcp') {
     if (mode === 'loading') return { data: undefined, isLoading: true, isPending: true, isError: false, error: null, refetch: () => {} }
     if (mode === 'error') return { data: undefined, isLoading: false, isPending: false, isError: true, error: new Error('x') }
@@ -145,7 +149,7 @@ export const atom = initial => {
   ;(S().atoms = S().atoms || []).push(a)
   return a
 }
-export const useValue = a => (typeof a === 'function' ? a() : a.get())
+export const useValue = a => useSyncExternalStore(a.subscribe, a.get, a.get)
 export const PANES_AREA = 'panes'
 export const ROUTES_AREA = 'routes'
 export const PALETTE_AREA = 'palette'

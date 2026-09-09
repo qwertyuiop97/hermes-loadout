@@ -107,12 +107,12 @@ ok(missingKeys.length === 0, `all static i18n keys exist (${missingKeys.join(', 
 
 const render = () => renderToString(pane.render())
 let html = render()
-ok(html.includes('>Skills<'), 'compact pane title renders')
+ok(html.includes('>Loadout<'), 'compact pane title renders')
 ok(html.includes('3 skills · 5 tools'), 'compact stat line renders')
 ok((html.match(/data-summary-tool=/g) || []).length === 6, 'five link tools plus Hermes render')
 ok(html.includes('2 on') && html.includes('1 on') && html.includes('0 on'), 'enabled counts render as labels')
 ok((html.match(/role="switch"/g) || []).length === 0, 'compact pane renders zero switches')
-ok(html.includes('Open Loadout') && html.includes('Scan') && html.includes('Problems (5)'), 'three quick actions render for problems')
+ok(html.includes('Open Loadout') && html.includes('Scan') && html.includes('Issues (4)'), 'three quick actions render for problems')
 ok(!html.includes('Search skills') && !html.includes('Set up your tools'), 'catalog controls are absent from the pane')
 
 const fs = await import('fs')
@@ -129,7 +129,7 @@ channel.state = makeState()
 channel.diff = mixed.diff
 channel.drift = mixed.drift
 html = render()
-ok(html.includes('2 broken · 5 drift · 4 foreign · 4 unlinked') && html.includes('Problems (15)'), 'mixed problem totals combine foreign and unmanaged')
+ok(html.includes('2 broken · 5 conflicts · 4 protected · 0 bypasses') && html.includes('Issues (11)'), 'mixed problem totals combine foreign and unmanaged')
 
 channel.mode = 'loading'
 html = render()

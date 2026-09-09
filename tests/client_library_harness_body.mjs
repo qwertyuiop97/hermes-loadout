@@ -7,7 +7,7 @@ import assert from 'node:assert/strict'
 const path = process.env.STAGING_PLUGIN.replace(/plugin\.js$/, 'library-plugin.mjs')
 writeFileSync(path, readFileSync(process.env.STAGING_PLUGIN, 'utf8') + '\nexport { ClientLibrary, ToolsOverview }\n')
 const { default: plugin, ClientLibrary, ToolsOverview } = await import(path)
-const channel = { state: { ok: true, skills_root_exists: true, counts: { skills: 0 }, skills: [], tools: [
+const channel = { state: { ok: true, capabilities: { reviewed_operations: 1 }, skills_root_exists: true, counts: { skills: 0 }, skills: [], tools: [
   { id: 'hermes', special: 'config', label: 'Hermes', present: true },
   { id: 'cursor', label: 'Cursor', optional: true, present: false, dir: '/fixture/home/.cursor/skills' }
 ] }, mode: 'ready', bundle: {}, notifications: [], invalidated: [], restCalls: [], diff: { ok: true, counts: {} } }
@@ -45,7 +45,7 @@ await act(async () => { tree = TestRenderer.create(createElement(ToolsOverview, 
 assert.equal(tree.root.findAll(node => node.props['data-tool-card'] === 'cursor').length, 0)
 await act(async () => { button(tree, 'Add Tool').props.onClick() })
 assert.deepEqual(tree.root.findAll(node => node.props['data-client-group']).map(node => node.props['data-client-group']), ['detected', 'available', 'custom'])
-assert.equal(button(tree, 'Back to Tools').props.disabled, false)
+assert.equal(button(tree, 'Back to Applications').props.disabled, false)
 assert.equal(labeled(tree, 'Use global path for Claude Code').props.disabled, false)
 assert.equal(tree.root.findAll(node => node.props['data-client-id'] === 'grok').length, 0)
 await act(async () => { labeled(tree, 'Search clients').props.onChange({ target: { value: 'cursor' } }) })
@@ -91,7 +91,7 @@ version = 2
 await act(async () => { button(tree, 'Global').props.onClick() })
 assert.match(text(tree), /desktop and backend catalog versions differ/)
 assert.ok(button(tree, 'Retry'))
-await act(async () => { button(tree, 'Back to Tools').props.onClick() })
+await act(async () => { button(tree, 'Back to Applications').props.onClick() })
 assert.equal(tree.root.findAll(node => node.props['data-client-library']).length, 0)
 await act(async () => { tree.unmount() })
 console.log('ok  searchable library keeps available clients out of everyday Tools')

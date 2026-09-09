@@ -1,101 +1,110 @@
-// Exercise the actual React handlers against delayed successes and failures.
-// Named exports are appended only to this disposable test copy, never shipped.
-import { createElement } from 'react'
+// Actual React event paths, deferred responses, and persisted recovery after remount.
+import { createElement, Fragment } from 'react'
 import TestRenderer, { act } from 'react-test-renderer'
 import { readFileSync, writeFileSync } from 'fs'
 import assert from 'node:assert/strict'
 
-const testPath = process.env.STAGING_PLUGIN.replace(/plugin\.js$/, 'mutation-plugin.mjs')
-writeFileSync(testPath, readFileSync(process.env.STAGING_PLUGIN, 'utf8') + '\nexport { SkillsPane, ToolsOverview, McpPane }\n')
-const { default: plugin, SkillsPane, ToolsOverview, McpPane } = await import(testPath)
-const state = {
-  ok: true, skills_root_exists: true,
+const path = process.env.STAGING_PLUGIN.replace(/plugin\.js$/, 'mutation-plugin.mjs')
+writeFileSync(path, readFileSync(process.env.STAGING_PLUGIN, 'utf8') + '\nexport { ToolsOverview, OperationsPanel, McpPane }\n')
+const { default: plugin, ToolsOverview, OperationsPanel, McpPane } = await import(path)
+const state = { ok: true, capabilities: { reviewed_operations: 1 }, skills_root_exists: true,
   tools: [{ id: 'hermes', label: 'Hermes', special: 'config', present: true },
-    { id: 'codex', label: 'Codex', present: true, dir: '/tmp/fixture-codex' }],
-  counts: { skills: 1, unlinked: 1 },
-  skills: [{ id: 'software/safe-skill', category: 'software', name: 'safe-skill', description: 'Fixture',
-    tools: { hermes: { state: 'enabled' }, codex: { state: 'missing' } } }]
-}
-const channel = {
-  state, mode: 'ready', bundle: {}, notifications: [], invalidated: [], restCalls: [],
-  diff: { ok: true, broken: [], foreign: [], unmanaged: [], unlinked: [], counts: {} },
-  drift: { ok: true, drifted: [], count: 0 }
-}
+    { id: 'codex', label: 'Codex', present: true, dir: '/fixture/codex' }],
+  counts: { skills: 1, unlinked: 1 }, skills: [{ id: 'software/safe-skill', category: 'software', name: 'safe-skill', description: 'Fixture',
+    tools: { hermes: { state: 'enabled' }, codex: { state: 'missing' } } }] }
+const channel = { state, mode: 'ready', bundle: {}, notifications: [], invalidated: [], restCalls: [],
+  diff: { ok: true, broken: [], foreign: [], unmanaged: [], unlinked: [], counts: {} }, drift: { ok: true, drifted: [], count: 0 } }
 globalThis.__SKT = channel
-let resolveToggle, rejectToggle
-let undoFailure = false
-const storage = new Map([['setupDismissed', true], ['onboarding', { version: 1, complete: true }]])
-const receipt = { receipt_id: 'fixture-receipt', tool: 'codex', changed: 1, failed: 0, undo_available: true,
-  items: [{ skill: 'software/safe-skill', ok: true, from: 'missing', to: 'enabled' }] }
-plugin.register({
-  source: 'plugin:hermes-loadout',
-  rest: async (path, options = {}) => {
-    channel.restCalls.push({ path, body: options.body })
-    if (path === '/toggle') return new Promise((resolve, reject) => { resolveToggle = resolve; rejectToggle = reject })
-    if (path === '/toggle-bulk') return { ok: true, changed: 2, failed: 1, receipt }
-    if (path === '/bulk/undo') return undoFailure ? { ok: false, error: 'Changed target; nothing modified' }
-      : { ok: true, changed: 1, failed: 0, results: [], receipt: { ...receipt, undo_available: false } }
-    if (path.startsWith('/bulk/receipt?')) return { ok: true, receipt }
-    return { ok: true }
-  },
-  storage: { get: (key, fallback) => storage.has(key) ? storage.get(key) : fallback,
-    set: (key, value) => storage.set(key, value) },
-  i18n: { register: bundle => Object.assign(channel.bundle, bundle) },
-  registerMany: () => {}, os: {}, socket: () => () => {}
-})
-
-const button = (tree, label) => tree.root.findAllByType('button').find(node => node.children.join('') === label)
-const toggle = tree => tree.root.findAllByType('button').find(node => node.props['aria-label'] === 'safe-skill — Codex')
+const storage = new Map([['onboarding', { version: 1, complete: true }]])
+const desired = { kind: 'skill', app: 'codex', id: 'software/safe-skill', enabled: true }
+const receipt = { operation_id: 'persisted-fixture', label: 'Enable one skill', changed: 1, skipped: 0, failed: 0, undo_available: true,
+  items: [{ ...desired, status: 'completed' }] }
+let resolvePlan, resolveApply, rejectApply, undoFailure = false
+const calls = channel.restCalls
+const context = { source: 'plugin:hermes-loadout',
+  rest: async (url, options = {}) => {
+    calls.push({ path: url, body: options.body })
+    if (url === '/operations/plan') return new Promise(resolve => { resolvePlan = resolve })
+    if (url === '/operations/apply') return new Promise((resolve, reject) => { resolveApply = resolve; rejectApply = reject })
+    if (url === '/operations/latest') return channel.operation || { ok: true, receipt: null, recovery_required: false }
+    if (url === '/operations/undo-plan') return { ok: true, plan_id: 'undo-reviewed', label: 'Undo last change', items: [{ ...desired, status: 'restore' }] }
+    if (url === '/operations/undo') return undoFailure ? { ok: false, error: 'Target changed after review', failed: 1 } : { ok: true, changed: 1, receipt: { ...receipt, label: 'Undo', undo_available: false } }
+    throw new Error('Unexpected mutation route ' + url)
+  }, storage: { get: (key, fallback) => storage.has(key) ? storage.get(key) : fallback, set: (key, value) => storage.set(key, value) },
+  i18n: { register: bundle => Object.assign(channel.bundle, bundle) }, registerMany: () => {}, os: {}, socket: () => () => {} }
+plugin.register(context)
+const buttons = tree => tree.root.findAllByType('button')
+const button = (tree, label) => buttons(tree).find(node => node.children.join('') === label)
+const toggle = tree => buttons(tree).find(node => node.props['aria-label'] === 'safe-skill — Codex')
+const text = tree => JSON.stringify(tree.toJSON())
+const render = () => createElement(Fragment, null, createElement(ToolsOverview, { layout: 'narrow' }), createElement(OperationsPanel))
 let tree
-await act(async () => { tree = TestRenderer.create(createElement(ToolsOverview, { layout: 'narrow' })) })
+await act(async () => { tree = TestRenderer.create(render()) })
 await act(async () => { button({ root: tree.root.findByProps({ 'data-tool-card': 'codex' }) }, 'Manage').props.onClick() })
+await act(async () => { toggle(tree).props.onClick() })
 assert.equal(toggle(tree).props['aria-checked'], 'false')
-await act(async () => { toggle(tree).props.onClick(); await Promise.resolve() })
-assert.equal(toggle(tree).props['aria-checked'], 'false', 'Tools does not present an unconfirmed mutation as successful')
-assert.equal(toggle(tree).props.disabled, true, 'pending mutation disables repeated toggles')
-await act(async () => { resolveToggle({ ok: false, error: 'Protected fixture' }) })
-assert.equal(toggle(tree).props['aria-checked'], 'false', 'resolved application failure leaves the visible switch unchanged')
-assert.equal(channel.state, state, 'failed mutation preserves the exact previous query state')
-assert(channel.notifications.some(n => n.kind === 'error' && n.message === 'Protected fixture'))
-await act(async () => { toggle(tree).props.onClick(); await Promise.resolve() })
-await act(async () => { rejectToggle(new Error('Fixture transport error')) })
-assert.equal(toggle(tree).props['aria-checked'], 'false', 'network rejection also preserves the visible state')
-assert(channel.invalidated.includes('state') && channel.invalidated.includes('diff'))
-await act(async () => { tree.unmount() })
-console.log('ok  actual Tools switches preserve state on application and transport failures')
+assert.equal(toggle(tree).props.disabled, true)
+await act(async () => { resolvePlan({ ok: true, plan_id: 'review-1', items: [{ ...desired, status: 'enable' }] }) })
+assert(button(tree, 'Apply reviewed changes'))
+assert.equal(calls.filter(row => row.path === '/operations/apply').length, 0)
+await act(async () => { button(tree, 'Cancel').props.onClick() })
+assert.equal(calls.filter(row => row.path === '/operations/apply').length, 0)
+assert.equal(toggle(tree).props['aria-checked'], 'false')
 
-await act(async () => { tree = TestRenderer.create(createElement(SkillsPane, { section: 'sets' })) })
-await act(async () => { button(tree, 'Coding').props.onClick() })
-await act(async () => { button(tree, 'Apply').props.onClick(); await Promise.resolve() })
-assert(button(tree, 'Undo'), 'partial preset success offers receipt-backed undo')
-await act(async () => { button(tree, 'Undo').props.onClick(); await Promise.resolve() })
-const undo = channel.restCalls.filter(call => call.path === '/bulk/undo').at(-1)
-assert.deepEqual(undo.body, { receipt_id: 'fixture-receipt' }, 'preset undo does not invert failed or no-op intentions')
+for (const transport of [false, true]) {
+  await act(async () => { toggle(tree).props.onClick() })
+  await act(async () => { resolvePlan({ ok: true, plan_id: 'review-failure', items: [{ ...desired, status: 'enable' }] }) })
+  await act(async () => { button(tree, 'Apply reviewed changes').props.onClick() })
+  assert.deepEqual(calls.at(-1), { path: '/operations/apply', body: { plan_id: 'review-failure' } })
+  assert.equal(toggle(tree).props.disabled, true)
+  assert.equal(toggle(tree).props['aria-checked'], 'false')
+  await act(async () => { transport ? rejectApply(new Error('Disconnected')) : resolveApply({ ok: false, error: 'Protected fixture', failed: 1 }) })
+  assert.equal(toggle(tree).props['aria-checked'], 'false')
+  assert.equal(channel.state, state, 'Failures do not replace filesystem truth with speculative state')
+  assert.match(text(tree), transport ? /response was interrupted/ : /Protected fixture/)
+}
+assert(channel.invalidated.includes('state') && channel.invalidated.includes('mcp'))
 await act(async () => { tree.unmount() })
-console.log('ok  presets undo only the persisted successful changes')
+console.log('ok  delayed review, cancellation, HTTP-200 refusal, and lost apply response never pretend a switch succeeded')
 
-storage.set('lastBulkReceipt', 'fixture-receipt')
-await act(async () => { tree = TestRenderer.create(createElement(ToolsOverview, { layout: 'narrow' })) })
-await act(async () => { button(tree, 'Last change').props.onClick(); await Promise.resolve() })
-assert(button(tree, 'Undo'), 'a fresh mount retrieves durable undo from the backend')
-assert(channel.restCalls.some(call => call.path === '/bulk/receipt?receipt_id=fixture-receipt'))
+channel.operation = { ok: true, receipt, recovery_required: false }
+plugin.register(context)
+await act(async () => { tree = TestRenderer.create(render()) })
+assert.equal(button(tree, 'Undo last change').props.disabled, false, 'Fresh mount reads server-side last operation')
+await act(async () => { button(tree, 'Undo last change').props.onClick() })
+assert.equal(calls.filter(row => row.path === '/operations/undo').length, 0)
 undoFailure = true
-const notificationsBefore = channel.notifications.length
-await act(async () => { button(tree, 'Undo').props.onClick(); await Promise.resolve() })
-assert(button(tree, 'Undo'), 'failed undo keeps its retry action')
-assert(channel.notifications.slice(notificationsBefore).every(n => n.kind === 'error'), 'failed undo never reports success')
+await act(async () => { button(tree, 'Apply reviewed changes').props.onClick() })
+assert.deepEqual(calls.find(row => row.path === '/operations/undo').body, { plan_id: 'undo-reviewed' })
+assert.match(text(tree), /Target changed after review/)
+assert.equal(button(tree, 'Undo last change').props.disabled, false)
+assert(channel.operation.receipt.undo_available, 'Failed undo retains its persisted recovery evidence')
 await act(async () => { tree.unmount() })
-console.log('ok  saved receipt reload and failed-undo recovery survive a fresh workspace')
+channel.operation = { ok: true, receipt, recovery_required: true }
+plugin.register(context)
+await act(async () => { tree = TestRenderer.create(createElement(OperationsPanel)) })
+assert.equal(button(tree, 'Undo last change').props.disabled, true)
+assert.match(text(tree), /pending-operation.json/)
+await act(async () => { tree.unmount() })
+console.log('ok  previewed undo survives reopening; unsafe undo retains evidence and interrupted recovery blocks another undo')
+
+channel.operation = { ok: true, receipt: null, recovery_required: false }
 channel.mcpState = { ok: true, partial_failure: true, counts: { catalog: 2, foreign: 0 },
   writers: { claude: { label: 'Claude Desktop', present: false, available: false }, codex: { label: 'Codex', present: true, available: true } },
   rows: [{ name: 'remote', enabled: true, writers: { claude: 'unsupported', codex: 'disabled' } },
     { name: 'local', enabled: true, writers: { claude: 'unavailable', codex: 'enabled' } }] }
-await act(async () => { tree = TestRenderer.create(createElement(McpPane)) })
-for (const label of ['remote — Claude', 'remote — Codex', 'local — Claude']) {
-  assert.equal(tree.root.findAllByType('button').find(n => n.props['aria-label'] === label).props.disabled, true)
+plugin.register(context)
+await act(async () => { tree = TestRenderer.create(createElement(Fragment, null, createElement(McpPane), createElement(OperationsPanel))) })
+for (const label of ['remote in Claude Desktop', 'local in Claude Desktop']) {
+  assert.equal(buttons(tree).find(node => node.props['aria-label'] === label).props.disabled, true)
 }
-assert(!tree.root.findAllByType('button').find(n => n.props['aria-label'] === 'local — Codex').props.disabled)
-assert(button(tree, 'Retry'), 'partial writer failure offers recovery without hiding healthy writers')
+const nativeDisabled = buttons(tree).find(node => node.props['aria-label'] === 'remote in Codex')
+assert(!nativeDisabled.props.disabled, 'Native disabled is an explicit enabling choice, not an unusable client')
+await act(async () => { nativeDisabled.props.onClick() })
+assert.deepEqual(calls.at(-1).body.states, [{ kind: 'mcp', app: 'codex', id: 'remote', enabled: true }])
+await act(async () => { resolvePlan({ ok: false, error: 'Source unavailable' }) })
+assert.match(text(tree), /Source unavailable/)
+assert.equal(calls.some(row => /\/toggle|\/bulk\/|\/mcp\/(sync|remove)/.test(row.path)), false)
 await act(async () => { tree.unmount() })
-console.log('ok  MCP partial failures, native-disabled flags, and unsupported transports stay non-mutating')
+console.log('ok  usable MCP clients retain explicit activation while unavailable writers stay protected')
 console.log('MUTATION HARNESS: ALL CHECKS PASSED')
