@@ -1,0 +1,189 @@
+name: reviewed Loadout implementation
+on:
+  pull_request:
+    paths: ['.github/workflows/loadout-implementation.yml']
+permissions:
+  contents: write
+jobs:
+  apply:
+    if: github.head_ref == 'astra/switchboard-alpha-hardening' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Apply reviewed clean rename
+        shell: python
+        run: |
+          from pathlib import Path
+          import ast, json, re
+          root = Path.cwd()
+          p = root / 'dashboard/plugin_api.py'
+          s = p.read_text()
+          assert 'class SkillsToggleCore:' in s
+          s = s.replace('LEGACY_PLUGIN_ID = "skills-toggle"\n', '')
+          s = s.replace('            legacy_user_config_path(self.home),\n', '')
+          s = s.replace('        legacy_user_config_path(home),\n', '')
+          s = re.sub(r'\ndef legacy_user_config_path\(home: Path\) -> Path:\n.*?(?=\ndef )', '\n', s, flags=re.S)
+          s = s.replace('            if not source_path.exists() and legacy_user_config_path(self.home).is_file():\n                source_path = legacy_user_config_path(self.home)\n', '')
+          s = s.replace('            old = cfg if cfg.exists() or cfg.is_symlink() else legacy_user_config_path(self.home)', '            old = cfg')
+          s = s.replace('                elif row["name"].startswith("skills-toggle.json."):\n                    target = legacy_user_config_path(self.home)\n', '')
+          s = '\n'.join(l for l in s.split('\n') if 're.compile(' not in l or 'skills-toggle' not in l)
+          s = re.sub(r'        for ln in sorted\(home.glob\("(?:config.yaml|skills-toggle.json).bak.skills-toggle.\*"\)\):\n            rows.append\([^\n]+\)\n', '', s)
+          s = '\n'.join(l for l in s.split('\n') if not ('or ln.name.' in l and 'skills-toggle' in l) and not ('".skills-toggle-' in l))
+          s = s.replace('(?:hermes-switchboard|skills-toggle)', 'hermes-switchboard')
+          start = s.index('def load_tools_config(home: Path) -> dict:')
+          end = s.index('\n\n# ---------------------------------------------------------------------------', start)
+          replacement = '''def load_tools_config(home: Path) -> dict:
+              """Read only current-product settings. Discovery never changes activation."""
+              tools = {"hermes": {"label": "Hermes", "special": "config", "scope": "global", "configured": True}}
+              for row in CLIENT_CATALOG:
+                  if row["id"] == "hermes" or row["verification"] != "documented" or not row.get("global"):
+                      continue
+                  try:
+                      spec = catalog_target(row["id"], "global")
+                      if row.get("detect_marker") and not expand_path(row["detect_marker"]).is_dir():
+                          continue
+                      tools[row["id"]] = dict(spec, optional=True, configured=False)
+                  except (SkillsToggleError, ValueError, OSError):
+                      continue
+              user_cfg, _ = _read_json_mapping(user_config_path(home), "tools")
+              if type(user_cfg.get("schema_version", CONFIG_SCHEMA_VERSION)) is not int or user_cfg.get("schema_version", CONFIG_SCHEMA_VERSION) != CONFIG_SCHEMA_VERSION:
+                  raise SkillsToggleError("unsupported settings version; update Loadout or restore a current backup", "config-version")
+              for tool_id, spec in user_cfg.get("tools", {}).items():
+                  if tool_id == "hermes":
+                      if isinstance(spec, dict) and isinstance(spec.get("label"), str) and spec["label"].strip():
+                          tools["hermes"]["label"] = spec["label"][:40]
+                      continue
+                  if not isinstance(tool_id, str) or not re.fullmatch(r"[a-z0-9-]{1,64}", tool_id):
+                      raise SkillsToggleError("invalid client id in settings", "config-invalid")
+                  if not isinstance(spec, dict) or not isinstance(spec.get("dir"), str) or not spec["dir"].strip():
+                      raise SkillsToggleError("each custom client needs a reviewed directory", "config-invalid")
+                  if spec.get("scope", "custom") not in ("custom", "global", "project"):
+                      raise SkillsToggleError("unknown client scope in settings", "config-invalid")
+                  tools[tool_id] = dict(spec, label=str(spec.get("label") or tool_id.title())[:40],
+                                       configured=True, optional=False, scope=spec.get("scope", "custom"))
+              return tools
+          '''
+          s = s[:start] + replacement + s[end:]
+          s = s.replace('# Keep DEFAULT_TOOLS as the legacy public import surface; runtime discovery below\n# uses documented paths and does not equate a shared folder with an installed app.', '# Defaults and discovery derive from the same evidenced directory candidates.')
+          s = s.replace('DEFAULT_TOOLS: dict = {row["id"]: copy.deepcopy(row["legacy_default"])\n                      for row in CLIENT_CATALOG if "legacy_default" in row}', 'DEFAULT_TOOLS: dict = {"hermes": {"label": "Hermes", "special": "config"}, **{\n    row["id"]: {"label": row["label"], "dir": row["global"][0], "optional": True}\n    for row in CLIENT_CATALOG if row["verification"] == "documented" and row.get("global")\n}}')
+          s = s.replace('CONFIG_SCHEMA_VERSION = 2', 'CONFIG_SCHEMA_VERSION = 1')
+          s = s.replace('(user_config_path(home), legacy_user_config_path(home))', '(user_config_path(home),)')
+          s = s.replace('unverified legacy client', 'unverified client').replace('if key != "legacy_default"', 'if key != "internal"')
+          s = s.replace('# Accept current and pre-rename backup names.', '# Parse only current-product backup names.')
+          s = s.replace('Legacy helper name for the shared Hermes projection.', 'Extract the shared fields used by supported MCP writers.')
+          p.write_text(s)
+          def remove_tests(path, names):
+              p = root / path
+              s = p.read_text()
+              lines = s.splitlines(True)
+              spans = []
+              for node in ast.walk(ast.parse(s)):
+                  if isinstance(node, ast.FunctionDef) and node.name in names:
+                      spans.append((min([node.lineno] + [d.lineno for d in node.decorator_list]) - 1, node.end_lineno))
+              for a, b in sorted(spans, reverse=True):
+                  del lines[a:b]
+              p.write_text(''.join(lines))
+          remove_tests('tests/test_plugin_api.py', {'test_pre_rename_user_config_still_loads'})
+          remove_tests('tests/test_safety_regressions.py', {'test_first_renamed_config_write_preserves_legacy_settings'})
+          remove_tests('tests/test_config_migration.py', {'write_legacy', 'test_label_only_overrides_keep_legacy_paths_without_granting_unverified_writes', 'test_long_existing_ids_survive_explicit_save_and_reload'})
+          remove_tests('tests/test_client_catalog.py', {'test_existing_custom_and_legacy_settings_are_preserved_on_activation', 'test_old_codex_location_is_not_silently_retargeted'})
+          p = root / 'tests/test_client_catalog.py'
+          s = p.read_text().replace('test_catalog_contract_and_legacy_export_come_from_one_data_source', 'test_catalog_and_defaults_share_one_data_source')
+          s = s.replace('                if "legacy_default" in row:\n                    self.assertEqual(pa.DEFAULT_TOOLS[row["id"]], row["legacy_default"])', '                if row["verification"] == "documented" and row["global"]:\n                    self.assertEqual(pa.DEFAULT_TOOLS[row["id"]]["dir"], row["global"][0])')
+          p.write_text(s)
+          p = root / 'tests/test_config_migration.py'
+          s = p.read_text().replace('"""Preserve supported legacy settings without weakening scoped-path validation."""', '"""Scope validation and data-driven client setup contracts."""').replace('ConfigMigrationTests', 'ConfigScopeTests').replace('        row.pop("legacy_default", None)\n', '')
+          p.write_text(s)
+          p.rename(p.with_name('test_config_scopes.py'))
+          p = root / 'tests/test_plugin_api.py'
+          p.write_text(p.read_text().replace('"claude": "/custom/claude",', '"claude": {"dir": "/custom/claude", "scope": "custom"},'))
+          p = root / 'tests/test_v2_backend.py'
+          p.write_text(p.read_text().replace('("cursor", "windsurf", "copilot", "gemini", "kimi")', '("cursor", "windsurf", "copilot", "gemini", "cline")'))
+          p = root / 'dashboard/client_catalog.json'
+          doc = json.loads(p.read_text())
+          for row in doc['clients']:
+              row.pop('legacy_default', None)
+              row['activation'] = 'config-disabled-list' if row['id'] == 'hermes' else ('symlink' if row['skills'] else None)
+              row['selective_activation'] = bool(row['skills'] and row['verification'] == 'documented')
+              row['detection'] = 'known-directory' if row.get('global') or row.get('project') else 'manual'
+              row['notes'] = re.sub(r' Existing explicit custom mappings are preserved\.', '', row.get('notes', ''))
+              if row['id'] == 'codex': row['notes'] = 'Uses .agents/skills. This is a shared target: changes affect every client reading it, not only Codex.'
+              if row['id'] == 'kimi': row['notes'] = 'No current verified client contract is included. A reviewed Custom path is required.'
+              if row['id'] == 'zcode': row['notes'] = 'The shared .agents directory is not evidence that this client is installed or compatible.'
+          p.write_text(json.dumps(doc, indent=2) + '\n')
+          replacements = [('SkillsToggleCore', 'HermesLoadoutCore'), ('SkillsToggleError', 'LoadoutError'), ('SkillsToggle', 'Loadout'), ('SKILLS_TOGGLE', 'HERMES_LOADOUT'), ('Hermes Switchboard', 'Loadout for Hermes'), ('hermes-switchboard', 'hermes-loadout'), ('hermes_switchboard', 'hermes_loadout'), ('Skills Toggle', 'Loadout for Hermes'), ('skills-toggle', 'hermes-loadout'), ('skills_toggle', 'hermes_loadout'), ('Switchboard', 'Loadout'), ('switchboard', 'loadout'), ('skt-front', 'hermes-loadout-tests')]
+          for p in root.rglob('*'):
+              if '.git' in p.parts or p.name == 'loadout-implementation.yml' or not p.is_file() or p.suffix in ('.png', '.pyc'):
+                  continue
+              try: s = p.read_text()
+              except UnicodeError: continue
+              for a, b in replacements: s = s.replace(a, b)
+              if p.name in ('plugin.yaml', 'plugin_api.py'):
+                  s = s.replace('version: 3.0.0', 'version: 0.1.0').replace('PLUGIN_VERSION = "3.0.0"', 'PLUGIN_VERSION = "0.1.0"')
+              p.write_text(s)
+          (root / 'docs/images/hermes-switchboard.png').unlink()
+          p = root / 'desktop/plugin.js'
+          p.write_text(p.read_text().replace('This legacy client is unverified.', 'This client is unverified.').replace('Setup panel backups', 'Advanced backup list').replace("version: '3.0.0'", "version: '0.1.0'"))
+          p = root / 'README.md'
+          s = re.sub(r'!\[Loadout[^\n]+\n\n_Earlier alpha.*?revision\._\n', '', p.read_text(), flags=re.S)
+          a = s.index('## Configuration and migration'); b = s.index('## MCP connections', a)
+          s = s[:a] + '''## Settings
+
+          Loadout reads only `<hermes_home>/hermes-loadout.json`. This is a clean pre-release
+          identity reset. Development-era settings, receipts, and plugin registrations are
+          not loaded or automatically migrated. Existing skill files and client links are
+          not removed. Review them as filesystem inventory in the new installation.
+
+          An explicit target save backs up current settings with
+          `.bak.hermes-loadout.<timestamp>` and preserves unrelated current-product fields.
+          Use Add Tool for reviewed Global and Project paths. Custom targets use an explicit
+          absolute or home-relative directory:
+
+          ```json
+          {"schema_version": 1, "tools": {"my-client": {"label": "My client", "dir": "~/my-client-skills", "scope": "custom"}}}
+          ```
+
+          Malformed settings are refused, not replaced with writable defaults. Correct the
+          file or restore a current-product backup, then Retry. Personal development
+          settings must be reviewed separately before using this pre-release reset.
+
+          ''' + s[b:]
+          s = s.replace('Existing `.codex/skills`\n  mappings are preserved, never silently moved. A shared `.agents/skills`', 'A shared `.agents/skills`').replace('Explicit existing custom mappings are preserved.\nLegacy unverified directories may remain visible read-only; a label-only\nsetting does not grant write access.', 'Unverified paths are not automatically configured.').replace('existing longer IDs remain loadable.', 'generated project target IDs may be longer.').replace('Legacy/custom mappings retain their existing compatibility behavior.', 'Custom mappings require an explicitly reviewed client contract.').replace('legacy migration', 'settings recovery')
+          p.write_text(s)
+      - name: Verify backend, HTTP, and no-build frontend
+        run: |
+          python -m pip install --quiet fastapi httpx
+          python -m unittest discover -s tests -p 'test_*.py' -v
+          python tests/check_frontend.py
+          ./tests/run_render_harness.sh
+          git diff --check
+      - name: Commit only to the unchanged feature branch
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          test "$(git ls-remote origin refs/heads/astra/switchboard-alpha-hardening | cut -f1)" = "$EXPECTED_HEAD"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'refactor: reset the plugin identity to Loadout for Hermes'
+          git push origin HEAD:refs/heads/astra/switchboard-alpha-hardening
+      - name: Archive committed source
+        run: |
+          git archive --format=tar HEAD > "$RUNNER_TEMP/source.tar"
+          git rev-parse HEAD > "$RUNNER_TEMP/source-commit.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: renamed-source
+          path: |
+            ${{ runner.temp }}/source.tar
+            ${{ runner.temp }}/source-commit.txt
+          retention-days: 3
