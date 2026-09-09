@@ -12,6 +12,8 @@ Run: python3 tests/check_frontend.py
 
 from __future__ import annotations
 
+import argparse
+import os
 import re
 import subprocess
 import sys
@@ -19,7 +21,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 PLUGIN = ROOT / "desktop" / "plugin.js"
-SDK_INDEX = Path.home() / ".hermes" / "hermes-agent" / "apps" / "desktop" / "src" / "sdk" / "index.ts"
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--sdk-index', type=Path, default=None, help='Explicit real Hermes SDK index.ts, never a test substitute')
+parser.add_argument('--require-sdk', action='store_true', help='Fail when the real SDK source is unavailable')
+args = parser.parse_args()
+SDK_INDEX = args.sdk_index or Path(os.environ.get('HERMES_SDK_INDEX', str(Path.home() / '.hermes' / 'hermes-agent' / 'apps' / 'desktop' / 'src' / 'sdk' / 'index.ts')))
 
 ALLOWED_IMPORTS = {"@hermes/plugin-sdk", "react", "react/jsx-runtime"}
 
@@ -98,7 +104,10 @@ if m and SDK_INDEX.is_file():
     else:
         print(f"ok  all {len(names)} SDK imports exist in the real SDK index")
 elif not SDK_INDEX.is_file():
-    warns.append("SDK index.ts not found — skipped cross-check")
+    if args.require_sdk:
+        fail('Real SDK index.ts is required but was not found')
+    else:
+        warns.append('Real SDK index.ts not found, export cross-check skipped (CI requires a pinned source)')
 
 # -- 4. rendered identifiers ---------------------------------------------------
 jsx_components = set(re.findall(r"\bjsxs?\(\s*([A-Za-z_$][\w$]*)", src))
@@ -125,8 +134,6 @@ for chunk in param_names:
         if re.match(r"^[A-Za-z_$][\w$]*$", p):
             params.add(p)
 # destructured object params like { skill, tool, st } 
-for m in re.finditer(r"\{\s*([^}]+)\}\s*[,)]", src[:0]):  # placeholder; handled below
-    pass
 for m in re.finditer(r"function\s+\w+\s*\(\s*\{([^}]*)\}", src):
     for p in m.group(1).split(","):
         p = p.strip().split("=")[0].strip().split(":")[0].strip()

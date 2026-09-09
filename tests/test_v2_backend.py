@@ -164,7 +164,7 @@ class ImportDriftTests(unittest.TestCase):
 
 
 class ConflictResolutionTests(unittest.TestCase):
-    """V3-1: pull external in + keep both (D31 completion)."""
+    """Native conflict preservation helpers."""
 
     def setUp(self) -> None:
         self.fx = Fixture()
@@ -215,36 +215,12 @@ class ConflictResolutionTests(unittest.TestCase):
         # tool dir restored as a real dir
         self.assertTrue(self.drifted.is_dir() and not self.drifted.is_symlink())
 
-    def test_keep_both_adopts_suffixed(self) -> None:
-        r = self.core.conflict_keep_both("codex", "architecture-diagram")
-        self.assertTrue(r["ok"])
-        self.assertEqual(r["skill"], "imported/architecture-diagram.from-codex")
-        adopted = self.fx.home / "skills" / "imported" / "architecture-diagram.from-codex" / "SKILL.md"
-        self.assertIn("local improved edit", adopted.read_text())
-        # original canonical untouched
-        self.assertIn("draw diagrams", (self.fx.home / "skills" / "creative" / "architecture-diagram" / "SKILL.md").read_text())
-        # tool now links the adopted copy
-        link = self.fx.codex / "architecture-diagram"
-        self.assertTrue(pa.same_path(Path(os.readlink(link)), adopted.parent.resolve()))
-        # keep-both works for plain adoption too (name not in tree)
-        local = self.fx.codex / "solo-skill"
-        local.mkdir()
-        (local / "SKILL.md").write_text("---\nname: solo-skill\ndescription: x\n---\n", encoding="utf-8")
-        r2 = self.core.conflict_keep_both("codex", "solo-skill")
-        self.assertEqual(r2["skill"], "imported/solo-skill.from-codex")
-
     def test_conflict_refusals(self) -> None:
-        for fn in (self.core.conflict_pull, self.core.conflict_keep_both):
-            r = call(fn, "codex", "ghost")
-            self.assertFalse(r["ok"])  # not a real dir (pull: also not in tree)
-            r = call(fn, "hermes", "architecture-diagram")
-            self.assertFalse(r["ok"])
-            if fn.__name__ == "conflict_pull":
-                continue  # tested above via ghost/hermes; apple-notes is in-tree here
-            plain = self.fx.codex / "apple-notes"
-            plain.mkdir()
-            r = call(fn, "codex", "apple-notes")
-            self.assertFalse(r["ok"])  # real dir, no SKILL.md
+        for tool, name in (("codex", "ghost"), ("hermes", "architecture-diagram")):
+            self.assertFalse(call(self.core.conflict_pull, tool, name)["ok"])
+        plain = self.fx.codex / "apple-notes"
+        plain.mkdir()
+        self.assertFalse(call(self.core.conflict_pull, "codex", "apple-notes")["ok"])
 
 
 class DriftPushTests(unittest.TestCase):
@@ -319,7 +295,7 @@ class DriftPushTests(unittest.TestCase):
 
 
 class RevertTests(unittest.TestCase):
-    """V3-4: undo symmetry for push / pull / adopt."""
+    """undo symmetry for push / pull / adopt."""
 
     def setUp(self) -> None:
         self.fx = Fixture()
@@ -362,17 +338,17 @@ class RevertTests(unittest.TestCase):
         self.assertTrue(self.drifted.is_dir() and not self.drifted.is_symlink())
 
     def test_revert_adopt(self) -> None:
-        adopt = self.core.import_apply("codex", ["architecture-diagram"])
-        self.assertEqual(adopt["adopted"], 0)  # name conflict — use keep-both instead
-        kb = self.core.conflict_keep_both("codex", "architecture-diagram")
-        r = self.core.revert_adopt("codex", "architecture-diagram", kb["tool_backup"], kb["skill"])
-        self.assertTrue(r["ok"])
-        entry = self.fx.codex / "architecture-diagram"
+        # A reviewed import, rather than automatic renaming, creates the owned copy.
+        entry = self.fx.codex / "new-local-skill"
+        entry.mkdir()
+        (entry / "SKILL.md").write_text("---\nname: new-local-skill\ndescription: local edit\n---\n")
+        adopted = self.core.import_apply("codex", ["new-local-skill"])["results"][0]
+        self.assertTrue(adopted["ok"])
+        result = self.core.revert_adopt("codex", "new-local-skill", adopted["backup"], adopted["skill"])
+        self.assertTrue(result["ok"])
         self.assertTrue(entry.is_dir() and not entry.is_symlink())
         self.assertIn("local edit", (entry / "SKILL.md").read_text())
-        asides = list((self.fx.home / "skills" / "imported").glob(".hermes-loadout-reverted-*"))
-        self.assertEqual(len(asides), 1)
-        self.assertNotIn(kb["skill"], [x["id"] for x in self.core.state()["skills"]])
+        self.assertNotIn(adopted["skill"], [x["id"] for x in self.core.state()["skills"]])
 
     def test_revert_refusals(self) -> None:
         # real dir (not managed) — refuses before anything else
@@ -390,7 +366,7 @@ class RevertTests(unittest.TestCase):
 
 
 class BackupBrowserTests(unittest.TestCase):
-    """V3-6: every backup kind the plugin creates is listed and restorable."""
+    """every backup kind the plugin creates is listed and restorable."""
 
     def setUp(self) -> None:
         self.fx = Fixture()
@@ -449,7 +425,7 @@ class BackupBrowserTests(unittest.TestCase):
 
 
 class BlueprintTests(unittest.TestCase):
-    """V3-2: machine blueprint — export, additive-only apply, dry-run."""
+    """machine blueprint — export, additive-only apply, dry-run."""
 
     def setUp(self) -> None:
         self.fx = Fixture()

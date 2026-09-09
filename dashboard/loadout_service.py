@@ -869,9 +869,38 @@ class LoadoutService:
         elif kind == 'mcp-claude':
             self.api._read_json_mapping(source, 'mcpServers')
         else:
-            if not text.strip() or not re.search(r'(?m)^[A-Za-z_][A-Za-z0-9_-]*:', text):
-                raise self.Error('The configuration backup is malformed.', 'invalid-backup')
-            self.api.set_disabled_member(text, 'loadout-backup-validation', add=False)
+            # Whole-document restore must not treat a recognizable first line as
+            # proof that arbitrary YAML is valid. Hermes normally provides PyYAML;
+            # the dependency-free core refuses this one operation without it.
+            try:
+                import yaml
+            except ImportError as exc:
+                raise self.Error('Full Hermes configuration restore requires PyYAML in the backend environment. Other recovery actions remain available.', 'yaml-unavailable') from exc
+            class UniqueSafeLoader(yaml.SafeLoader):
+                pass
+            def unique_mapping(loader, node, deep=False):
+                result = {}
+                for key_node, value_node in node.value:
+                    key = loader.construct_object(key_node, deep=deep)
+                    if key in result:
+                        raise ValueError('duplicate YAML key')
+                    result[key] = loader.construct_object(value_node, deep=deep)
+                return result
+            UniqueSafeLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, unique_mapping)
+            try:
+                data = yaml.load(text, Loader=UniqueSafeLoader)
+                if not isinstance(data, dict) or any(not isinstance(key, str) for key in data):
+                    raise ValueError('expected a mapping')
+                skills = data.get('skills', {})
+                if not isinstance(skills, dict):
+                    raise ValueError('invalid skills settings')
+                disabled = skills.get('disabled', [])
+                if not isinstance(disabled, list) or any(not isinstance(name, str) for name in disabled):
+                    raise ValueError('invalid disabled skills')
+                if not isinstance(data.get('mcp_servers', {}), dict):
+                    raise ValueError('invalid MCP settings')
+            except (yaml.YAMLError, ValueError, TypeError, RecursionError) as exc:
+                raise self.Error('The full configuration backup is malformed or ambiguous. It was not restored.', 'invalid-backup') from exc
         return text
 
     def plan_backup(self, path):

@@ -1,10 +1,6 @@
 #!/usr/bin/env bash
-# Render harness runner — simulates a staging install of desktop/plugin.js
-# (plugin copy + resolvable node_modules with a stubbed @hermes/plugin-sdk and
-# real react/react-dom), then renders the pane with react-dom/server and
-# asserts the professional-bar behaviors. See tests/render_harness_body.mjs.
-#
-# Prereqs: node, network for `npm install react react-dom` (cached in /tmp).
+# Five behavioral harnesses use real React and a test-only Hermes SDK adapter.
+# No plugin build is performed. Dependencies are pinned and cached locally.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(dirname "$HERE")"

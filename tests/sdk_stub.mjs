@@ -1,8 +1,8 @@
 // Minimal @hermes/plugin-sdk stub for the render harness. State flows through
-// globalThis.__SKT so the harness can drive loading/ready/error scenarios.
+// globalThis.__LOADOUT_TEST so the harness can drive loading/ready/error scenarios.
 import { createElement, Fragment, useSyncExternalStore, useState } from 'react'
 
-const S = () => globalThis.__SKT || {}
+const S = () => globalThis.__LOADOUT_TEST || {}
 
 const el = (type, props, ...kids) => {
   const { children, ...rest } = props || {}

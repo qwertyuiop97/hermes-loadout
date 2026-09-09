@@ -11,7 +11,7 @@ const channel = { state: { ok: true, capabilities: { reviewed_operations: 1 }, s
   { id: 'hermes', special: 'config', label: 'Hermes', present: true },
   { id: 'cursor', label: 'Cursor', optional: true, present: false, dir: '/fixture/home/.cursor/skills' }
 ] }, mode: 'ready', bundle: {}, notifications: [], invalidated: [], restCalls: [], diff: { ok: true, counts: {} } }
-globalThis.__SKT = channel
+globalThis.__LOADOUT_TEST = channel
 let version = 1, failActivation = false, failCustom = false
 const used = new Set()
 const rest = async (path, options = {}) => {

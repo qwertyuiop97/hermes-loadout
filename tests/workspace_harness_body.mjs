@@ -19,7 +19,7 @@ const channel = { mode: 'ready', state, bundle: {}, notifications: [], registry:
   drift: { ok: true, count: 1, drifted: [{ tool: 'codex', name: 'architecture-diagram', skill_id: 'creative/architecture-diagram' }] },
   mcpState: { ok: true, rows: [{ name: 'docs', enabled: true, writers: { claude: 'enabled', codex: 'drifted' } }, { name: 'weather', enabled: false, writers: { claude: 'missing', codex: 'disabled' } }, { name: 'local', enabled: true, writers: { claude: 'unavailable', codex: 'enabled' } }], writers: {}, foreign: [], counts: { catalog: 3 } }
 }
-globalThis.__SKT = channel
+globalThis.__LOADOUT_TEST = channel
 const plugin = (await import(process.env.STAGING_PLUGIN)).default
 const storage = new Map()
 let pendingPlan = null, holdScan = false, resolveScan, holdImport = false, resolveImport

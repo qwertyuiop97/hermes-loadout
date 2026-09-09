@@ -1,12 +1,11 @@
-# Unified Hermes plugin: agent metadata, desktop/plugin.js, and dashboard routes.
-# Backend namespace: /api/plugins/hermes-loadout/.
+# Unified Hermes plugin: agent metadata, desktop UI, and reviewed backend routes.
 name: hermes-loadout
 version: 0.1.0
 description: >-
-  Loadout for Hermes manages a canonical Hermes skill library across documented
-  global and project client paths, with reviewed changes, protected entries,
-  backups, and precise bulk undo. Includes MCP projections for Claude Desktop
-  and Codex. The desktop interface is opt-in.
+  Loadout for Hermes separates skill inventory from per-application activation.
+  Save named skill and MCP selections, review changes, and undo the latest
+  managed operation safely. Includes explicit Global/Project targets, protected
+  entry diagnostics, and opt-in desktop controls.
 author: qwertyuiop97
 license: MIT
 homepage: https://github.com/qwertyuiop97/hermes-loadout

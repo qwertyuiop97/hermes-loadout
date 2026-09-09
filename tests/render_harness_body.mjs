@@ -66,7 +66,7 @@ const channel = {
   drift: { ok: true, count: 1, drifted: [] },
   bundle: {}, registry: [], notifications: [], navigations: [], invalidated: [], workspaces: [], restCalls: []
 }
-globalThis.__SKT = channel
+globalThis.__LOADOUT_TEST = channel
 
 const plugin = (await import(STAGING)).default
 const storage = new Map()

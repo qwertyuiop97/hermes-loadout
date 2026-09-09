@@ -13,7 +13,7 @@ const channel = { state, mode: 'ready', bundle: {}, notifications: [], invalidat
   loadouts: { ok: true, loadouts: [{ id: '111111111111', name: 'Existing', states: [{ kind: 'skill', app: 'hermes', id: skill.id, enabled: false }] }] },
   metadata: { ok: true, classifications: ['Portable', 'Hermes-specific', 'Codex-specific', 'Claude-specific', 'Other application-specific', 'Unclassified'], skills: {} },
   mcpState: { ok: true, rows: [{ name: 'reference', enabled: false, writers: { codex: 'missing', claude: 'missing' } }], writers: {} } }
-globalThis.__SKT = channel
+globalThis.__LOADOUT_TEST = channel
 const storage = new Map([['selectedLoadout', '111111111111']])
 let counter = 2, failSave = false
 const copy = value => JSON.parse(JSON.stringify(value))

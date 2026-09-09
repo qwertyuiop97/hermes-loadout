@@ -1,51 +1,15 @@
-"""hermes-loadout — backend routes for the Hermes desktop pane.
+"""Loadout for Hermes backend and filesystem adapters.
 
-# MIT License — Copyright (c) 2026 qwertyuiop97
-# See LICENSE at the package root.
+The unified plugin mounts ``router`` under /api/plugins/hermes-loadout.
+Read routes return filesystem truth; public mutations require a server-owned
+review token through LoadoutService. Native adapters preserve unrelated settings
+and user-owned entries. Imports copy into the inventory without enabling skills.
 
-Unified Hermes plugin package (see the Desktop Plugin SDK doc, "One package,
-both SDKs")::
+The core imports without FastAPI or PyYAML. The bundled, attributed TOML reader
+loads lazily. Full YAML-backup restore requires the host's PyYAML parser and
+fails closed without it. No import-time operation writes user data.
 
-    ~/.hermes/plugins/hermes-loadout/
-    ├── plugin.yaml               # agent half (metadata only)
-    ├── dashboard/
-    │   ├── manifest.json         # {"name": "hermes-loadout", "api": "plugin_api.py"}
-    │   └── plugin_api.py         # THIS FILE — exports `router` (FastAPI APIRouter)
-    └── desktop/
-        └── plugin.js             # desktop half — pane UI, calls ctx.rest('/...')
-
-Routes mount under ``/api/plugins/hermes-loadout/``:
-
-    GET  /health          → liveness + resolved paths (for the pane's error banner)
-    GET  /state           → every skill + per-tool state (lean payload, cached)
-    GET  /detail?skill=   → full SKILL.md text for one skill
-    POST /toggle          → {skill, tool, enabled} link/unlink (or config edit for hermes)
-    POST /toggle-bulk     → {skills: [...], tool, enabled}
-    POST /bulk/plan       → immutable explicit-id bulk preview
-    POST /bulk/apply      → exact-id execution + durable undo receipt
-    POST /repair          → {skill, tool} fix a broken link
-    POST /repair-all      → fix every broken link that points into the skills tree
-    POST /ensure-tool-dir → {tool} create a missing tool skills dir
-    GET  /diff            → skills unlinked everywhere + dangling/foreign/unmanaged links
-    POST /import/plan     → read-only multi-source adoption preview
-    POST /import/apply-plan → exact-entry adoption + durable restore receipt
-
-Design rules:
-  * Hermes (~/.hermes/skills/<category>/<name>/SKILL.md) is the source of truth.
-  * Consumer tools get SYMLINKS (never copies); link name == skill name.
-  * Never delete a skill source dir, a real (non-symlink) dir, or a foreign
-    symlink — only symlinks that resolve inside the managed skills tree.
-  * The hermes tool toggles membership in ``skills.disabled`` (bare names) in
-    ``config.yaml`` via a surgical line edit with a timestamped backup.
-  * Zero hardcoded paths: home resolves via ``~``/``$HOME``, the Hermes root via
-    ``$HERMES_HOME`` or ``$HERMES_PROFILE`` (→ ~/.hermes/profiles/<name>) or
-    ``~/.hermes``; tool target dirs are overridable via
-    ``<hermes_home>/hermes-loadout.json`` with ``~`` and ``${VAR:-default}``
-    expansion.
-
-The core is deliberately dependency-free (stdlib only) so it can be imported
-and tested without fastapi/pyyaml; the router layer is guarded so this same
-file exports ``router`` inside the gateway process.
+MIT License. See LICENSE at the package root.
 """
 
 from __future__ import annotations
@@ -573,6 +537,48 @@ def _atomic_write_text(path: Path, text: str) -> None:
             temporary.unlink()
 
 
+def _backup_file(path: Path) -> str | None:
+    """Create a private, exclusive sibling snapshot, never through a link.
+
+    No copy2-then-chmod window, and dangling destination links count as occupied.
+    A failed copy removes only the inode this call created.
+    """
+    if path.is_symlink():
+        raise LoadoutError('The configuration is a link; review it before backing up.', 'config-protected')
+    if not path.exists():
+        return None
+    if not path.is_file():
+        raise LoadoutError('The configuration is not a regular file.', 'config-protected')
+    descriptor = os.open(str(path), os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
+    with os.fdopen(descriptor, 'rb') as source:
+        if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+            raise LoadoutError('The configuration is not a regular file.', 'config-protected')
+        stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+        for number in range(10000):
+            suffix = '' if number == 0 else '-' + str(number)
+            backup = path.with_name(f'{path.name}.bak.hermes-loadout.{stamp}{suffix}')
+            try:
+                descriptor = os.open(str(backup), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            except FileExistsError:
+                continue
+            identity = os.fstat(descriptor)
+            try:
+                with os.fdopen(descriptor, 'wb') as output:
+                    shutil.copyfileobj(source, output)
+                    output.flush()
+                    os.fsync(output.fileno())
+                return str(backup)
+            except BaseException:
+                try:
+                    current = backup.lstat()
+                    if (current.st_dev, current.st_ino) == (identity.st_dev, identity.st_ino):
+                        backup.unlink()
+                except OSError:
+                    pass
+                raise
+        raise LoadoutError('Too many colliding backup names. Review the backup directory.', 'backup-collision')
+
+
 def _read_json_mapping(path: Path, mapping_key: str) -> tuple[dict, str]:
     """Read settings without interpreting corrupt/unreadable data as empty."""
     if not path.exists() and not path.is_symlink():
@@ -967,32 +973,10 @@ class HermesLoadoutCore:
     # -- routes: mutate ----------------------------------------------------
 
     def _backup(self, path: Path) -> str | None:
-        if not path.is_file():
-            return None
-        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        backup = path.with_name(f"{path.name}.bak.hermes-loadout.{stamp}")
-        n = 1
-        while backup.exists():
-            backup = path.with_name(f"{path.name}.bak.hermes-loadout.{stamp}-{n}")
-            n += 1
-        shutil.copy2(path, backup)
-        if os.name != "nt":
-            backup.chmod(0o600)
-        return str(backup)
+        return _backup_file(path)
 
     def _backup_config(self) -> str | None:
-        if not self.config_path.is_file():
-            return None
-        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        backup = self.config_path.with_name(f"config.yaml.bak.hermes-loadout.{stamp}")
-        n = 1
-        while backup.exists():
-            backup = self.config_path.with_name(f"config.yaml.bak.hermes-loadout.{stamp}-{n}")
-            n += 1
-        shutil.copy2(self.config_path, backup)
-        if os.name != "nt":
-            backup.chmod(0o600)
-        return str(backup)
+        return _backup_file(self.config_path)
 
     def _hermes_toggle(self, skill_name: str, enabled: bool) -> str:
         text = ""
@@ -2423,7 +2407,7 @@ class HermesLoadoutCore:
         return {"ok": True, "drifted": items, "count": len(items)}
 
     def drift_push(self, tool_id: object, name: object) -> dict:
-        """Push the Hermes-canonical copy out to a tool (D31): the tool's real
+        """Push the Hermes-canonical copy out to a tool: the tool's real
         dir for `name` is backup-renamed (NEVER deleted) and replaced with a
         symlink into the skills tree. Also resolves adoption conflicts, since
         both are 'same-name real dir in a tool dir' shapes."""
@@ -2494,8 +2478,7 @@ class HermesLoadoutCore:
         return existing, tool_dir, entry
 
     def conflict_pull(self, tool_id: object, name: object) -> dict:
-        """Use the tool's copy as the new canonical source (D31 'pull external
-        in', completed): the hermes source is backed up dotted inside its
+        """Use the tool's copy as the new canonical source (explicit source choice): the hermes source is backed up dotted inside its
         category, the external copy becomes canonical, and the tool entry is
         swapped to a symlink. Originals are never deleted."""
         with self._lock:
@@ -2535,48 +2518,7 @@ class HermesLoadoutCore:
                 "tool_backup": str(tool_backup),
             }
 
-    def conflict_keep_both(self, tool_id: object, name: object) -> dict:
-        """Keep both copies: the tool's copy is adopted under a free suffixed
-        name (imported/<name>.from-<tool>), and the tool entry links to it."""
-        with self._lock:
-            _, tool_dir, entry = self._conflict_context(tool_id, name, require_in_tree=False)
-            skills = self._scan_skills()
-            taken = {sk["name"] for sk in skills.values()}
-            base = f"{name}.from-{tool_id}"
-            dest_name = base
-            n = 2
-            while dest_name in taken:
-                dest_name = f"{base}-{n}"
-                n += 1
-            dest_dir = self.skills_root / "imported"
-            dest = dest_dir / dest_name
-            if dest.exists():
-                raise LoadoutError(f"destination {dest} already exists", "invalid-destination")
-            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-            tool_backup = self._new_tool_backup(tool_dir, name)
-            try:
-                dest_dir.mkdir(parents=True, exist_ok=True)
-                shutil.copytree(entry, dest, symlinks=True)
-                os.rename(entry, tool_backup)
-                os.symlink(str(dest.resolve()), str(tool_dir / name))
-            except OSError as exc:
-                shutil.rmtree(dest, ignore_errors=True)
-                try:
-                    if not (tool_dir / name).exists():
-                        os.rename(tool_backup, entry)
-                except OSError:
-                    pass
-                raise LoadoutError(f"keep-both failed (rolled back): {exc}", "keep-both-failed") from exc
-            self._log(action="conflict-keep-both", tool=tool_id, skill=f"imported/{dest_name}",
-                      tool_backup=str(tool_backup))
-            self.invalidate()
-            return {
-                "ok": True, "tool": tool_id, "name": name,
-                "skill": f"imported/{dest_name}", "action": "kept-both",
-                "tool_backup": str(tool_backup),
-            }
-
-    # -- v3-4: undo symmetry for adoption/drift operations ---------------------
+    # -- undo symmetry for adoption/drift operations ---------------------
 
     @staticmethod
     def _entry_name(name: object) -> str:
@@ -2712,7 +2654,7 @@ class HermesLoadoutCore:
                 "aside": str(aside) if aside else None,
             }
 
-    # -- v3-2: machine blueprint (additive-only, dry-run first) -----------------
+    # -- machine blueprint (additive-only, dry-run first) -----------------
 
     def blueprint_export(self) -> dict:
         """The machine's full link map + hermes-off set as a portable JSON
@@ -2735,7 +2677,7 @@ class HermesLoadoutCore:
         }
 
     def blueprint_apply(self, blueprint: object, dry_run: bool = False) -> dict:
-        """Apply a machine blueprint ADDITIVELY (owner decision): creates
+        """Apply a machine blueprint additively: creates
         missing links and adds skills.disabled entries. Nothing is ever
         removed or unlinked; refusals are reported per row."""
         with self._lock:
@@ -2831,7 +2773,7 @@ class HermesLoadoutCore:
                 "refused": refused,
             }
 
-    # -- v3-6: backup browser + restore ----------------------------------------
+    # -- backup browser + restore ----------------------------------------
 
     _BACKUP_PATTERNS = (
         re.compile(r"^config\.yaml\.bak\.hermes-loadout\.(\d{8}-\d{6})(?:-\d+)?$"),
@@ -3505,18 +3447,7 @@ class McpCore:
             pass
 
     def _backup(self, path: Path) -> str | None:
-        if not path.is_file():
-            return None
-        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        backup = path.with_name(f"{path.name}.bak.hermes-loadout.{stamp}")
-        n = 1
-        while backup.exists():
-            backup = path.with_name(f"{path.name}.bak.hermes-loadout.{stamp}-{n}")
-            n += 1
-        shutil.copy2(path, backup)
-        if os.name != "nt":
-            backup.chmod(0o600)
-        return str(backup)
+        return _backup_file(path)
 
     # -- catalog ------------------------------------------------------------
 

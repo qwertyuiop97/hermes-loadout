@@ -1,6 +1,7 @@
 """Reviewed conflict and recovery operations preserve originals and current ownership."""
 from __future__ import annotations
 
+import builtins
 import json
 import os
 import sys
@@ -91,6 +92,15 @@ class ReviewedMaintenanceTests(unittest.TestCase):
                 target.write_text(after, encoding='utf-8')
                 rows = self.service.list_backups()['backups']
                 self.assertTrue(any(row['path'] == backup and row['kind'] == kind for row in rows))
+                if kind == 'config':
+                    try:
+                        import yaml
+                    except ImportError:
+                        with self.assertRaises(pa.LoadoutError) as error:
+                            self.service.plan_backup(backup)
+                        self.assertEqual(error.exception.code, 'yaml-unavailable')
+                        self.assertEqual(target.read_text(), after)
+                        continue
                 preview = self.service.plan_backup(backup)
                 self.assertEqual(target.read_text(), after)
                 result = self.service.apply_backup(preview['plan_id'])
@@ -132,6 +142,31 @@ class ReviewedMaintenanceTests(unittest.TestCase):
         backup.symlink_to(target)
         with self.assertRaises(pa.LoadoutError): self.service.plan_backup(str(backup))
         self.assertEqual(target.read_bytes(), before)
+
+    def test_full_yaml_restore_rejects_malformed_and_ambiguous_backups(self):
+        target = self.core.config_path
+        original = target.read_bytes()
+        backup = Path(self.core._backup(target))
+        cases = ['skills: {}\nother: [unterminated', 'skills: {}\nskills: {disabled: []}\n',
+                 'skills: {disabled: surprise}\n', 'skills: {}\nmcp_servers: []\n']
+        for text in cases:
+            with self.subTest(text=text):
+                backup.write_text(text, encoding='utf-8')
+                with self.assertRaises(pa.LoadoutError) as error:
+                    self.service.plan_backup(str(backup))
+                self.assertIn(error.exception.code, ('invalid-backup', 'yaml-unavailable'))
+                self.assertEqual(target.read_bytes(), original)
+        backup.write_bytes(original)
+        original_import = builtins.__import__
+        def no_yaml(name, *args, **kwargs):
+            if name == 'yaml':
+                raise ImportError('fixture: optional YAML parser absent')
+            return original_import(name, *args, **kwargs)
+        with patch.object(builtins, '__import__', side_effect=no_yaml):
+            with self.assertRaises(pa.LoadoutError) as error:
+                self.service.plan_backup(str(backup))
+        self.assertEqual(error.exception.code, 'yaml-unavailable')
+        self.assertEqual(target.read_bytes(), original)
 
     def test_interrupted_conflict_preserves_both_originals_and_records_recovery(self):
         original = (self.canonical / 'SKILL.md').read_bytes()
