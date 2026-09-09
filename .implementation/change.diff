@@ -1,0 +1,638 @@
+diff --git a/dashboard/plugin_api.py b/dashboard/plugin_api.py
+index aa3ac59..db78285 100644
+--- a/dashboard/plugin_api.py
++++ b/dashboard/plugin_api.py
+@@ -57,4 +57,5 @@ import os
+ import re
+ import shutil
++import stat
+ import threading
+ import time
+@@ -62,4 +63,5 @@ import uuid
+ from datetime import datetime, timezone
+ from pathlib import Path
++from urllib.parse import urlsplit, urlunsplit
+ 
+ PLUGIN_ID = "hermes-switchboard"
+@@ -552,6 +554,57 @@ class SkillsToggleError(Exception):
+ 
+ 
++
++def _read_json_object(path: Path, section: str | None = None) -> tuple[dict, str]:
++    """Missing is empty; malformed, duplicate-key, and unreadable files are not."""
++    if not path.exists() and not path.is_symlink():
++        return {}, ""
++    def unique_pairs(pairs):
++        result = {}
++        for key, value in pairs:
++            if key in result:
++                raise ValueError("duplicate JSON key")
++            result[key] = value
++        return result
++    try:
++        raw = path.read_text(encoding="utf-8")
++        data = json.loads(raw, object_pairs_hook=unique_pairs)
++        if not isinstance(data, dict) or (section in data and not isinstance(data[section], dict)):
++            raise ValueError("configuration must contain objects")
++        return data, raw
++    except (ValueError, UnicodeError) as exc:
++        # Do not include parser input or credential-bearing source in responses.
++        raise SkillsToggleError(f"Invalid configuration at {path}; repair it before making changes", "config-invalid") from exc
++    except OSError as exc:
++        raise SkillsToggleError(f"Cannot read configuration at {path}", "config-unreadable") from exc
++
++
++def _atomic_write(path: Path, text: str, expected: str) -> None:
++    """Replace a regular config file atomically, without truncation on failure."""
++    temporary = path.parent / (".switchboard-write-" + uuid.uuid4().hex)
++    try:
++        if path.is_symlink() or (path.exists() and not path.is_file()):
++            raise SkillsToggleError(f"Refusing to replace non-regular configuration at {path}", "config-protected")
++        current = path.read_text(encoding="utf-8") if path.exists() else ""
++        if current != expected:
++            raise SkillsToggleError("Configuration changed; refresh and review the operation again", "config-changed")
++        mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o600
++        path.parent.mkdir(parents=True, exist_ok=True)
++        fd = os.open(str(temporary), os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode & 0o600)
++        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
++            handle.write(text)
++            handle.flush()
++            os.fsync(handle.fileno())
++        if path.is_symlink() or ((path.read_text(encoding="utf-8") if path.exists() else "") != expected):
++            raise SkillsToggleError("Configuration changed; refresh and review the operation again", "config-changed")
++        os.replace(str(temporary), str(path))
++    except OSError as exc:
++        raise SkillsToggleError(f"Could not write configuration at {path}; the previous file was retained", "config-write-failed") from exc
++    finally:
++        if temporary.exists():
++            temporary.unlink()
++
++
+ _SECRET_LOG_KEY_RE = re.compile(
+-    r"(?:api[_-]?key|apikey|secret|token|password|credential|authorization|private[_-]?key|access[_-]?key|env)",
++    r"(?:api[_-]?key|apikey|secret|token|password|credential|authorization|private[_-]?key|access[_-]?key|env|headers|args|url)",
+     re.I,
+ )
+@@ -561,5 +614,5 @@ def _redact_log_record(value: object, key: str = "") -> object:
+     """Recursively prevent credentials and environment values reaching logs."""
+     if key and _SECRET_LOG_KEY_RE.search(key):
+-        if key.lower() == "env" and isinstance(value, dict):
++        if key.lower() == "env" and isinstance(value, (dict, list)):
+             return sorted(str(name) for name in value)
+         return "[REDACTED]"
+@@ -611,5 +664,5 @@ class SkillsToggleCore:
+             self.log_path.parent.mkdir(parents=True, exist_ok=True)
+             with self.log_path.open("a", encoding="utf-8") as fh:
+-                fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
++                fh.write(json.dumps(_redact_log_record(rec), ensure_ascii=False) + "\n")
+         except OSError:
+             pass  # logging must never break a mutation
+@@ -961,7 +1014,17 @@ class SkillsToggleCore:
+                 self._log(action="create-tool-dir", tool=tool_id, dir=str(tool_dir))
+             if state == "broken-link":
+-                link.unlink()
++                base = Path(target) if os.path.isabs(target) else link.parent / target
++                if not is_inside(base, self.skills_root_resolved):
++                    raise SkillsToggleError("Refusing to replace a foreign dangling symlink", "foreign-link")
++            temporary = tool_dir / (".switchboard-link-" + uuid.uuid4().hex)
+             try:
+-                os.symlink(str(skill_dir_resolved), str(link))
++                if state == "broken-link":
++                    # Prepare first: a failed creation must not destroy the old link.
++                    os.symlink(str(skill_dir_resolved), str(temporary), target_is_directory=True)
++                    if not link.is_symlink() or os.readlink(link) != target:
++                        raise SkillsToggleError("Link changed; refresh before repairing", "entry-changed")
++                    os.replace(str(temporary), str(link))
++                else:
++                    os.symlink(str(skill_dir_resolved), str(link), target_is_directory=True)
+             except (OSError, NotImplementedError) as exc:
+                 raise SkillsToggleError(
+@@ -970,4 +1033,7 @@ class SkillsToggleCore:
+                     "symlink-unsupported",
+                 ) from exc
++            finally:
++                if temporary.is_symlink():
++                    temporary.unlink()
+             if created_dir:
+                 action = "created-dir+linked"
+@@ -1086,5 +1152,5 @@ class SkillsToggleCore:
+                 reason = f"{link} is a real directory/file — refusing to remove"
+             return {"kind": "refused", "state": state, "next": state, "code": "unmanaged-dir", "reason": reason}
+-        if not enabled and state == "broken-link":
++        if state == "broken-link":
+             target = state_info.get("target")
+             base = Path(target) if os.path.isabs(target) else (link.parent / target)
+@@ -2403,20 +2469,11 @@ class SkillsToggleCore:
+                 raise SkillsToggleError(f"'dir' expands to an empty path: {dir_str!r}", "invalid-dir")
+             cfg_path = user_config_path(self.home)
+-            data = {}
+-            if cfg_path.is_file():
+-                try:
+-                    data = json.loads(cfg_path.read_text(encoding="utf-8"))
+-                except (OSError, json.JSONDecodeError):
+-                    data = {}
+-            backup = None
+-            if cfg_path.is_file():
+-                stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+-                backup_path = cfg_path.with_name(f"{cfg_path.name}.bak.hermes-switchboard.{stamp}")
+-                shutil.copy2(cfg_path, backup_path)
+-                backup = str(backup_path)
++            source = cfg_path if cfg_path.exists() or cfg_path.is_symlink() else legacy_user_config_path(self.home)
++            data, raw = _read_json_object(source, "tools")
++            backup = self._backup(source) if source.is_file() else None
+             tools = data.setdefault("tools", {})
+             tools[tool_id] = {"label": label.strip(), "dir": dir_str.strip()}
+             cfg_path.parent.mkdir(parents=True, exist_ok=True)
+-            cfg_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
++            _atomic_write(cfg_path, json.dumps(data, indent=2, ensure_ascii=False) + "\n", raw if source == cfg_path else "")
+             self._log(action="config-tools", tool=tool_id, dir=str(dir_str), backup=backup)
+             self.invalidate()
+@@ -2730,8 +2787,23 @@ def set_mcp_server_enabled(text: str, name: str, enabled: bool) -> str:
+ 
+ def _redact_env(definition: dict) -> dict:
+-    """env values never leave the gateway: the pane sees key names only."""
+-    redacted = dict(definition)
+-    if isinstance(redacted.get("env"), dict):
+-        redacted["env"] = sorted(redacted["env"].keys())
++    """Public MCP metadata only; raw values remain inside writer projections."""
++    redacted = {}
++    for key in ("env", "headers"):
++        if isinstance(definition.get(key), dict):
++            redacted[key] = sorted(str(name) for name in definition[key])
++    if "args" in definition:
++        redacted["args"] = ["[REDACTED]" for _ in definition.get("args", [])]
++    if "command" in definition:
++        redacted["command"] = "[configured]"
++    if "url" in definition:
++        # Even paths can contain tokens. Display only a validated origin.
++        try:
++            parts = urlsplit(str(definition["url"]))
++            host = parts.hostname or ""
++            if ":" in host:
++                host = "[" + host + "]"
++            redacted["url"] = urlunsplit((parts.scheme, host, "", "", ""))
++        except ValueError:
++            redacted["url"] = "[configured]"
+     return redacted
+ 
+@@ -2781,5 +2853,5 @@ class McpCore:
+             self.log_path.parent.mkdir(parents=True, exist_ok=True)
+             with self.log_path.open("a", encoding="utf-8") as fh:
+-                fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
++                fh.write(json.dumps(_redact_log_record(rec), ensure_ascii=False) + "\n")
+         except OSError:
+             pass
+@@ -2820,11 +2892,7 @@ class McpCore:
+ 
+     def _read_claude(self) -> tuple[dict, str]:
+-        if self.claude_config is None or not self.claude_config.is_file():
+-            return {}, ""
+-        try:
+-            text = self.claude_config.read_text(encoding="utf-8")
+-            return json.loads(text), text
+-        except (OSError, json.JSONDecodeError):
++        if self.claude_config is None:
+             return {}, ""
++        return _read_json_object(self.claude_config, "mcpServers")
+ 
+     def _read_codex(self) -> tuple[dict, str]:
+@@ -2851,5 +2919,5 @@ class McpCore:
+         if not create and entry is None:
+             raise SkillsToggleError(f"{name!r} is not in the Hermes catalog — refusing to remove", "unknown-server")
+-        if not create and (codex[name]["definition"] != entry["projection"]) and not force:
++        if name in codex and entry is not None and codex[name]["definition"] != entry["projection"] and not force:
+             raise SkillsToggleError(
+                 f"Codex's copy of {name!r} differs from the catalog — pass force to overwrite", "drifted"
+@@ -2865,11 +2933,11 @@ class McpCore:
+             action = "removed"
+             state = "missing"
+-        self.codex_config.write_text(new_text, encoding="utf-8")
++        _atomic_write(self.codex_config, new_text, raw)
+         self._log(action=f"mcp-codex-{action}", server=name, backup=backup)
+         return {"ok": True, "name": name, "writer": "codex", "action": action, "state": state, "backup": backup}
+ 
+-    def sync_to_codex(self, name: object) -> dict:
++    def sync_to_codex(self, name: object, force: object = False) -> dict:
+         with self._lock:
+-            return self._write_codex(name, create=True)
++            return self._write_codex(name, create=True, force=force is True)
+ 
+     def remove_from_codex(self, name: object, force: object = False) -> dict:
+@@ -2881,8 +2949,17 @@ class McpCore:
+     def mcp_state(self) -> dict:
+         cat = self.catalog()
+-        claude, _raw = self._read_claude()
++        writer_errors = {}
++        try:
++            claude, _raw = self._read_claude()
++        except SkillsToggleError as exc:
++            claude = {}
++            writer_errors["claude"] = {"code": exc.code, "error": str(exc)}
+         servers = claude.get("mcpServers") if isinstance(claude, dict) else None
+         servers = servers if isinstance(servers, dict) else {}
+-        codex_servers, _codex_raw = self._read_codex()
++        try:
++            codex_servers, _codex_raw = self._read_codex()
++        except SkillsToggleError as exc:
++            codex_servers = {}
++            writer_errors["codex"] = {"code": exc.code, "error": str(exc)}
+         codex_servers = codex_servers if codex_servers else None
+         projection_by_name = {c["name"]: c["projection"] for c in cat["catalog"]}
+@@ -2914,5 +2991,6 @@ class McpCore:
+                     # env VALUES are secrets — the payload carries key names only
+                     "definition": _redact_env(c["definition"]),
+-                    "writers": {"claude": claude_state, "codex": codex_state},
++                    "writers": {"claude": "error" if "claude" in writer_errors else claude_state,
++                                "codex": "error" if "codex" in writer_errors else codex_state},
+                 }
+             )
+@@ -2925,4 +3003,5 @@ class McpCore:
+                 "claude": {
+                     "label": "Claude Desktop",
++                    **writer_errors.get("claude", {}),
+                     "path": str(self.claude_config) if self.claude_config else None,
+                     "present": bool(self.claude_config and self.claude_config.is_file()),
+@@ -2930,4 +3009,5 @@ class McpCore:
+                 "codex": {
+                     "label": "Codex",
++                    **writer_errors.get("codex", {}),
+                     "path": str(self.codex_config) if self.codex_config else None,
+                     "present": bool(self.codex_config and self.codex_config.is_file()),
+@@ -2962,7 +3042,7 @@ class McpCore:
+             return {"ok": True, "name": name, "enabled": enabled, "action": "config-updated", "backup": backup}
+ 
+-    def sync_to_claude(self, name: object) -> dict:
++    def sync_to_claude(self, name: object, force: object = False) -> dict:
+         with self._lock:
+-            return self._write_claude(name, create=True)
++            return self._write_claude(name, create=True, force=force is True)
+ 
+     def remove_from_claude(self, name: object, force: object = False) -> dict:
+@@ -2986,5 +3066,5 @@ class McpCore:
+             # present in Claude but not in the catalog: foreign, never touched
+             raise SkillsToggleError(f"{name!r} is not in the Hermes catalog — refusing to remove", "unknown-server")
+-        if not create and servers[name] != entry["projection"] and not force:
++        if name in servers and entry is not None and servers[name] != entry["projection"] and not force:
+             raise SkillsToggleError(
+                 f"Claude's copy of {name!r} differs from the catalog — pass force to overwrite", "drifted"
+@@ -3005,5 +3085,5 @@ class McpCore:
+             action = "removed"
+         self.claude_config.parent.mkdir(parents=True, exist_ok=True)
+-        self.claude_config.write_text(json.dumps(doc, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
++        _atomic_write(self.claude_config, json.dumps(doc, indent=2, ensure_ascii=False) + "\n", raw)
+         self._log(action=f"mcp-{action}", server=name, writer="claude", backup=backup)
+         return {
+@@ -3194,5 +3274,5 @@ if APIRouter is not None:
+     @router.post("/mcp/sync")
+     async def mcp_sync(body: dict) -> dict:
+-        return _call(get_mcp_core().sync_to_claude, body.get("name"))
++        return _call(get_mcp_core().sync_to_claude, body.get("name"), body.get("force", False))
+ 
+     @router.post("/mcp/remove")
+@@ -3202,5 +3282,5 @@ if APIRouter is not None:
+     @router.post("/mcp/codex/sync")
+     async def mcp_codex_sync(body: dict) -> dict:
+-        return _call(get_mcp_core().sync_to_codex, body.get("name"))
++        return _call(get_mcp_core().sync_to_codex, body.get("name"), body.get("force", False))
+ 
+     @router.post("/mcp/codex/remove")
+diff --git a/desktop/plugin.js b/desktop/plugin.js
+index e3e7315..9db2f64 100644
+--- a/desktop/plugin.js
++++ b/desktop/plugin.js
+@@ -2646,5 +2646,5 @@ function McpPane() {
+               jsxs('span', { className: 'inline-flex items-center gap-1', children: [
+                 jsx(StatusDot, { tone: st.writers[wid].present ? 'good' : 'muted' }),
+-                jsx('span', { className: 'truncate', children: t('mcpWriterLine', st.writers[wid].label, st.writers[wid].present ? '' : t('dirAbsentTip')) })
++                jsx('span', { className: 'break-words', children: st.writers[wid].error ? st.writers[wid].label + ': ' + st.writers[wid].error : t('mcpWriterLine', st.writers[wid].label, st.writers[wid].present ? '' : t('dirAbsentTip')) })
+               ] }, wid)
+             )
+@@ -2666,8 +2666,8 @@ function McpPane() {
+       children: [0, 1, 2, 3].map(i => jsx(Skeleton, { className: 'h-8 w-full' }, 'mcp-sk-' + i))
+     })
+-  } else if (stateQuery.isError) {
++  } else if (stateQuery.isError || (st && st.ok === false)) {
+     body = jsx(ErrorState, {
+       title: t('errorTitle'),
+-      description: stateQuery.error && stateQuery.error.message ? stateQuery.error.message : t('errorDesc'),
++      description: st && st.error ? st.error : stateQuery.error && stateQuery.error.message ? stateQuery.error.message : t('errorDesc'),
+       children: jsx(Button, {
+         variant: 'secondary', size: 'xs',
+@@ -2705,4 +2705,5 @@ function McpPane() {
+                 const wstate = row.writers[writer.id] || 'missing'
+                 const wdrifted = wstate === 'drifted'
++                const writerError = st.writers && st.writers[writer.id] && st.writers[writer.id].error
+                 return jsxs('span', { className: 'inline-flex items-center justify-between gap-1', children: [
+                   jsx('span', { className: 'text-[0.625rem] text-muted-foreground', children: writer.label }),
+@@ -2711,5 +2712,5 @@ function McpPane() {
+                       size: 'xs',
+                       checked: wstate === 'enabled',
+-                      disabled: busyName !== null,
++                      disabled: busyName !== null || !!writerError || wstate === 'error',
+                       'aria-label': row.name + ' — ' + writer.label,
+                       onCheckedChange: next => {
+@@ -2722,5 +2723,5 @@ function McpPane() {
+                             confirmLabel: t('mcpSync'),
+                             destructive: false,
+-                            action: () => run(row.name, writer.syncPath, { name: row.name }, 'mcpSynced', writer.label)
++                            action: () => run(row.name, writer.syncPath, { name: row.name, force: true }, 'mcpSynced', writer.label)
+                           })
+                         } else if (!wdrifted) {
+@@ -2741,5 +2742,11 @@ function McpPane() {
+                           variant: 'secondary', size: 'xs', className: 'h-4 px-1 text-[0.625rem]',
+                           disabled: busyName !== null,
+-                          onClick: () => run(row.name, writer.syncPath, { name: row.name }, 'mcpSynced', writer.label),
++                          onClick: () => setConfirm({
++                            title: t('mcpSyncTitle', row.name, writer.label),
++                            description: t('mcpOverwriteDesc'),
++                            confirmLabel: t('mcpSync'),
++                            destructive: false,
++                            action: () => run(row.name, writer.syncPath, { name: row.name, force: true }, 'mcpSynced', writer.label)
++                          }),
+                           children: t('mcpSync')
+                         })
+@@ -3266,9 +3273,20 @@ function ToolsOverview({ layout }) {
+   const toggleMutation = useMutation({
+     mutationFn: vars => pluginCtx.rest('/toggle', { method: 'POST', body: { skill: vars.skill.id, tool: vars.tool.id, enabled: vars.enabled } }),
+-    onSuccess: data => {
+-      if (!data || data.ok !== true) host.notify({ kind: 'error', message: data && data.error ? data.error : t('toggleFailed') })
+-      else haptic('tap')
++    onMutate: async vars => {
++      await qc.cancelQueries({ queryKey: STATE_KEY })
++      const previous = qc.getQueryData(STATE_KEY)
++      patchSkillTool(qc, vars.skill.id, vars.tool.id, vars.enabled ? 'enabled' : (vars.tool.id === 'hermes' ? 'disabled' : 'missing'))
++      return { previous }
++    },
++    onSuccess: (data, vars, context) => {
++      if (!data || data.ok !== true) {
++        if (context && context.previous) qc.setQueryData(STATE_KEY, context.previous)
++        host.notify({ kind: 'error', message: data && data.error ? data.error : t('toggleFailed') })
++      } else haptic('tap')
++    },
++    onError: (err, vars, context) => {
++      if (context && context.previous) qc.setQueryData(STATE_KEY, context.previous)
++      host.notifyError(err, t('toggleFailed'))
+     },
+-    onError: err => host.notifyError(err, t('toggleFailed')),
+     onSettled: () => {
+       qc.invalidateQueries({ queryKey: STATE_KEY })
+@@ -3298,5 +3316,6 @@ function ToolsOverview({ layout }) {
+         setReceipt({ tool: tool, results: response.results || [], receipt: response.receipt })
+       }
+-      host.notify({ kind: 'success', message: t('toastBulkDone', undo.count) })
++      const failed = responses.some(item => !item || item.ok !== true || (item.receipt && item.receipt.failed))
++      host.notify({ kind: failed ? 'error' : 'success', message: failed ? t('undoFailed') : t('toastBulkDone', undo.count) })
+     }).catch(err => host.notifyError(err, t('undoFailed'))).finally(() => {
+       setTaskBusy(false)
+@@ -3313,5 +3332,9 @@ function ToolsOverview({ layout }) {
+     Promise.all(toolIds.map(tool => pluginCtx.rest('/toggle-bulk', {
+       method: 'POST', body: { skills: arrivals.slice(), tool: tool, enabled: true }
+-    }))).then(() => {
++    }))).then(responses => {
++      if (responses.some(item => !item || item.ok !== true || item.failed)) {
++        host.notify({ kind: 'error', message: t('bulkFailed') })
++        return
++      }
+       markSkillsSeen(arrivals)
+       arrivalsAtom.set([])
+diff --git a/tests/sdk_stub.mjs b/tests/sdk_stub.mjs
+index a02f275..8cbdb0b 100644
+--- a/tests/sdk_stub.mjs
++++ b/tests/sdk_stub.mjs
+@@ -41,5 +41,5 @@ export const cn = (...args) => args.filter(Boolean).join(' ')
+ export const Button = (props) => el('button', { onClick: props.onClick, disabled: props.disabled, 'data-variant': props.variant, 'data-size': props.size }, props.children)
+ export const Badge = (props) => el('span', { 'data-variant': props.variant, 'data-size': props.size }, props.children)
+-export const Switch = (props) => el('button', { role: 'switch', 'aria-label': props['aria-label'], 'aria-checked': props.checked ? 'true' : 'false', disabled: props.disabled || undefined, 'data-size': props.size }, null)
++export const Switch = (props) => el('button', { role: 'switch', 'aria-label': props['aria-label'], 'aria-checked': props.checked ? 'true' : 'false', disabled: props.disabled || undefined, 'data-size': props.size, onClick: () => { if (!props.disabled && props.onCheckedChange) props.onCheckedChange(!props.checked) } }, null)
+ export const StatusDot = (props) => el('span', { 'data-tone': props.tone }, null)
+ export const EmptyState = (props) => el('div', {}, el('div', {}, props.title), props.description ? el('div', {}, props.description) : null, props.children ?? null)
+@@ -77,24 +77,16 @@ export function useMutation(opts) {
+   return {
+     isPending: false,
+-    mutate: vars => {
+-      const prev = S().state
+-      opts.onMutate && opts.onMutate(vars)
+-      const finish = result => {
+-        if (result && result.ok) opts.onSuccess && opts.onSuccess(result, vars, { previous: prev })
+-        else opts.onError && opts.onError(new Error((result && result.error) || 'mutation failed'), vars, { previous: prev })
+-        opts.onSettled && opts.onSettled()
+-        return result
+-      }
++    mutate: async vars => {
++      let context
+       try {
+-        const result = opts.mutationFn ? opts.mutationFn(vars) : (S().mutationResult || { ok: true })
+-        return result && typeof result.then === 'function'
+-          ? result.then(finish).catch(error => {
+-              opts.onError && opts.onError(error, vars, { previous: prev })
+-              opts.onSettled && opts.onSettled()
+-            })
+-          : finish(result)
++        context = opts.onMutate ? await opts.onMutate(vars) : undefined
++        const result = opts.mutationFn ? await opts.mutationFn(vars) : (S().mutationResult || { ok: true })
++        // React Query calls onSuccess for resolved HTTP-200 error envelopes too.
++        if (opts.onSuccess) await opts.onSuccess(result, vars, context)
++        return result
+       } catch (error) {
+-        opts.onError && opts.onError(error, vars, { previous: prev })
+-        opts.onSettled && opts.onSettled()
++        if (opts.onError) await opts.onError(error, vars, context)
++      } finally {
++        if (opts.onSettled) await opts.onSettled()
+       }
+     }
+@@ -103,5 +95,8 @@ export function useMutation(opts) {
+ 
+ export const useQueryClient = () => ({
+-  setQueryData: (key, up) => { S().patchedKeys = S().patchedKeys || []; S().patchedKeys.push(key[1]) },
++  setQueryData: (key, up) => {
++    S().patchedKeys = S().patchedKeys || []; S().patchedKeys.push(key[1])
++    if (key[1] === 'state') S().state = typeof up === 'function' ? up(S().state) : up
++  },
+   getQueryData: () => S().state,
+   cancelQueries: async () => {},
+diff --git a/tests/test_safety_regressions.py b/tests/test_safety_regressions.py
+new file mode 100644
+index 0000000..94490d2
+--- /dev/null
++++ b/tests/test_safety_regressions.py
+@@ -0,0 +1,123 @@
++"""Regression tests for refusal, rollback, and secret-safe writer failures."""
++from __future__ import annotations
++
++import json
++import os
++import sys
++import unittest
++from pathlib import Path
++from unittest.mock import patch
++
++sys.path.insert(0, str(Path(__file__).resolve().parent))
++from test_plugin_api import Fixture, pa
++from test_mcp_backend import McpFixture
++
++
++class LinkSafetyTests(unittest.TestCase):
++    def setUp(self):
++        self.fx = Fixture()
++
++    def tearDown(self):
++        self.fx.cleanup()
++
++    def test_foreign_dangling_link_refused_in_preview_and_apply(self):
++        link = self.fx.grok / 'apple-notes'
++        link.unlink()
++        outside = self.fx.tmp / 'missing-foreign-skill'
++        os.symlink(str(outside), str(link), target_is_directory=True)
++        before = os.readlink(link)
++        plan = self.fx.core.plan_bulk(['apple/apple-notes'], 'grok', True)
++        self.assertEqual(plan['would_change'], [])
++        self.assertEqual(plan['refused'][0]['code'], 'foreign-link')
++        with self.assertRaises(pa.SkillsToggleError) as raised:
++            self.fx.core.toggle('apple/apple-notes', 'grok', True)
++        self.assertEqual(raised.exception.code, 'foreign-link')
++        self.assertEqual(os.readlink(link), before)
++
++    def test_failed_repair_keeps_original_managed_broken_link(self):
++        link = self.fx.grok / 'rem índéluxé'
++        before = os.readlink(link)
++        with patch.object(pa.os, 'symlink', side_effect=OSError('fixture failure')):
++            with self.assertRaises(pa.SkillsToggleError):
++                self.fx.core.toggle('apple/rem índéluxé', 'grok', True)
++        self.assertTrue(link.is_symlink())
++        self.assertEqual(os.readlink(link), before)
++        self.assertFalse(list(link.parent.glob('.switchboard-link-*')))
++
++    def test_custom_config_invalid_json_is_not_replaced(self):
++        config = pa.user_config_path(self.fx.home)
++        config.write_text('{"tools":', encoding='utf-8')
++        before = config.read_bytes()
++        with self.assertRaises(pa.SkillsToggleError):
++            self.fx.core.set_tool('custom', 'Custom', str(self.fx.tmp / 'custom'))
++        self.assertEqual(config.read_bytes(), before)
++
++    def test_custom_edit_preserves_legacy_config_and_unknown_fields(self):
++        legacy = pa.legacy_user_config_path(self.fx.home)
++        data = {'tools': {'old': {'label': 'Old', 'dir': str(self.fx.tmp / 'old')}}, 'preference': 7}
++        legacy.write_text(json.dumps(data), encoding='utf-8')
++        self.fx.core.set_tool('custom', 'Custom', str(self.fx.tmp / 'custom'))
++        actual = json.loads(pa.user_config_path(self.fx.home).read_text())
++        self.assertEqual(actual['tools']['old'], data['tools']['old'])
++        self.assertEqual(actual['preference'], 7)
++        self.assertEqual(json.loads(legacy.read_text()), data)
++
++
++class McpSafetyTests(unittest.TestCase):
++    def setUp(self):
++        self.fx = McpFixture()
++        self.fx.mcp.codex_config = self.fx.tmp / 'codex' / 'config.toml'
++
++    def tearDown(self):
++        self.fx.cleanup()
++
++    def test_invalid_json_and_wrong_shapes_are_preserved(self):
++        for text in ('{"mcpServers":', '[]', '{"mcpServers": []}', '{"mcpServers": null}',
++                     '{"mcpServers":{},"mcpServers":{}}'):
++            with self.subTest(text=text):
++                self.fx.claude.write_text(text, encoding='utf-8')
++                with self.assertRaises(pa.SkillsToggleError) as raised:
++                    self.fx.mcp.sync_to_claude('weather')
++                self.assertEqual(raised.exception.code, 'config-invalid')
++                self.assertEqual(self.fx.claude.read_text(), text)
++                state = self.fx.mcp.mcp_state()
++                self.assertTrue(state['ok'])
++                self.assertIn('error', state['writers']['claude'])
++                self.assertTrue(all(row['writers']['claude'] == 'error' for row in state['rows']))
++
++    def test_sync_drift_requires_explicit_confirmation(self):
++        before = self.fx.claude.read_bytes()
++        with self.assertRaises(pa.SkillsToggleError) as raised:
++            self.fx.mcp.sync_to_claude('docs')
++        self.assertEqual(raised.exception.code, 'drifted')
++        self.assertEqual(self.fx.claude.read_bytes(), before)
++        result = self.fx.mcp.sync_to_claude('docs', force=True)
++        self.assertTrue(result['ok'])
++        doc = json.loads(self.fx.claude.read_text())
++        self.assertEqual(doc['mcpServers']['drifted-server']['command'], 'python')
++        self.assertEqual(doc['preferences'], {'theme': 'dark'})
++
++    def test_display_redacts_headers_arguments_and_url_credentials(self):
++        config = self.fx.home / 'config.yaml'
++        config.write_text('mcp_servers:\n  remote:\n    url: https://user:fixture-password@example.test/mcp?key=fixture-query#fixture-fragment\n    headers:\n      X-Private: fixture-header\n    args:\n      - fixture-argument\n    env:\n      KEY: fixture-env\n', encoding='utf-8')
++        state = self.fx.mcp.mcp_state()
++        exposed = json.dumps(state)
++        for secret in ('fixture-password', 'fixture-query', 'fixture-fragment', 'fixture-header', 'fixture-argument', 'fixture-env'):
++            self.assertNotIn(secret, exposed)
++        self.fx.mcp.sync_to_claude('remote')
++        written = json.loads(self.fx.claude.read_text())['mcpServers']['remote']
++        self.assertEqual(written['headers']['X-Private'], 'fixture-header')
++        self.assertEqual(written['args'], ['fixture-argument'])
++        self.assertEqual(written['env']['KEY'], 'fixture-env')
++
++    def test_failed_config_replace_preserves_original_bytes(self):
++        before = self.fx.claude.read_bytes()
++        with patch.object(pa.os, 'replace', side_effect=OSError('fixture write failure')):
++            with self.assertRaises(pa.SkillsToggleError):
++                self.fx.mcp.sync_to_claude('weather')
++        self.assertEqual(self.fx.claude.read_bytes(), before)
++        self.assertFalse(list(self.fx.claude.parent.glob('.switchboard-write-*')))
++
++
++if __name__ == '__main__':
++    unittest.main()
+diff --git a/tests/workspace_harness_body.mjs b/tests/workspace_harness_body.mjs
+index 299ac20..7fe6579 100644
+--- a/tests/workspace_harness_body.mjs
++++ b/tests/workspace_harness_body.mjs
+@@ -77,4 +77,5 @@ plugin.register({
+     if (path === '/drift') return channel.drift
+     if (path === '/mcp/state') return channel.mcpState
++    if (path === '/toggle' && channel.holdToggle) return new Promise((resolve, reject) => { channel.releaseToggle = channel.toggleTransportError ? () => reject(new Error('fixture transport error')) : () => resolve({ ok: false, error: 'fixture refusal' }) })
+     if (path === '/import/plan') {
+       if (channel.holdScan) return new Promise(resolve => { channel.resolveScan = resolve })
+@@ -263,4 +264,23 @@ const singleCategoryButtons = interactive.root.findAll(node => node.type === 'bu
+ ok(singleCategoryButtons.length === 8 && singleCategoryButtons.every(node => node.children.join('').trim().length > 0), 'single-tool category buttons expose aria-expanded and a visible name')
+ 
++// Exercise real promise semantics: both a server refusal and a rejected request
++// must restore the visible switch after the optimistic cache update.
++for (const transportError of [false, true]) {
++  channel.holdToggle = true
++  channel.toggleTransportError = transportError
++  const before = channel.state
++  const control = interactive.root.findAll(node => node.props.role === 'switch' && !node.props.disabled)[0]
++  const label = control.props['aria-label']
++  const checked = control.props['aria-checked']
++  await act(async () => { control.props.onClick(); await Promise.resolve(); await Promise.resolve() })
++  await act(async () => { interactive.update(workspace.render()) })
++  ok(interactive.root.findAll(node => node.props.role === 'switch' && node.props['aria-label'] === label)[0].props['aria-checked'] !== checked, 'pending skill toggle displays its optimistic value')
++  await act(async () => { channel.releaseToggle(); await Promise.resolve(); await Promise.resolve() })
++  await act(async () => { interactive.update(workspace.render()) })
++  ok(channel.state === before && interactive.root.findAll(node => node.props.role === 'switch' && node.props['aria-label'] === label)[0].props['aria-checked'] === checked, `${transportError ? 'transport error' : 'HTTP-200 refusal'} restores the visible switch and cache`)
++  ok(channel.notifications.at(-1).kind === 'error', 'failed optimistic mutation is announced as an error')
++}
++channel.holdToggle = false
++
+ const search = interactive.root.findByProps({ placeholder: 'Search skills…' })
+ await act(async () => {
+@@ -427,4 +447,21 @@ ok((html.match(/role="switch"/g) || []).length === 9, 'MCP keeps nine live proje
+ ok(html.includes('Claude Desktop') && html.includes('Codex') && html.includes('drifted'), 'MCP labels both supported clients and surfaces drift from either writer')
+ 
++let mcpInteractive
++await act(async () => { mcpInteractive = TestRenderer.create(channel.activeWorkspace.render()) })
++const mcpCallsBefore = channel.restCalls.length
++await act(async () => { mcpInteractive.root.findAll(node => node.props.role === 'switch' && node.props['aria-label'] === 'docs — Codex')[0].props.onClick() })
++ok(mcpInteractive.root.findAllByProps({ role: 'dialog' }).length === 1 && channel.restCalls.length === mcpCallsBefore, 'drifted MCP toggle previews confirmation without a write')
++await act(async () => { mcpInteractive.root.findByProps({ role: 'dialog' }).findAllByType('button').find(node => node.children.join('') === 'Cancel').props.onClick() })
++ok(channel.restCalls.length === mcpCallsBefore, 'cancelled MCP overwrite performs no write')
++await act(async () => { mcpInteractive.root.findAll(node => node.props.role === 'switch' && node.props['aria-label'] === 'docs — Codex')[0].props.onClick() })
++await act(async () => { mcpInteractive.root.findByProps({ role: 'dialog' }).findAllByType('button').find(node => node.children.join('') !== 'Cancel').props.onClick(); await Promise.resolve() })
++ok(channel.restCalls.at(-1).path === '/mcp/codex/sync' && channel.restCalls.at(-1).body.force === true, 'confirmed MCP drift sends the explicit overwrite flag')
++const cleanMcp = channel.mcpState
++channel.mcpState = { ...cleanMcp, writers: { ...cleanMcp.writers, claude: { ...cleanMcp.writers.claude, error: 'Invalid configuration; repair and refresh' } } }
++await act(async () => { mcpInteractive.update(channel.activeWorkspace.render()) })
++ok(mcpInteractive.root.findAll(node => node.props.role === 'switch' && node.props['aria-label'].endsWith(' — Claude')).every(node => node.props.disabled) && JSON.stringify(mcpInteractive.toJSON()).includes('repair and refresh'), 'invalid writer is visibly disabled without blocking other MCP clients')
++channel.mcpState = cleanMcp
++await act(async () => { mcpInteractive.unmount() })
++
+ channel.atoms[0].set('advanced')
+ html = renderToString(workspace.render())
