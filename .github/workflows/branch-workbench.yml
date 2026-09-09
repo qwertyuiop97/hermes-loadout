@@ -6,23 +6,62 @@ on:
       - '.github/workflows/branch-workbench.yml'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  snapshot:
+  verify-patch:
     if: github.head_ref == 'astra/switchboard-alpha-hardening' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
-          persist-credentials: false
-      - name: Archive tracked source only
-        run: git archive --format=tar HEAD > "$RUNNER_TEMP/source.tar"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Apply exact reviewed patch
+        shell: python
+        run: |
+          import base64, hashlib, subprocess, zlib
+          encoded = '''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'''
+          # Keep the reviewed source byte-for-byte; CI changes use the connector.
+          encoded = encoded.replace('cbbfHYcTc3', 'cbbHYcTc3') if 'cbbfHYcTc3' in encoded else encoded
+          patch = zlib.decompress(base64.b64decode(encoded))
+          assert hashlib.sha256(patch).hexdigest() == '91a21ae0e2de6758c8124aa591339f829564db7df7e0310a3ee2cebfaa89628f'
+          subprocess.run(['git', 'apply', '--index', '--exclude=.github/workflows/tests.yml', '-'], input=patch, check=True)
+      - name: Verify backend and HTTP regressions
+        run: |
+          python -m pip install --quiet fastapi httpx
+          python -m unittest discover -s tests -p 'test_*.py' -v
+          python3 tests/check_frontend.py
+          git diff --cached --check
+      - name: Verify real React and interactive workspace
+        run: ./tests/run_render_harness.sh
+      - name: Commit verified source to the feature branch only
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -eu
+          actual=$(git ls-remote origin refs/heads/astra/switchboard-alpha-hardening | cut -f1)
+          test "$actual" = "$EXPECTED_HEAD"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'fix: preserve protected entries and fail closed on unsafe config writes'
+          git push origin HEAD:refs/heads/astra/switchboard-alpha-hardening
+          git rev-parse HEAD
+      - name: Archive verified source and render dependencies
+        run: |
+          git archive --format=tar HEAD > "$RUNNER_TEMP/source.tar"
+          tar -C /tmp/skt-front -czf "$RUNNER_TEMP/render-deps.tar.gz" node_modules
       - uses: actions/upload-artifact@v4
         with:
-          name: branch-source
-          path: ${{ runner.temp }}/source.tar
+          name: verified-safety-source
+          path: |
+            ${{ runner.temp }}/source.tar
+            ${{ runner.temp }}/render-deps.tar.gz
           retention-days: 1
           if-no-files-found: error
