@@ -2822,7 +2822,8 @@ class SkillsToggleCore:
         with self._lock:
             if (
                 not isinstance(tool_id, str)
-                or not re.match(r"^[a-z0-9-]{1,32}$", tool_id)
+                or not re.fullmatch(r"[a-z0-9-]+", tool_id)
+                or (len(tool_id) > 32 and tool_id not in self.tools)
                 or tool_id == "hermes"
             ):
                 raise SkillsToggleError(f"invalid tool id {tool_id!r}", "invalid-tool-id")
@@ -3006,10 +3007,13 @@ def validate_scoped_target(spec: dict) -> Path:
     if scope not in ("global", "project") or not row.get("skills") or row.get("verification") != "documented":
         raise SkillsToggleError("invalid scoped target", "scope-escape")
     raw_root = spec.get("project_root") if scope == "project" else spec.get("scope_root")
-    if not isinstance(raw_root, str) or not Path(raw_root).is_absolute():
-        raise SkillsToggleError("scope root is missing", "scope-escape")
+    # Malformed saved metadata must reach the recoverable scope-error UI,
+    # not leak a Path(None)/Path(list) TypeError through the HTTP boundary.
+    for value in (raw_root, spec.get("scope_root"), spec.get("dir")):
+        if not isinstance(value, str) or not value or "\0" in value or not Path(value).is_absolute():
+            raise SkillsToggleError("scope metadata needs an absolute path", "scope-escape")
     root = Path(raw_root)
-    if not root.is_dir() or not same_path(root, Path(spec.get("scope_root", ""))):
+    if not root.is_dir() or not same_path(root, Path(spec["scope_root"])):
         raise SkillsToggleError("selected scope is unavailable", "scope-escape")
     if scope == "global" and not same_path(root, Path.home()):
         raise SkillsToggleError("global target does not belong to the current user home", "scope-escape")
@@ -3062,8 +3066,23 @@ def load_tools_config(home: Path) -> dict:
             if isinstance(spec, dict) and isinstance(spec.get("label"), str) and spec["label"].strip():
                 tools["hermes"]["label"] = spec["label"][:40]
             continue
-        if not isinstance(tool_id, str) or not re.fullmatch(r"[a-z0-9-]{1,32}", tool_id):
+        # The original file format placed no length limit on existing IDs.
+        # Keep those mappings addressable; only new Custom IDs are capped.
+        if not isinstance(tool_id, str) or not re.fullmatch(r"[a-z0-9-]+", tool_id):
             raise SkillsToggleError("invalid client id in configuration", "config-invalid")
+        legacy_read_only = False
+        if (isinstance(spec, dict) and "dir" not in spec and "scope" not in spec
+                and tool_id in DEFAULT_TOOLS):
+            # A legacy label-only override inherited the old default path.
+            # In particular, never redirect Codex from .codex to .agents here.
+            inherited = copy.deepcopy(DEFAULT_TOOLS[tool_id])
+            if inherited.get("fallback_dir") and not expand_path(inherited["dir"]).is_dir():
+                inherited["dir"] = inherited["fallback_dir"]
+            inherited.update(spec)
+            spec = dict(inherited, scope="custom", verification="legacy",
+                        notes="Preserved legacy location; review client compatibility.")
+            # Changing a label is not consent to write to an unverified client.
+            legacy_read_only = catalog_client(tool_id)["verification"] != "documented"
         if isinstance(spec, str):
             spec = {"dir": spec}
         if not isinstance(spec, dict) or not isinstance(spec.get("dir"), str) or not spec["dir"].strip():
@@ -3071,7 +3090,7 @@ def load_tools_config(home: Path) -> dict:
         if spec.get("scope", "custom") not in ("custom", "global", "project"):
             raise SkillsToggleError("unknown client scope in configuration", "config-invalid")
         tools[tool_id] = dict(spec, label=str(spec.get("label") or DEFAULT_TOOLS.get(tool_id, {}).get("label") or tool_id.title()),
-                              configured=True, optional=False, scope=spec.get("scope", "custom"), read_only=False)
+                              configured=True, optional=False, scope=spec.get("scope", "custom"), read_only=legacy_read_only)
     return tools
 
 
