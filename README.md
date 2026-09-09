@@ -1,5 +1,3 @@
-this is astra pro
-
 # Hermes Switchboard
 
 [![tests](https://github.com/qwertyuiop97/hermes-switchboard/actions/workflows/tests.yml/badge.svg)](https://github.com/qwertyuiop97/hermes-switchboard/actions/workflows/tests.yml)
