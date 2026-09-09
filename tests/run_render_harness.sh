@@ -11,10 +11,10 @@ REPO="$(dirname "$HERE")"
 FRONT="/tmp/skt-front"
 
 mkdir -p "$FRONT/staging/node_modules/@hermes/plugin-sdk"
-if [ ! -d "$FRONT/node_modules/react" ]; then
+if [ ! -d "$FRONT/node_modules/react" ] || [ ! -d "$FRONT/node_modules/react-test-renderer" ]; then
   cd "$FRONT"
   [ -f package.json ] || echo '{"name":"skills-toggle-render-harness","private":true,"type":"module"}' > package.json
-  npm install --no-fund --no-audit --silent react@18 react-dom@18
+  npm install --no-fund --no-audit --silent react@18 react-dom@18 react-test-renderer@18
 fi
 
 # staging node_modules: stub + real react
@@ -30,6 +30,7 @@ cat > "$FRONT/staging/node_modules/@hermes/plugin-sdk/package.json" <<'JSON'
 JSON
 ln -sfn "$FRONT/node_modules/react" "$FRONT/staging/node_modules/react"
 ln -sfn "$FRONT/node_modules/react-dom" "$FRONT/staging/node_modules/react-dom"
+ln -sfn "$FRONT/node_modules/react-test-renderer" "$FRONT/staging/node_modules/react-test-renderer"
 
 # fresh plugin copy each run (like a hot reload)
 cp "$REPO/desktop/plugin.js" "$FRONT/staging/plugin.js"

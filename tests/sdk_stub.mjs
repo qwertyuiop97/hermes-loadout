@@ -45,13 +45,13 @@ export const StatusDot = (props) => el('span', { 'data-tone': props.tone }, null
 export const EmptyState = (props) => el('div', {}, el('div', {}, props.title), props.description ? el('div', {}, props.description) : null, props.children ?? null)
 export const ErrorState = (props) => el('div', {}, el('div', {}, props.title), typeof props.description === 'string' ? el('div', {}, props.description) : null, props.children ?? null)
 export const Input = (props) => el('input', { value: props.value, placeholder: props.placeholder, className: props.className, onChange: e => props.onChange && props.onChange(e && e.target ? e.target.value : props.value) })
-export const SearchField = (props) => el('input', { placeholder: props.placeholder, value: props.value, 'aria-label': props['aria-label'], onChange: () => {} })
+export const SearchField = (props) => el('input', { placeholder: props.placeholder, value: props.value, 'aria-label': props['aria-label'], onChange: props.onChange })
 export const Skeleton = (props) => el('div', { 'data-skeleton': 'true', className: props.className }, null)
 export const ScrollArea = (props) => el('div', {}, props.children)
 export const Separator = () => el('hr', {}, null)
 export const Tip = (props) => el('span', { 'data-tip': String(props.label) }, props.children)
-export const ConfirmDialog = (props) => (props.open ? el('div', { role: 'dialog' }, el('div', {}, props.title), el('div', {}, props.description ?? '')) : null)
-export const SegmentedControl = (props) => el('div', { role: 'radiogroup' }, props.options.map(o => el('button', { role: 'radio', 'aria-checked': props.value === o.id, key: o.id }, o.label)))
+export const ConfirmDialog = (props) => (props.open ? el('div', { role: 'dialog' }, el('div', {}, props.title), el('div', {}, props.description ?? ''), el('button', { onClick: props.onClose }, 'Cancel'), el('button', { onClick: props.onConfirm }, props.confirmLabel || 'Confirm')) : null)
+export const SegmentedControl = (props) => el('div', { role: 'radiogroup' }, props.options.map(o => el('button', { role: 'radio', 'aria-checked': props.value === o.id, onClick: () => props.onChange(o.id), key: o.id }, o.label)))
 
 export function useQuery({ queryKey }) {
   const mode = S().mode || 'ready'
@@ -79,10 +79,24 @@ export function useMutation(opts) {
     mutate: vars => {
       const prev = S().state
       opts.onMutate && opts.onMutate(vars)
-      const result = S().mutationResult || { ok: true }
-      if (result.ok) opts.onSuccess && opts.onSuccess(result, vars, { previous: prev })
-      else opts.onError && opts.onError(new Error(result.error || 'mutation failed'), vars, { previous: prev })
-      opts.onSettled && opts.onSettled()
+      const finish = result => {
+        if (result && result.ok) opts.onSuccess && opts.onSuccess(result, vars, { previous: prev })
+        else opts.onError && opts.onError(new Error((result && result.error) || 'mutation failed'), vars, { previous: prev })
+        opts.onSettled && opts.onSettled()
+        return result
+      }
+      try {
+        const result = opts.mutationFn ? opts.mutationFn(vars) : (S().mutationResult || { ok: true })
+        return result && typeof result.then === 'function'
+          ? result.then(finish).catch(error => {
+              opts.onError && opts.onError(error, vars, { previous: prev })
+              opts.onSettled && opts.onSettled()
+            })
+          : finish(result)
+      } catch (error) {
+        opts.onError && opts.onError(error, vars, { previous: prev })
+        opts.onSettled && opts.onSettled()
+      }
     }
   }
 }
