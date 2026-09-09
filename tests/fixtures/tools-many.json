@@ -1,0 +1,14 @@
+{
+  "ok": true,
+  "skills_root_exists": true,
+  "tools": [
+    {"id": "hermes", "label": "Hermes", "present": true, "special": "config"},
+    {"id": "claude", "label": "Claude", "present": true},
+    {"id": "codex", "label": "Codex", "present": true},
+    {"id": "grok", "label": "Grok", "present": true},
+    {"id": "cursor", "label": "Cursor", "present": true, "optional": true},
+    {"id": "kimi", "label": "Kimi", "present": false, "optional": true}
+  ],
+  "counts": {"skills": 1, "unlinked": 0},
+  "skills": [{"id": "test/alpha", "name": "alpha", "category": "test", "tools": {"hermes": {"state": "enabled"}, "claude": {"state": "enabled"}, "codex": {"state": "missing"}, "grok": {"state": "enabled"}, "cursor": {"state": "enabled"}, "kimi": {"state": "missing"}}}]
+}
