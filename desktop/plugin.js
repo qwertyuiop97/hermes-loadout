@@ -96,7 +96,7 @@ function storeSet(key, value) {
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-const PROBLEM_STATES = ['broken-link', 'foreign-link', 'unmanaged-dir']
+const PROBLEM_STATES = ['broken-link', 'foreign-link', 'unmanaged-dir', 'scope-error']
 
 function downloadText(text, filename) {
   const blob = new Blob([text], { type: 'application/json' })
@@ -865,7 +865,7 @@ function CompactSummaryPane() {
       })
     })
   } else if (state && state.ok && !state.skills_root_exists) {
-    body = jsx(EmptyState, { title: t('noRootTitle'), description: t('noRootDesc') })
+    body = jsx(EmptyState, { title: t('noRootTitle'), description: t('noRootDesc'), children: jsx(Button, { variant: 'secondary', size: 'xs', onClick: () => stateQuery.refetch(), children: t('retry') }) })
   } else {
     const total = state && state.ok && state.counts ? state.counts.skills || 0 : 0
     body = jsxs('div', {
@@ -2323,7 +2323,7 @@ function SkillsPane({ section = 'tools' }) {
       busy: busy
     })
   } else if (state && state.ok && !state.skills_root_exists) {
-    body = jsx(EmptyState, { title: t('noRootTitle'), description: t('noRootDesc') })
+    body = jsx(EmptyState, { title: t('noRootTitle'), description: t('noRootDesc'), children: jsx(Button, { variant: 'secondary', size: 'xs', onClick: () => stateQuery.refetch(), children: t('retry') }) })
   } else if (skills.length === 0) {
     body = jsx(EmptyState, { title: t('emptyTitle'), description: t('emptyDesc') })
   } else if (filtered.length === 0) {
@@ -2755,6 +2755,7 @@ function ToolCard({ tool, counts, busy, onManage, onEnableAll, onDisableAll }) {
             className: 'min-w-0 flex-1',
             children: [
               jsx('h3', { className: 'font-medium', children: tool.label }),
+              jsx('span', { 'data-tool-scope': tool.id, className: 'text-xs text-muted-foreground', children: t(tool.scope === 'project' ? 'projectScope' : tool.scope === 'global' ? 'globalScope' : 'libraryCustom') }),
               jsx('div', {
                 'data-tool-path': tool.id,
                 className: 'whitespace-normal break-words text-xs text-muted-foreground',
@@ -2768,6 +2769,8 @@ function ToolCard({ tool, counts, busy, onManage, onEnableAll, onDisableAll }) {
           })
         ]
       }),
+      tool.path_error || tool.read_only ? jsx('p', { role: 'alert', className: 'text-xs text-(--ui-text-warning)', children: tool.path_error || tool.notes || t('libraryReviewCustom') }) : null,
+      tool.shared_with?.length ? jsx('p', { className: 'text-xs text-(--ui-text-warning)', children: t('sharedDirectoryWarning') }) : null,
       jsxs('div', {
         className: 'grid grid-cols-3 gap-2 text-xs',
         children: [
@@ -2795,11 +2798,11 @@ function ToolCard({ tool, counts, busy, onManage, onEnableAll, onDisableAll }) {
         className: 'flex flex-wrap gap-2',
         children: [
           jsx(Button, {
-            variant: 'secondary', size: 'xs', disabled: busy || counts.total === 0,
+            variant: 'secondary', size: 'xs', disabled: busy || !!tool.read_only || counts.total === 0,
             onClick: onEnableAll, children: t('enableAll')
           }),
           jsx(Button, {
-            variant: 'secondary', size: 'xs', disabled: busy || counts.total === 0,
+            variant: 'secondary', size: 'xs', disabled: busy || !!tool.read_only || counts.total === 0,
             onClick: onDisableAll, children: t('disableAll')
           })
         ]
@@ -3088,7 +3091,7 @@ function ExpertMatrix({ skills, tools, busy, onToggle }) {
                         children: jsx(Switch, {
                           size: 'xs',
                           checked: stateName === 'enabled',
-                          disabled: busy || locked,
+                          disabled: busy || !!tool.read_only || locked,
                           'aria-label': `${skill.name} — ${tool.label}`,
                           onCheckedChange: enabled => onToggle(skill, tool, enabled)
                         })
@@ -3104,12 +3107,156 @@ function ExpertMatrix({ skills, tools, busy, onToggle }) {
   })
 }
 
+// One backend catalog drives discovery, labels, and resolved target paths.
+// The desktop bundle stays a single no-build ESM file for the Hermes loader.
+function ClientLibrary({ onBack }) {
+  const t = usePluginI18n(ID)
+  const qc = useQueryClient()
+  const [scope, setScope] = useState('global')
+  const [search, setSearch] = useState('')
+  const [projectInput, setProjectInput] = useState('')
+  const [projectRoot, setProjectRoot] = useState('')
+  const [revision, setRevision] = useState(0)
+  const [catalog, setCatalog] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [notice, setNotice] = useState('')
+  const [customId, setCustomId] = useState('')
+  const [customLabel, setCustomLabel] = useState('')
+  const [customPath, setCustomPath] = useState('')
+  const searchRef = useRef(null)
+
+  useEffect(() => { searchRef.current?.focus() }, [])
+  useEffect(() => {
+    let active = true
+    setLoading(true)
+    setError('')
+    setCatalog(null)
+    const path = '/clients' + (scope === 'project' && projectRoot ? '?project_root=' + encodeURIComponent(projectRoot) : '')
+    if (scope === 'project' && !projectRoot) {
+      setLoading(false)
+      return () => { active = false }
+    }
+    Promise.resolve().then(() => pluginCtx.rest(path)).then(response => {
+      if (!active) return
+      if (!response || response.ok !== true) throw new Error(response?.error || t('libraryUnavailable'))
+      if (response.catalog_version !== 1 || !Array.isArray(response.clients)) throw new Error(t('libraryVersion'))
+      setCatalog(response)
+    }).catch(reason => { if (active) setError(reason.message || t('libraryUnavailable')) })
+      .finally(() => { if (active) setLoading(false) })
+    return () => { active = false }
+  }, [scope, projectRoot, revision])
+
+  const activate = async (client, candidate) => {
+    setBusy(true)
+    setError('')
+    setNotice('')
+    try {
+      const response = await pluginCtx.rest('/clients/enable', { method: 'POST', body: {
+        client_id: client.id, scope: candidate.scope, candidate: candidate.index,
+        project_root: candidate.project_root || null, expected_dir: candidate.dir
+      } })
+      if (!response || response.ok !== true) throw new Error(response?.error || t('librarySaveFailed'))
+      qc.invalidateQueries({ queryKey: STATE_KEY })
+      setNotice(t('librarySaved', client.label))
+      setRevision(value => value + 1)
+    } catch (reason) { setError(reason.message || t('librarySaveFailed')) }
+    finally { setBusy(false) }
+  }
+  const addCustom = async () => {
+    setBusy(true)
+    setError('')
+    setNotice('')
+    try {
+      const response = await pluginCtx.rest('/config/tools', { method: 'POST', body: {
+        id: customId.trim(), label: customLabel.trim(), dir: customPath.trim()
+      } })
+      if (!response || response.ok !== true) throw new Error(response?.error || t('librarySaveFailed'))
+      qc.invalidateQueries({ queryKey: STATE_KEY })
+      setNotice(t('librarySaved', customLabel.trim()))
+      setCustomId(''); setCustomLabel(''); setCustomPath('')
+      setRevision(value => value + 1)
+    } catch (reason) { setError(reason.message || t('librarySaveFailed')) }
+    finally { setBusy(false) }
+  }
+  const term = search.trim().toLocaleLowerCase()
+  const clients = catalog ? catalog.clients.filter(client => !term || (client.label + ' ' + client.id).toLocaleLowerCase().includes(term)) : []
+  const available = clients.filter(client => client.skills && client.may_create && client.verification === 'documented')
+    .flatMap(client => (client.candidates || []).filter(candidate => candidate.scope === scope).map(candidate => ({ client, candidate })))
+  const renderGroup = (group, rows) => jsxs('section', {
+    'data-client-group': group,
+    className: 'flex min-w-0 flex-col gap-2',
+    children: [jsx('h3', { className: 'font-medium', children: t(group === 'detected' ? 'libraryDetected' : 'libraryAvailable') }),
+      ...rows.map(({ client, candidate }) => jsxs('div', {
+        'data-client-id': client.id, 'data-client-scope': candidate.scope,
+        className: 'flex min-w-0 flex-col gap-2 rounded-md border border-(--ui-stroke-secondary) p-3',
+        children: [
+          jsxs('div', { className: 'flex flex-wrap items-center gap-2', children: [
+            jsx('span', { className: 'font-medium', children: client.label }),
+            jsx(Badge, { size: 'xs', variant: 'outline', children: t(scope === 'global' ? 'globalScope' : 'projectScope') }),
+            jsx(Button, { variant: 'secondary', size: 'xs', className: 'ml-auto',
+              'aria-label': t('libraryConnectLabel', client.label, scope),
+              disabled: busy || !!candidate.error || !!candidate.configured_id || (scope === 'project' && projectInput.trim() !== projectRoot),
+              onClick: () => activate(client, candidate),
+              children: t(candidate.configured_id ? 'libraryConfigured' : 'libraryConnect') })
+          ] }),
+          jsx('code', { 'data-candidate-path': client.id, className: 'whitespace-normal break-words text-xs', children: candidate.dir || candidate.error }),
+          candidate.shared || (candidate.shared_with || []).length > 1 ? jsx('p', { className: 'text-xs text-(--ui-text-warning)', children: t('sharedDirectoryWarning') }) : null,
+          client.notes ? jsx('p', { className: 'text-xs text-muted-foreground', children: client.notes }) : null
+        ]
+      }, client.id + '-' + candidate.index))]
+  })
+  return jsxs('div', { 'data-client-library': scope, className: 'flex h-full min-w-0 flex-col', children: [
+    jsxs('div', { className: 'flex flex-wrap items-center gap-2 border-b border-(--ui-stroke-secondary) p-3', children: [
+      jsx(Button, { variant: 'ghost', size: 'xs', onClick: onBack, disabled: busy, children: t('libraryBack') }),
+      jsx('h2', { className: 'font-medium', children: t('libraryTitle') })
+    ] }),
+    jsx(ScrollArea, { className: 'min-h-0 flex-1', children: jsxs('div', { className: 'flex min-w-0 flex-col gap-4 p-4', children: [
+      jsx('p', { className: 'text-sm text-muted-foreground', children: t('libraryIntro') }),
+      jsx('input', { ref: searchRef, type: 'search', value: search, onChange: event => setSearch(event.target.value),
+        'aria-label': t('librarySearch'), placeholder: t('librarySearch'), className: 'w-full min-w-0 rounded-md border border-(--ui-stroke-secondary) bg-transparent p-2 text-sm' }),
+      jsxs('div', { role: 'group', 'aria-label': t('libraryScope'), className: 'flex flex-wrap gap-2', children: [
+        jsx(Button, { variant: scope === 'global' ? 'primary' : 'secondary', size: 'sm', disabled: busy, 'aria-pressed': scope === 'global', onClick: () => { setScope('global'); setNotice('') }, children: t('globalScope') }),
+        jsx(Button, { variant: scope === 'project' ? 'primary' : 'secondary', size: 'sm', disabled: busy, 'aria-pressed': scope === 'project', onClick: () => { setScope('project'); setNotice('') }, children: t('projectScope') })
+      ] }),
+      jsx('p', { className: 'text-xs text-muted-foreground', children: t(scope === 'global' ? 'globalScopeDesc' : 'projectScopeDesc') }),
+      scope === 'project' ? jsxs('div', { className: 'flex min-w-0 flex-col gap-2', children: [
+        jsx(Input, { value: projectInput, onChange: setProjectInput, 'aria-label': t('projectFolder'), placeholder: t('projectFolder'), className: 'min-w-0 flex-1' }),
+        jsx(Button, { variant: 'secondary', size: 'sm', disabled: busy || !projectInput.trim(), onClick: () => { setProjectRoot(projectInput.trim()); setRevision(value => value + 1) }, children: t('reviewProjectFolder') }),
+        projectRoot ? jsx('code', { className: 'break-words text-xs', children: projectRoot }) : null,
+        projectRoot && projectInput.trim() !== projectRoot ? jsx('p', { role: 'status', className: 'text-xs text-muted-foreground', children: t('projectReviewChanged') }) : null
+      ] }) : null,
+      notice ? jsx('div', { role: 'status', className: 'text-sm text-(--ui-text-success)', children: notice }) : null,
+      error ? jsxs('div', { role: 'alert', className: 'flex flex-col gap-2 text-sm text-(--ui-text-warning)', children: [
+        jsx('p', { children: error }), jsx('p', { className: 'text-xs', children: t('libraryRecovery') }),
+        jsx(Button, { variant: 'secondary', size: 'xs', onClick: () => setRevision(value => value + 1), children: t('retry') })
+      ] }) : null,
+      loading ? jsx(Skeleton, { className: 'h-40 w-full' }) : null,
+      !loading && catalog ? renderGroup('detected', available.filter(row => row.candidate.detected || row.candidate.configured_id)) : null,
+      !loading && catalog ? renderGroup('available', available.filter(row => !row.candidate.detected && !row.candidate.configured_id)) : null,
+      !loading && catalog && !available.length ? jsx('p', { className: 'text-sm text-muted-foreground', children: t('libraryNoMatches') }) : null,
+      jsxs('section', { 'data-client-group': 'custom', className: 'flex min-w-0 flex-col gap-2 border-t border-(--ui-stroke-secondary) pt-3', children: [
+        jsx('h3', { className: 'font-medium', children: t('libraryCustom') }),
+        jsx('p', { className: 'text-xs text-muted-foreground', children: t('libraryCustomDesc') }),
+        clients.filter(client => client.verification !== 'documented').map(client => jsx('p', { className: 'text-xs text-muted-foreground', children: client.label + ': ' + client.notes }, client.id)),
+        jsx(Input, { value: customId, onChange: setCustomId, 'aria-label': t('customClientId'), placeholder: t('customClientId') }),
+        jsx(Input, { value: customLabel, onChange: setCustomLabel, 'aria-label': t('customClientLabel'), placeholder: t('customClientLabel') }),
+        jsx(Input, { value: customPath, onChange: setCustomPath, 'aria-label': t('customClientPath'), placeholder: t('customClientPath') }),
+        customPath.trim() ? jsx('code', { className: 'break-words text-xs', children: customPath.trim() }) : null,
+        jsx(Button, { variant: 'secondary', size: 'sm', disabled: busy || !/^[a-z0-9-]{1,32}$/.test(customId.trim()) || customId.trim() === 'hermes' || !customLabel.trim() || !customPath.trim(), onClick: addCustom, children: t('saveCustomClient') })
+      ] })
+    ] }) })
+  ] })
+}
+
 function ToolsOverview({ layout }) {
   const t = usePluginI18n(ID)
   const qc = useQueryClient()
   const onboarding = storeGet(ONBOARDING_KEY, { version: ONBOARDING_VERSION, complete: false })
   const onboardingComplete = onboarding && onboarding.version === ONBOARDING_VERSION && onboarding.complete === true
   const [selectedTool, setSelectedTool] = useState(null)
+  const [showLibrary, setShowLibrary] = useState(false)
   const [viewMode, setViewMode] = useState('cards')
   const [confirm, setConfirm] = useState(null)
   const [undo, setUndo] = useState(null)
@@ -3316,15 +3463,17 @@ function ToolsOverview({ layout }) {
     destructive: confirm ? confirm.destructive : false
   })
 
+  if (showLibrary) return jsx(ClientLibrary, { onBack: () => setShowLibrary(false) })
   if (selectedTool) {
+    const currentTool = tools.find(tool => tool.id === selectedTool.id) || selectedTool
     return jsxs('div', {
       'data-single-tool-layout': 'true',
       className: 'flex h-full min-w-0 flex-col',
       children: [
         jsx('div', { 'data-single-tool-shell': 'true', className: 'min-h-0 min-w-0 flex-1', children: jsx(SingleToolView, {
-          tool: selectedTool,
+          tool: currentTool,
           skills: skills,
-          busy: busy,
+          busy: busy || !!currentTool.read_only,
           onBack: () => setSelectedTool(null),
           onToggle: (skill, enabled) => toggleMutation.mutate({ skill: skill, tool: selectedTool, enabled: enabled }),
           onBulk: (skillIds, enabled, scope) => openBulkPlan(selectedTool, enabled, skillIds, scope)
@@ -3339,13 +3488,13 @@ function ToolsOverview({ layout }) {
   let body
   if (stateQuery.isPending || (stateQuery.isLoading && !state)) {
     body = jsx('div', { className: 'grid grid-cols-1 gap-3 p-4', children: [0, 1, 2].map(index => jsx(Skeleton, { className: 'h-40 w-full' }, `tool-card-${index}`)) })
-  } else if (stateQuery.isError) {
+  } else if (stateQuery.isError || (state && state.ok === false)) {
     body = jsx(ErrorState, {
-      title: t('errorTitle'), description: t('errorDesc'),
+      title: t('errorTitle'), description: state?.error || t('errorDesc'),
       children: jsx(Button, { variant: 'secondary', size: 'xs', onClick: () => stateQuery.refetch(), children: t('retry') })
     })
   } else if (state && state.ok && !state.skills_root_exists) {
-    body = jsx(EmptyState, { title: t('noRootTitle'), description: t('noRootDesc') })
+    body = jsx(EmptyState, { title: t('noRootTitle'), description: t('noRootDesc'), children: jsx(Button, { variant: 'secondary', size: 'xs', onClick: () => stateQuery.refetch(), children: t('retry') }) })
   } else if (layout === 'wide' && viewMode === 'matrix') {
     body = jsx(ExpertMatrix, {
       skills: skills,
@@ -3386,7 +3535,7 @@ function ToolsOverview({ layout }) {
               })
             : null,
           jsx(Button, { variant: 'secondary', size: 'xs', className: layout === 'wide' ? undefined : 'ml-auto', onClick: () => ccSectionAtom.set('onboarding'), children: t('scanAndImport') }),
-          jsx(Button, { variant: 'secondary', size: 'xs', onClick: () => ccSectionAtom.set('advanced'), children: t('addToolAction') })
+          jsx(Button, { variant: 'secondary', size: 'xs', onClick: () => setShowLibrary(true), children: t('addToolAction') })
         ]
       }),
       !onboardingComplete
@@ -3525,10 +3674,10 @@ function FirstRunWizard() {
   })
   const state = stateQuery.data
   const knownToolIds = state && state.ok && Array.isArray(state.tools)
-    ? state.tools.filter(tool => tool.id !== 'hermes' && tool.special !== 'config').map(tool => tool.id)
+    ? state.tools.filter(tool => tool.id !== 'hermes' && tool.special !== 'config' && !tool.read_only).map(tool => tool.id)
     : []
   const detectedTools = state && state.ok && Array.isArray(state.tools)
-    ? state.tools.filter(tool => tool.id !== 'hermes' && tool.special !== 'config' && tool.present)
+    ? state.tools.filter(tool => tool.id !== 'hermes' && tool.special !== 'config' && tool.present && !tool.read_only)
     : []
 
   useEffect(() => {
@@ -3690,7 +3839,7 @@ function FirstRunWizard() {
         className: 'flex items-start gap-2 rounded-md border border-(--ui-stroke-secondary) p-2',
         children: [
           jsx('input', { type: 'checkbox', checked: selectedTools.has(tool.id), onChange: () => toggleTool(tool.id), 'aria-label': t('wizardSelectTool', tool.label) }),
-          jsxs('span', { children: [jsx('span', { className: 'block font-medium', children: tool.label }), jsx('span', { className: 'block break-words text-xs text-muted-foreground', children: tool.dir })] })
+          jsxs('span', { children: [jsx('span', { className: 'block font-medium', children: tool.label }), jsx('span', { className: 'block break-words text-xs text-muted-foreground', children: (tool.scope === 'project' ? t('projectScope') : t('globalScope')) + ': ' + tool.dir })] })
         ]
       }, tool.id)),
       jsxs('div', { className: 'flex gap-2', children: [
@@ -3939,6 +4088,38 @@ export default {
         disableAll: 'Disable all',
         overviewProblems: n => `${n} problems`,
         addToolAction: 'Add Tool',
+        libraryTitle: 'Client library',
+        libraryBack: 'Back to Tools',
+        libraryIntro: 'Choose a client and review its path. Adding it saves a mapping, not skills. Daily Tools shows only detected or configured targets.',
+        librarySearch: 'Search clients',
+        libraryScope: 'Client scope',
+        globalScope: 'Global',
+        projectScope: 'Project',
+        globalScopeDesc: 'Use the client location in your user account. Client-specific permissions and precedence still apply.',
+        projectScopeDesc: 'Choose one existing project folder. Switchboard checks only supported paths inside it, never searches your computer for projects.',
+        projectFolder: 'Absolute project folder path',
+        reviewProjectFolder: 'Review project folder',
+        projectReviewChanged: 'Review the edited project folder before using a path.',
+        libraryDetected: 'Detected',
+        libraryAvailable: 'Available',
+        libraryCustom: 'Custom',
+        libraryConnect: 'Use this path',
+        libraryConfigured: 'Configured',
+        libraryConnectLabel: (label, scope) => `Use ${scope} path for ${label}`,
+        librarySaved: label => `${label} is configured. Return to Tools to choose its skills. No skill files were changed.`,
+        librarySaveFailed: 'Could not save this client. Nothing was confirmed.',
+        libraryUnavailable: 'The client library is unavailable.',
+        libraryVersion: 'The desktop and backend catalog versions differ. Fully quit and reopen Hermes after updating both plugin halves.',
+        libraryRecovery: 'Repair the reported path or settings, then retry. A missing route requires a full Hermes restart, not just Reload desktop plugins.',
+        libraryNoMatches: 'No verified clients match this search and scope. Change the search or scope, or use an explicitly reviewed Custom path.',
+        libraryCustomDesc: 'Use a Custom path only after checking the client reads compatible skill folders. This is an explicit exception to Global and Project boundaries, not a compatibility claim.',
+        libraryReviewCustom: 'This legacy client is unverified. Review and save its path as Custom in Add Tool before changing skills.',
+        customClientId: 'Custom client ID (lowercase letters, numbers, hyphens)',
+        customClientLabel: 'Custom client display name',
+        customClientPath: 'Custom skills directory (absolute path)',
+        saveCustomClient: 'Save reviewed Custom path',
+        sharedDirectoryWarning: 'Shared folder: changes here affect every client that reads this directory, not only this card.',
+
         scanAndImport: 'Scan & import',
         onboardingEntryTitle: 'Bring existing skills into Hermes',
         onboardingEntryDesc: 'Scan detected tools, review every copy, and choose what Hermes should manage.',
@@ -3950,7 +4131,7 @@ export default {
         wizardBackupPromise: 'When you adopt from a detected tool, the original is moved to a timestamped backup and replaced with a managed link. Originals are never deleted.',
         wizardGetStarted: 'Get started',
         wizardSourcesTitle: 'Choose where to scan',
-        wizardSourcesDesc: 'Detected skill folders are ready automatically. Add another folder only when a source is outside a known tool.',
+        wizardSourcesDesc: 'Detected folders are preselected. Global folders serve your user account; Project folders belong to a project you added in Tools. Add another read-only source only when needed.',
         wizardSelectTool: label => `Scan ${label}`,
         wizardManageTool: label => `Manage ${label}`,
         wizardFolderPlaceholder: '/path/to/another/skills folder',
