@@ -880,7 +880,7 @@ class HermesLoadoutCore:
             payload = {
                 "ok": True,
                 "plugin_version": PLUGIN_VERSION,
-                "capabilities": {"client_catalog": CATALOG_VERSION, "scopes": ["global", "project", "custom"], "receipt_undo": True},
+                "capabilities": {"client_catalog": CATALOG_VERSION, "scopes": ["global", "project", "custom"], "receipt_undo": True, "reviewed_operations": 1, "named_loadouts": 1},
                 "hermes_home": str(self.home),
                 "skills_root": str(self.skills_root),
                 "skills_root_exists": self.skills_root.is_dir(),
@@ -2169,7 +2169,7 @@ class HermesLoadoutCore:
             },
         }
 
-    def import_apply_plan(self, entries: object, category: object = "imported", *, plan_id: object = None) -> dict:
+    def import_apply_plan(self, entries: object, category: object = "imported", *, plan_id: object = None, _record=None) -> dict:
         """Consume one exact preview; imports do not grant any new activation."""
         with self._lock:
             review = self._take_review(plan_id, "import")
@@ -2222,6 +2222,14 @@ class HermesLoadoutCore:
                         raise LoadoutError("Repair the catalog bypass before importing", "catalog-bypass")
                     destination.parent.mkdir(parents=True, exist_ok=True)
                     self._import_destination(category, name)
+                    backup = self._new_tool_backup(source, name) if tool_id is not None else None
+                    row.update(skill=f"{category}/{name}", path=str(destination),
+                               backup=str(backup) if backup else None,
+                               hermes_disabled_before=disabled_before,
+                               fingerprint=reviewed["fingerprint"],
+                               source_identity=reviewed["source_identity"])
+                    if _record is not None:
+                        _record(row, "pending")  # durable intent before activation or discovery changes
                     self._hermes_toggle(name, False)  # before a discoverable copy exists
                     disabled_written = True
                     stage = destination.parent.resolve() / (".hermes-loadout-import-" + uuid.uuid4().hex)
@@ -2239,7 +2247,6 @@ class HermesLoadoutCore:
                     if tool_id is not None:
                         if self._skill_fingerprint(src) != reviewed["fingerprint"]:
                             raise LoadoutError("The original changed during import", "changed-since-preview")
-                        backup = self._new_tool_backup(source, name)
                         os.rename(src, backup)  # refuses safely across filesystems
                         try:
                             os.symlink(str(destination.resolve()), str(src), target_is_directory=True)
@@ -2276,6 +2283,8 @@ class HermesLoadoutCore:
                                changed_since_preview=code in {"changed-since-preview", "foreign-link", "destination-escape", "destination-changed"},
                                recovery_required=recovery)
                 results.append(row)
+                if _record is not None:
+                    _record(row, "completed" if row["ok"] else "failed")
             adopted = sum(bool(row["ok"]) for row in results)
             refused = sum(not row["ok"] and row["code"] not in {"copy-failed", "recovery-required"} for row in results)
             failed = len(results) - adopted - refused
@@ -2345,7 +2354,7 @@ class HermesLoadoutCore:
             return {"ok": True, "plan_id": review_id, "items": [match], "changed": 1,
                     "description": "Remove only this broad link. Keep the library and individual selections. Refresh the application afterward."}
 
-    def repair_catalog(self, plan_id: object) -> dict:
+    def repair_catalog(self, plan_id: object, _record=None) -> dict:
         with self._lock:
             review = self._take_review(plan_id, "catalog-repair")
             row = review["row"]
@@ -2356,12 +2365,17 @@ class HermesLoadoutCore:
                     or self._entry_snapshot(path) != review["before"]
                     or not any(entry["path"] == str(path) for entry in self.catalog_bypasses(row["tool"]))):
                 raise LoadoutError("The broad link changed. Review it again.", "changed-since-preview")
+            result = {"ok": True, "changed": 1, "tool": row["tool"], "name": row["name"],
+                      "path": str(path), "context": review["context"], "before": review["before"]}
+            if _record is not None:
+                _record(result, "pending")
             path.unlink()
+            result.update(after=self._entry_snapshot(path), code="completed")
+            if _record is not None:
+                _record(result, "completed")
             self.invalidate()
             self._log(action="catalog-bypass-repair", tool=row["tool"], name=row["name"])
-            return {"ok": True, "changed": 1, "tool": row["tool"], "name": row["name"],
-                    "path": str(path), "context": review["context"], "before": review["before"],
-                    "after": self._entry_snapshot(path), "code": "completed"}
+            return result
 
     def drift(self) -> dict:
         """Same-name skills where the tool's copy differs from the Hermes source."""
@@ -3060,7 +3074,7 @@ class HermesLoadoutCore:
             "skills_root": str(self.skills_root),
             "skills_root_exists": self.skills_root.is_dir(),
             "tools": {tid: (str(self._inventory_dir(tid)) if self._inventory_dir(tid) else None) for tid in self.tools},
-            "capabilities": {"client_catalog": CATALOG_VERSION, "receipt_undo": True},
+            "capabilities": {"client_catalog": CATALOG_VERSION, "receipt_undo": True, "reviewed_operations": 1, "named_loadouts": 1},
         }
 
 

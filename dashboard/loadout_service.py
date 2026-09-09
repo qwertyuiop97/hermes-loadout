@@ -147,7 +147,10 @@ class LoadoutService:
         """Save-only source data. This does not change filesystem or MCP state."""
         if not isinstance(apps, list) or any(not isinstance(app, str) for app in apps):
             raise self.Error('Select applications to capture.', 'invalid-body')
-        states = []
+        known = set(self.core.tools) | {'hermes', 'codex', 'claude-desktop'}
+        if any(app not in known for app in apps):
+            raise self.Error('An application is no longer available. Refresh the selection.', 'unknown-tool')
+        states, excluded = [], []
         inventory = self.core.state()
         for app in dict.fromkeys(apps):
             if app in self.core.tools:
@@ -155,12 +158,16 @@ class LoadoutService:
                     state = skill['tools'][app]['state']
                     if state in ('enabled', 'disabled', 'missing'):
                         states.append({'kind': 'skill', 'app': app, 'id': skill['id'], 'enabled': state == 'enabled'})
+                    else:
+                        excluded.append({'kind': 'skill', 'app': app, 'id': skill['id'], 'status': state})
             if app in ('hermes', 'codex', 'claude-desktop'):
                 for row in self.mcp.mcp_state()['rows']:
                     state = ('enabled' if row['enabled'] else 'disabled') if app == 'hermes' else row['writers'].get('claude' if app == 'claude-desktop' else app)
                     if state in ('enabled', 'disabled', 'missing'):
                         states.append({'kind': 'mcp', 'app': app, 'id': row['name'], 'enabled': state == 'enabled'})
-        return {'ok': True, 'states': states}
+                    else:
+                        excluded.append({'kind': 'mcp', 'app': app, 'id': row['name'], 'status': state})
+        return {'ok': True, 'states': states, 'excluded': excluded}
 
     CLASSIFICATIONS = ('Portable', 'Hermes-specific', 'Codex-specific', 'Claude-specific',
                        'Other application-specific', 'Unclassified')
@@ -310,11 +317,21 @@ class LoadoutService:
         items = [{k: v for k, v in row.items() if k in ('kind', 'app', 'id', 'enabled', 'status', 'code', 'error', 'ok')}
                  for row in receipt['items']]
         changed = sum(row.get('status') == 'completed' for row in items)
+        counts = {key: sum(row.get('status') == key for row in items) for key in
+                  ('completed', 'unchanged', 'protected', 'conflict', 'unavailable', 'failed', 'pending')}
+        failed = sum(row.get('status') not in ('completed', 'unchanged') for row in items)
         return {'receipt_id': receipt['receipt_id'], 'label': receipt['label'], 'kind': receipt['kind'],
-                'status': receipt['status'], 'items': items, 'changed': changed,
-                'skipped': sum(row.get('status') == 'unchanged' for row in items),
-                'failed': sum(row.get('status') not in ('completed', 'unchanged') for row in items),
+                'status': receipt['status'], 'items': items, 'changed': changed, 'counts': counts,
+                'skipped': counts['unchanged'], 'failed': failed, 'partial': changed > 0 and failed > 0,
                 'undo_available': changed > 0 and receipt['status'] == 'complete'}
+
+    def _interrupted(self, receipt):
+        # Never clear evidence after a possibly completed filesystem operation.
+        receipt['status'] = 'recovery-required'
+        self.core.invalidate()
+        return {'ok': False, 'code': 'recovery-required',
+                'error': 'An operation was interrupted. Preserve the pending record and backups; inspect recovery before making another change.',
+                'receipt': self._summary(receipt)}
 
     def _complete(self, receipt):
         receipt['status'] = 'complete'
@@ -323,7 +340,8 @@ class LoadoutService:
             self._write('last-operation.json', receipt)
         self._path('pending-operation.json').unlink(missing_ok=True)
         self.core.invalidate()
-        return {'ok': True, 'receipt': self._summary(receipt), 'changed': self._summary(receipt)['changed']}
+        summary = self._summary(receipt)
+        return {'ok': True, 'receipt': summary, 'changed': summary['changed'], 'partial': summary['partial']}
 
     def apply(self, plan_id):
         with self.core._lock, self.mcp._lock:
@@ -569,19 +587,30 @@ class LoadoutService:
                     result['items'].append({**public, 'status': 'protected', 'ok': False,
                         'error': 'This item was not eligible in the reviewed undo and was left untouched.'})
                     continue
+                attempted = False
+                progress = None
                 try:
+                    self._undo_check(row)
+                    progress = {**public, 'status': 'pending', 'original': copy.deepcopy(row)}
+                    result['items'].append(progress)
+                    self._write('pending-operation.json', result)
+                    attempted = True
                     self._undo_one(row)
                     row['status'] = 'undone'
-                    result['items'].append({**public, 'status': 'completed', 'ok': True})
+                    progress.update(status='completed', ok=True)
                     # Persist progress on the same single undo point, not a new history.
                     self._write('last-operation.json', receipt)
                     self._write('pending-operation.json', result)
                 except (self.Error, OSError, ValueError, KeyError) as exc:
                     if row.get('status') == 'undone':
-                        result['status'] = 'recovery-required'
-                        return {'ok': False, 'code': 'recovery-required',
-                                'error': 'Undo changed an entry but could not save progress. Preserve the pending record.',
-                                'receipt': self._summary(result)}
+                        return self._interrupted(result)
+                    if attempted:
+                        try:
+                            self._undo_check(row)  # an exception may have followed a partial undo
+                        except (self.Error, OSError, ValueError, KeyError):
+                            return self._interrupted(result)
+                    if progress is not None:
+                        result['items'].remove(progress)
                     result['items'].append(self._public_error(public, exc))
             receipt['status'] = 'complete' if any(row.get('status') == 'completed' for row in receipt['items']) else 'undone'
             try:
@@ -593,39 +622,52 @@ class LoadoutService:
                         'receipt': self._summary(result)}
             self.core.invalidate()
             result['status'] = 'undone'
-            return {'ok': True, 'receipt': self._summary(result)}
+            summary = self._summary(result)
+            return {'ok': True, 'receipt': summary, 'changed': summary['changed'], 'partial': summary['partial']}
 
     def apply_import(self, entries, category, plan_id):
         with self.core._lock:
             receipt = self._receipt('Import skills', 'import')
             self._write('pending-operation.json', receipt)
+
+            def record(row, status):
+                item = {**row, 'kind': 'import', 'app': row.get('tool') or 'library', 'id': row['name'],
+                        'source_app': row.get('tool'), 'status': status}
+                if status == 'failed':
+                    error = self.Error('Import could not finish safely. Review this source and destination.', row.get('code', 'copy-failed'))
+                    item.update(self._public_error(item, error))
+                key = (item['id'], item.get('source'))
+                receipt['items'] = [old for old in receipt['items'] if (old['id'], old.get('source')) != key] + [item]
+                self._write('pending-operation.json', receipt)
+
             try:
-                result = self.core.import_apply_plan(entries, category, plan_id=plan_id)
-            except (self.Error, OSError):
+                result = self.core.import_apply_plan(entries, category, plan_id=plan_id, _record=record)
+                if any(row.get('recovery_required') for row in result['results']):
+                    return {**result, **self._interrupted(receipt)}
+                summary = self._complete(receipt)
+                result.update(operation=summary['receipt'], partial=summary['partial'])
+                return result
+            except (self.Error, OSError, ValueError):
+                if receipt['items']:
+                    return self._interrupted(receipt)
                 self._path('pending-operation.json').unlink()
                 raise
-            for row in result['results']:
-                item = {**row, 'kind': 'import', 'app': row.get('tool') or 'library', 'id': row['name'],
-                        'source_app': row.get('tool'), 'status': 'completed' if row['ok'] else 'protected'}
-                receipt['items'].append(item)
-            if any(row.get('recovery_required') for row in result['results']):
-                self._write('pending-operation.json', receipt)
-                return {**result, 'ok': False, 'code': 'recovery-required'}
-            self._write('pending-operation.json', receipt)
-            summary = self._complete(receipt)
-            result['operation'] = summary['receipt']
-            return result
 
     def apply_catalog_repair(self, plan_id):
         with self.core._lock:
             receipt = self._receipt('Repair catalog bypass', 'repair')
             self._write('pending-operation.json', receipt)
+
+            def record(row, status):
+                receipt['items'] = [{**row, 'kind': 'catalog-bypass', 'app': row['tool'],
+                                     'id': row['name'], 'status': status}]
+                self._write('pending-operation.json', receipt)
+
             try:
-                result = self.core.repair_catalog(plan_id)
-            except (self.Error, OSError):
+                self.core.repair_catalog(plan_id, _record=record)
+                return self._complete(receipt)
+            except (self.Error, OSError, ValueError):
+                if receipt['items']:
+                    return self._interrupted(receipt)
                 self._path('pending-operation.json').unlink()
                 raise
-            receipt['items'].append({**result, 'kind': 'catalog-bypass', 'app': result['tool'],
-                                     'id': result['name'], 'status': 'completed'})
-            self._write('pending-operation.json', receipt)
-            return self._complete(receipt)
