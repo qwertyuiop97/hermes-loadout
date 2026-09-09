@@ -19,22 +19,22 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Apply the exact reviewed loadout patch
+      - name: Apply the exact reviewed recovery patch
         shell: python
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
         run: |
           import base64, hashlib, json, lzma, os, subprocess, urllib.request
-          sha = '757103ab47ed3fc64bd768c3a1047324233d7cf3'
+          sha = '040c805f251444e03fab09594c2a1717563fd606'
           request = urllib.request.Request('https://api.github.com/repos/' + os.environ['REPOSITORY'] + '/git/blobs/' + sha, headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'], 'Accept': 'application/vnd.github+json'})
           with urllib.request.urlopen(request, timeout=30) as response:
               part = base64.b64decode(json.load(response)['content'])
           assert hashlib.sha1(b'blob ' + str(len(part)).encode() + b'\0' + part).hexdigest() == sha
           patch = lzma.decompress(base64.b64decode(part))
-          assert hashlib.sha256(patch).hexdigest() == 'eb4f67b64b24c6eefd5a30b1e264730e6469c77d2d52ef4c71666aac5fbcf91a'
-          subprocess.run(['git', 'apply', '--unidiff-zero', '--check', '-'], input=patch, check=True)
-          subprocess.run(['git', 'apply', '--unidiff-zero', '--index', '-'], input=patch, check=True)
+          assert hashlib.sha256(patch).hexdigest() == 'e698e4776fa45be0786d9411b56405253cf06529b514dda1147da5006b8ca806'
+          subprocess.run(['git', 'apply', '--check', '-'], input=patch, check=True)
+          subprocess.run(['git', 'apply', '--index', '-'], input=patch, check=True)
       - name: Verify backend and interface contracts
         run: |
           python -m pip install --quiet fastapi httpx
@@ -49,7 +49,7 @@ jobs:
           test "$(git ls-remote origin refs/heads/astra/switchboard-alpha-hardening | cut -f1)" = "$EXPECTED_HEAD"
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git commit -m 'feat: persist secret-free named loadouts and reviewed one-step undo'
+          git commit -m 'fix: retain import and undo evidence across interrupted operations'
           git push origin HEAD:refs/heads/astra/switchboard-alpha-hardening
       - name: Archive committed source
         run: |
@@ -57,7 +57,7 @@ jobs:
           git rev-parse HEAD > "$RUNNER_TEMP/source-commit.txt"
       - uses: actions/upload-artifact@v4
         with:
-          name: loadouts-source
+          name: recovery-source
           path: |
             ${{ runner.temp }}/source.tar
             ${{ runner.temp }}/source-commit.txt
