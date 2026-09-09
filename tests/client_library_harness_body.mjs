@@ -14,6 +14,14 @@ const channel = { state: { ok: true, capabilities: { reviewed_operations: 1 }, s
 globalThis.__LOADOUT_TEST = channel
 let version = 1, failActivation = false, failCustom = false
 const used = new Set()
+const scaleClients = Array.from({ length: 26 }, (_, index) => ({
+  id: `documented-${index + 1}`,
+  label: `Documented client ${index + 1}`,
+  skills: true,
+  may_create: true,
+  verification: 'documented',
+  candidates: []
+}))
 const rest = async (path, options = {}) => {
   channel.restCalls.push({ path, body: options.body })
   if (path === '/clients/enable') {
@@ -30,7 +38,8 @@ const rest = async (path, options = {}) => {
     { id: 'claude', label: 'Claude Code', skills: true, may_create: true, verification: 'documented', candidates: candidates('claude', '.claude', true) },
     { id: 'cursor', label: 'Cursor', skills: true, may_create: true, verification: 'documented', candidates: candidates('cursor', '.cursor') },
     { id: 'agents', label: 'Shared Agent Skills', skills: true, may_create: true, verification: 'documented', candidates: candidates('agents', '.agents') },
-    { id: 'grok', label: 'Grok', skills: false, may_create: false, verification: 'unverified', notes: 'Not yet verified.', candidates: [] }
+    { id: 'grok', label: 'Grok', skills: false, may_create: false, verification: 'unverified', notes: 'Not yet verified.', candidates: [] },
+    ...scaleClients.map(client => ({ ...client, candidates: candidates(client.id, '.' + client.id) }))
   ] }
 }
 plugin.register({ source: 'plugin:hermes-loadout', rest,
@@ -43,8 +52,10 @@ const text = tree => JSON.stringify(tree.toJSON())
 let tree
 await act(async () => { tree = TestRenderer.create(createElement(ToolsOverview, { layout: 'narrow' })) })
 assert.equal(tree.root.findAll(node => node.props['data-tool-card'] === 'cursor').length, 0)
+assert.equal(tree.root.findAll(node => node.props['data-tool-card']).length, 1, '30 catalog entries do not expand the daily application view')
 await act(async () => { button(tree, 'Add Tool').props.onClick() })
 assert.deepEqual(tree.root.findAll(node => node.props['data-client-group']).map(node => node.props['data-client-group']), ['detected', 'available', 'custom'])
+assert.equal(tree.root.findAll(node => node.props['data-client-id']).length, 29, 'the searchable library handles 30 catalog entries and hides unsupported candidates')
 assert.equal(button(tree, 'Back to Applications').props.disabled, false)
 assert.equal(labeled(tree, 'Use global path for Claude Code').props.disabled, false)
 assert.equal(tree.root.findAll(node => node.props['data-client-id'] === 'grok').length, 0)
@@ -95,6 +106,7 @@ await act(async () => { button(tree, 'Back to Applications').props.onClick() })
 assert.equal(tree.root.findAll(node => node.props['data-client-library']).length, 0)
 await act(async () => { tree.unmount() })
 console.log('ok  searchable library keeps available clients out of everyday Tools')
+console.log('ok  30 catalog entries stay behind Add Tool instead of expanding the daily interface')
 console.log('ok  project paths need explicit review and activation saves only the reviewed mapping')
 console.log('ok  shared-folder warnings, Custom failures, and backend-version recovery are visible')
 console.log('CLIENT LIBRARY HARNESS: ALL CHECKS PASSED')

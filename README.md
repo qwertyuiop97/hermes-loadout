@@ -187,8 +187,7 @@ default branch installs the latest reviewed source rather than a versioned relea
 
 Clone the repository you are reading into the active profile's plugin directory,
 using its **Code → clone URL**. The package directory and plugin ID must be
-`hermes-loadout`. This remains correct while the repository's display slug is
-being updated.
+`hermes-loadout`.
 
 ```bash
 git clone <repository-clone-url> ~/.hermes/plugins/hermes-loadout
