@@ -13,6 +13,7 @@ const state = JSON.parse(readFileSync(new URL('./fixtures/screenshot-shaped-105-
 state.capabilities = { reviewed_operations: 1, named_loadouts: 1 }
 const scanPlan = JSON.parse(readFileSync(new URL('./fixtures/first-run-scan-plan.json', import.meta.url), 'utf8'))
 scanPlan.plan_id = 'reviewed-import-token'
+scanPlan.adoptable[0].tool = null
 const channel = { mode: 'ready', state, bundle: {}, notifications: [], registry: [], restCalls: [], navigations: [], workspaces: [], invalidated: [],
   operation: { ok: true, receipt: null, recovery_required: false }, loadouts: { ok: true, loadouts: [] },
   diff: { ok: true, unlinked: ['research/deep-research'], broken: [{ tool: 'claude', name: 'broken-skill', target: '/missing' }], foreign: [{ tool: 'opencode', name: 'foreign-skill', target: '/team/source' }], unmanaged: [{ tool: 'grok', name: 'real-skill-dir' }], counts: { broken: 1, foreign: 1, unmanaged: 1, unlinked: 1 }, catalog_bypasses: [] },
@@ -183,6 +184,7 @@ assert.equal(sent.body.plan_id, scanPlan.plan_id)
 assert.deepEqual(sent.body.entries, scanPlan.adoptable.map(row => ({ name: row.name, source: row.source, tool: row.tool })))
 await act(async () => { resolveImport(); await Promise.resolve() }); holdImport = false
 assert(text(tree).includes('1 adopted') && text(tree).includes('1 failed'))
+assert(text(tree).includes('Added to the library; not activated'))
 await clicks(tree, 'Undo')
 assert(tree.root.findByProps({ role: 'dialog' }))
 await clicks(tree, 'Cancel')

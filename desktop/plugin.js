@@ -1778,7 +1778,9 @@ function ImportReceipt({ response, undoResults }) {
         results.map(row => jsx('div', {
           'data-import-result': row.name,
           className: row.ok ? 'text-xs text-muted-foreground' : 'text-xs text-(--ui-text-danger)',
-          children: t('wizardResultLine', row.name, row.ok ? t('wizardAdopted') : row.error || row.code || t('bulkFailed'))
+          children: t('wizardResultLine', row.name, row.ok
+            ? t(row.tool == null ? 'wizardAddedToLibrary' : 'wizardSourceKeptActive')
+            : row.error || row.code || t('bulkFailed'))
         }, `${row.source}-${row.name}`))
       ] }),
       jsxs('div', { className: 'rounded-md border border-(--ui-stroke-secondary) p-3', children: [
@@ -2290,7 +2292,8 @@ export default {
         wizardReceiptTitle: 'Adoption receipt',
         wizardReceiptCounts: (adopted, failed, refused) => `${adopted} adopted · ${failed} failed · ${refused} refused`,
         wizardResultLine: (name, result) => `${name} — ${result}`,
-        wizardAdopted: 'Adopted and linked',
+        wizardAddedToLibrary: 'Added to the library; not activated',
+        wizardSourceKeptActive: 'Added to the library; source application kept active',
         wizardUndoTitle: 'Undo / restore path',
         wizardUndoDesc: 'Keep this receipt ID and these paths. Detected-tool adoptions can be undone here; added-folder copies include the canonical path for manual restore review.',
         wizardUndoLine: (kind, path, backup) => `${kind}: ${path} · backup: ${backup}`,
