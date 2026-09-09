@@ -1,6 +1,6 @@
 name: implementation validation
 
-# Temporary, private-branch-only verification aid. Removed before final review.
+# Temporary implementation aid, removed before final review. Never runs on main.
 on:
   push:
     branches: [astra/catalog-scopes-safety]
@@ -11,23 +11,87 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: switchboard-implementation
+  cancel-in-progress: false
+
 jobs:
-  source-snapshot:
+  verify:
+    if: github.repository == 'qwertyuiop97/hermes-switchboard' && github.ref == 'refs/heads/astra/catalog-scopes-safety'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
-          persist-credentials: false
-      - name: Archive tracked source only
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install isolated test dependencies
+        run: python -m pip install --quiet fastapi httpx
+      - name: Apply only reviewed, hash-anchored product patches
+        shell: bash
+        run: |
+          python - <<'PY'
+          import hashlib, json, pathlib, subprocess
+          meta = pathlib.Path('.implementation/change.json')
+          if not meta.exists():
+              raise SystemExit(0)
+          spec = json.loads(meta.read_text())
+          allowed = ('dashboard/', 'desktop/', 'tests/', 'docs/')
+          root_files = {'README.md', 'plugin.yaml', '__init__.py', '.gitignore', 'SECURITY.md', 'CONTRIBUTING.md'}
+          for name, expected in spec['before_sha256'].items():
+              path = pathlib.PurePosixPath(name)
+              assert not path.is_absolute() and '..' not in path.parts and '.git' not in path.parts, name
+              assert name.startswith(allowed) or name in root_files, name
+              target = pathlib.Path(name)
+              actual = hashlib.sha256(target.read_bytes()).hexdigest() if target.exists() else None
+              assert actual == expected, 'Source changed: ' + name
+          subprocess.run(['git', 'apply', '--check', '--index', '.implementation/change.diff'], check=True)
+          subprocess.run(['git', 'apply', '--index', '.implementation/change.diff'], check=True)
+          names = subprocess.check_output(['git', 'diff', '--cached', '--name-only'], text=True).splitlines()
+          assert set(names) == set(spec['before_sha256']), 'Patch file list differs from reviewed manifest'
+          PY
+      - name: All backend and HTTP regression tests
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
+      - name: Frontend constraints
+        run: python tests/check_frontend.py
+      - name: Real React render and workspace checks
+        run: ./tests/run_render_harness.sh
+      - name: Commit validated product changes on this branch only
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, pathlib, subprocess
+          meta = pathlib.Path('.implementation/change.json')
+          if not meta.exists():
+              raise SystemExit(0)
+          spec = json.loads(meta.read_text())
+          subprocess.run(['git', 'diff', '--cached', '--check'], check=True)
+          subprocess.run(['git', 'rm', '.implementation/change.json', '.implementation/change.diff'], check=True)
+          subprocess.run(['git', '-c', 'user.name=Switchboard implementation', '-c', 'user.email=134896830+qwertyuiop97@users.noreply.github.com', 'commit', '-m', spec['message']], check=True)
+          subprocess.run(['git', 'push', 'origin', 'HEAD:refs/heads/astra/catalog-scopes-safety'], check=True)
+          PY
+      - name: Archive verification source and offline React dependencies
+        if: always()
         shell: bash
         run: |
           git rev-parse HEAD > source-commit.txt
           git ls-files -z | tar --null --files-from=- -czf repository-source.tar.gz
+          if [ -d /tmp/skt-front/node_modules ]; then
+            tar -czf react-test-runtime.tar.gz -C /tmp/skt-front node_modules
+          fi
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: repository-source
           path: |
             repository-source.tar.gz
             source-commit.txt
+            react-test-runtime.tar.gz
           retention-days: 1
           if-no-files-found: error
