@@ -37,7 +37,7 @@ Hermes version / OS:
 Did the plugin overwrite, delete, or move anything you did not preview?
 
 - [ ] No
-- [ ] Yes — paths:
+- [ ] Yes — paths (redact home-directory usernames):
 
 Did a protected entry (foreign link, real directory, extra-folder original)
 get mutated?

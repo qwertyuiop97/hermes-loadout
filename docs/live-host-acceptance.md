@@ -36,12 +36,12 @@ item below is a case the static harness is known NOT to prove.
 
 ## Entry points
 
-- [ ] Status-chip click navigates to the skills route / opens the pane.
-- [ ] ⌘K `Skills: toggle…` opens the pane.
-- [ ] ⌘K `Skills: health report` surfaces the health report.
-- [ ] ⌘K `MCP: toggle…` switches the pane tab live **while the pane is already
-  mounted** (SDK atom switch, not a remount — D5/built-in).
-- [ ] ⌘K `Skills: toggle…` switches the tab back live.
+- [ ] Status-chip / compact-pane Problems shortcut navigates to Control Center.
+- [ ] ⌘K `Skills: toggle…` opens Control Center **Tools**.
+- [ ] ⌘K `Skills: health report` opens Control Center **Problems**.
+- [ ] ⌘K `MCP: toggle…` opens Control Center **MCP** while Control Center is already
+  mounted (in-app section atom switch via `ccSectionAtom`, not a pane remount).
+- [ ] ⌘K `Skills: toggle…` switches back to **Tools** live.
 
 ## Split-window / compact pane (the supplied screenshot shape)
 
