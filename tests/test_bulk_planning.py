@@ -130,6 +130,17 @@ class BulkPlanningTest(unittest.TestCase):
         self.assertIn('"apple-notes"', text)
         self.assertIn('"architecture-diagram"', text)
 
+    def test_failed_atomic_hermes_write_retains_bytes_and_failure_receipt(self):
+        from unittest.mock import patch
+        before = self.core.config_path.read_bytes()
+        plan = self.core.plan_bulk(["apple/apple-notes"], "hermes", False)
+        with patch.object(pa.os, "replace", side_effect=OSError("fixture failure")):
+            result = self.core.execute_bulk(plan["would_change"], "hermes", False)
+        self.assertEqual(self.core.config_path.read_bytes(), before)
+        self.assertEqual(result["receipt"]["changed"], 0)
+        self.assertEqual(result["receipt"]["failed"], 1)
+        self.assertEqual(result["receipt"]["undone_by"], [])
+
     def test_mutation_log_redacts_nested_secret_values(self) -> None:
         secret = "sk-live-do-not-log"
         self.core._log(

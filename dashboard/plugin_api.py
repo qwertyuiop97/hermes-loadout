@@ -634,6 +634,36 @@ def _read_json_object(path: Path, section: str | None = None) -> tuple[dict, str
         raise SkillsToggleError(f"Cannot read configuration at {path}", "config-unreadable") from exc
 
 
+def _private_config_backup(path: Path) -> str | None:
+    """Do not duplicate config secrets into a world-readable or reused file."""
+    if path.is_symlink() or (path.exists() and not path.is_file()):
+        raise SkillsToggleError("Refusing to back up a non-regular configuration file", "config-protected")
+    if not path.exists():
+        return None
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    backup = None
+    try:
+        content = path.read_bytes()
+        for number in range(10000):
+            suffix = "" if number == 0 else "-" + str(number)
+            candidate = path.with_name(f"{path.name}.bak.hermes-switchboard.{stamp}{suffix}")
+            try:
+                descriptor = os.open(str(candidate), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            except FileExistsError:
+                continue
+            backup = candidate
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            return str(candidate)
+        raise OSError("No unused backup filename")
+    except OSError as exc:
+        if backup is not None:
+            backup.unlink(missing_ok=True)
+        raise SkillsToggleError("Cannot create a private configuration backup; no configuration was changed", "backup-failed") from exc
+
+
 def _atomic_write(path: Path, text: str, expected: str) -> None:
     """Replace a regular config file atomically, without truncation on failure."""
     temporary = path.parent / (".switchboard-write-" + uuid.uuid4().hex)
@@ -994,28 +1024,10 @@ class SkillsToggleCore:
     # -- routes: mutate ----------------------------------------------------
 
     def _backup(self, path: Path) -> str | None:
-        if not path.is_file():
-            return None
-        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        backup = path.with_name(f"{path.name}.bak.hermes-switchboard.{stamp}")
-        n = 1
-        while backup.exists():
-            backup = path.with_name(f"{path.name}.bak.hermes-switchboard.{stamp}-{n}")
-            n += 1
-        shutil.copy2(path, backup)
-        return str(backup)
+        return _private_config_backup(path)
 
     def _backup_config(self) -> str | None:
-        if not self.config_path.is_file():
-            return None
-        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        backup = self.config_path.with_name(f"config.yaml.bak.hermes-switchboard.{stamp}")
-        n = 1
-        while backup.exists():
-            backup = self.config_path.with_name(f"config.yaml.bak.hermes-switchboard.{stamp}-{n}")
-            n += 1
-        shutil.copy2(self.config_path, backup)
-        return str(backup)
+        return self._backup(self.config_path)
 
     def _hermes_toggle(self, skill_name: str, enabled: bool) -> str:
         text = ""
@@ -1032,7 +1044,7 @@ class SkillsToggleCore:
             return "noop"
         backup = self._backup_config()
         self.config_path.parent.mkdir(parents=True, exist_ok=True)
-        self.config_path.write_text(new_text, encoding="utf-8")
+        _atomic_write(self.config_path, new_text, text)
         self._log(action="config-edit", tool="hermes", skill=skill_name, enabled=enabled, backup=backup)
         return "config-updated"
 
@@ -1391,14 +1403,14 @@ class SkillsToggleCore:
                     backup = self._backup_config() if new_text != text else None
                     if new_text != text:
                         self.config_path.parent.mkdir(parents=True, exist_ok=True)
-                        self.config_path.write_text(new_text, encoding="utf-8")
+                        _atomic_write(self.config_path, new_text, text)
                         self._log(
                             action="config-edit", tool="hermes", skills=[sid for sid, _, _ in ready],
                             enabled=enabled, backup=backup,
                         )
                     changed_ids.update(sid for sid, _, _ in ready)
-                except (ConfigEditError, OSError) as exc:
-                    code = "config-edit" if isinstance(exc, ConfigEditError) else "config-write"
+                except (ConfigEditError, SkillsToggleError, OSError) as exc:
+                    code = exc.code if isinstance(exc, SkillsToggleError) else "config-edit" if isinstance(exc, ConfigEditError) else "config-write"
                     for sid, _, disposition in ready:
                         results.append({"skill": sid, "ok": False, "state": disposition["state"], "error": str(exc), "code": code})
                         receipt_items.append({"skill": sid, "ok": False, "from": disposition["state"], "to": disposition["state"]})
@@ -2806,103 +2818,178 @@ def load_tools_config(home: Path) -> dict:
 CODEX_CONFIG_CANDIDATES = ["~/.codex/config.toml"]
 
 
+def _toml_key(value: str) -> str:
+    return value if re.fullmatch(r"[A-Za-z0-9_-]+", value) else json.dumps(value)
+
+
+def _toml_uncomment(line: str) -> str:
+    quote = None
+    escaped = False
+    for index, char in enumerate(line):
+        if escaped:
+            escaped = False
+        elif quote == '"' and char == "\\":
+            escaped = True
+        elif quote:
+            if char == quote:
+                quote = None
+        elif char in ("'", '"'):
+            quote = char
+        elif char == "#":
+            return line[:index].strip()
+    return line.strip()
+
+
+def _toml_path(value: str) -> list:
+    # Tokenize dotted keys without treating dots inside a quoted name as paths.
+    token = r'(?:[A-Za-z0-9_-]+|"(?:[^"\\]|\\.)*"|\'[^\']*\')'
+    if not re.fullmatch(r"\s*" + token + r"(?:\s*\.\s*" + token + r")*\s*", value):
+        raise ValueError("unsupported TOML key")
+    return [json.loads(part) if part.startswith('"') else part[1:-1] if part.startswith("'") else part
+            for part in re.findall(token, value)]
+
+
 def _toml_scalar(value: str):
-    v = value.strip()
-    if v in ("true", "false"):
-        return v == "true"
-    if len(v) >= 2 and v[0] == '"' and v[-1] == '"':
-        return json.loads(v)
-    if v.startswith("[") and v.endswith("]"):
-        inner = v[1:-1].strip()
-        if not inner:
-            return []
-        return [json.loads(item.strip()) for item in inner.split(",") if item.strip()]
-    return v
+    """Conservative Python 3.9 fallback; unsupported syntax is never guessed."""
+    value = value.strip()
+    if any(ord(char) < 32 and char != "\t" or ord(char) == 127 for char in value):
+        raise ValueError("invalid TOML control character")
+    if re.fullmatch(r"'[^']*'", value):
+        return value[1:-1]
+    result = json.loads(value)
+    def validate(item):
+        if item is None or isinstance(item, dict):
+            raise ValueError("unsupported TOML value")
+        if isinstance(item, float) and not (-float('inf') < item < float('inf')):
+            raise ValueError("nonfinite TOML value")
+        if isinstance(item, list):
+            for child in item:
+                validate(child)
+    validate(result)
+    return result
+
+
+def _simple_toml(text: str) -> dict:
+    """Safe single-line subset when stdlib tomllib is not available (3.9/3.10).
+
+    More complex valid files remain untouched and ask for Python 3.11+. This
+    fallback is deliberately not a general-purpose TOML parser.
+    """
+    document = {}
+    current = document
+    tables = set()
+    for raw in text.splitlines():
+        line = _toml_uncomment(raw)
+        if not line:
+            continue
+        if line.startswith('['):
+            if not line.endswith(']') or line.startswith('[['):
+                raise ValueError("unsupported TOML table")
+            parts = _toml_path(line[1:-1])
+            if tuple(parts) in tables:
+                raise ValueError("duplicate TOML table")
+            tables.add(tuple(parts))
+            current = document
+            for part in parts:
+                current = current.setdefault(part, {})
+                if not isinstance(current, dict):
+                    raise ValueError("conflicting TOML key")
+        else:
+            # '=' inside a quoted key is unsupported in the fallback, rather
+            # than ambiguously splitting and damaging the source file.
+            left, separator, right = line.partition('=')
+            if not separator:
+                raise ValueError("invalid TOML assignment")
+            parts = _toml_path(left)
+            target = current
+            for part in parts[:-1]:
+                target = target.setdefault(part, {})
+                if not isinstance(target, dict):
+                    raise ValueError("conflicting TOML key")
+            if parts[-1] in target:
+                raise ValueError("duplicate TOML key")
+            target[parts[-1]] = _toml_scalar(right)
+    return document
+
+
+def _codex_document(text: str) -> dict:
+    try:
+        try:
+            import tomllib
+        except ImportError:
+            return _simple_toml(text)
+        return tomllib.loads(text)
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise SkillsToggleError("Invalid or unsupported Codex TOML; repair it, or use Python 3.11+ for complex TOML. The file was not changed", "config-invalid") from exc
 
 
 def parse_codex_mcp(text: str) -> dict:
-    """Line-based parse of [mcp_servers.<name>] tables (+ sub-tables like env)
-    from a codex config.toml. {name: {enabled, definition}} — enabled defaults
-    to True; a native `enabled = false` flag is honored."""
-    out: dict = {}
-    current = None
-    current_sub = None
-    for raw in text.splitlines():
-        ln = raw.strip()
-        if not ln or ln.startswith("#"):
-            continue
-        m = re.match(r"^\[mcp_servers\.(.+)\]$", ln)
-        if m:
-            key = m.group(1).strip().strip('"')
-            if "." in key:
-                current, current_sub = key.split(".", 1)
-                out.setdefault(current, {"enabled": True, "definition": {}})
-                out[current]["definition"].setdefault(current_sub, {})
-            else:
-                current = key
-                current_sub = None
-                out.setdefault(current, {"enabled": True, "definition": {}})
-            continue
-        if current is None or ln.startswith("["):
-            if ln.startswith("["):
-                current, current_sub = None, None  # left the mcp_servers area
-            continue
-        m = re.match(r"^([^=]+?)\s*=\s*(.*)$", ln)
-        if not m:
-            continue
-        key = m.group(1).strip().strip('"')
-        value = _toml_scalar(m.group(2))
-        if current_sub:
-            out[current]["definition"].setdefault(current_sub, {})[key] = value
-        elif key == "enabled":
-            out[current]["enabled"] = bool(value)
-        else:
-            out[current]["definition"][key] = value
+    """Validate the whole document; expose definitions in universal field names."""
+    document = _codex_document(text)
+    servers = document.get("mcp_servers", {})
+    if not isinstance(servers, dict):
+        raise SkillsToggleError("Codex mcp_servers must be a table", "config-invalid")
+    out = {}
+    for name, fields in servers.items():
+        if not isinstance(fields, dict) or type(fields.get("enabled", True)) is not bool:
+            raise SkillsToggleError("Invalid Codex MCP server definition", "config-invalid")
+        definition = {key: value for key, value in fields.items() if key != "enabled"}
+        if "http_headers" in definition:
+            definition["headers"] = definition.pop("http_headers")
+        out[name] = {"enabled": fields.get("enabled", True), "definition": definition}
     return out
 
 
 def _toml_string(value: str) -> str:
-    return json.dumps(str(value))  # basic string; close enough for our values
+    return json.dumps(str(value))
 
 
 def codex_server_block(name: str, projection: dict) -> str:
-    """Render one [mcp_servers.<name>] block (universal keys only)."""
-    safe_name = name.replace('"', '')
-    lines = [f"[mcp_servers.{safe_name}]"]
-    for key in ("command", "url", "headers"):
-        if key in projection:
-            lines.append(f"{key} = {_toml_string(projection[key])}")
-    if "args" in projection:
-        lines.append(f"args = [{', '.join(_toml_string(a) for a in projection['args'])}]")
-    lines.append("")
-    if isinstance(projection.get("env"), dict) and projection["env"]:
-        lines.append(f"[mcp_servers.{safe_name}.env]")
-        for k, v in projection["env"].items():
-            lines.append(f"{k} = {_toml_string(v)}")
-        lines.append("")
-    return "\n".join(lines)
+    """Render this server only, retaining supported client-specific options."""
+    fields = dict(projection)
+    if "headers" in fields:
+        fields["http_headers"] = fields.pop("headers")
+    def scalar(value):
+        if isinstance(value, str):
+            return json.dumps(value)
+        if type(value) in (int, float, bool):
+            try:
+                return json.dumps(value, allow_nan=False)
+            except ValueError as exc:
+                raise SkillsToggleError("Unsupported nonfinite TOML option; edit this server manually", "writer-unsupported") from exc
+        if isinstance(value, list):
+            return '[' + ', '.join(scalar(item) for item in value) + ']'
+        raise SkillsToggleError("Unsupported client-specific TOML option; edit this server manually", "writer-unsupported")
+    def table(path, mapping):
+        lines = ['[' + '.'.join(_toml_key(key) for key in path) + ']']
+        for key, value in mapping.items():
+            if not isinstance(value, dict):
+                lines.append(_toml_key(key) + ' = ' + scalar(value))
+        lines.append('')
+        for key, value in mapping.items():
+            if isinstance(value, dict):
+                lines.extend(table(path + [key], value))
+        return lines
+    return '\n'.join(table(['mcp_servers', name], fields))
 
 
 def _remove_codex_block(text: str, name: str) -> str:
-    """Delete the [mcp_servers.<name>] block and its sub-tables."""
-    safe = name.replace('"', '')
-    lines = text.splitlines()
+    """Remove only this server's explicit tables; all other lines stay intact."""
+    if '"""' in text or "'''" in text:
+        raise SkillsToggleError("Multiline TOML strings require manual editing; no file was changed", "writer-unsupported")
     out = []
     skipping = False
-    for ln in lines:
-        stripped = ln.strip()
-        m = re.match(r"^\[mcp_servers\.(.+)\]$", stripped)
-        if m:
-            key = m.group(1).strip().strip('"')
-            is_ours = key == safe or key.split(".", 1)[0] == safe
-            skipping = is_ours
-            if skipping:
-                continue
-        if skipping and stripped.startswith("["):
-            skipping = False  # reached an unrelated table
+    for raw in text.splitlines(keepends=True):
+        line = _toml_uncomment(raw)
+        if line.startswith('[') and line.endswith(']'):
+            try:
+                parts = _toml_path(line[1:-1])
+            except ValueError as exc:
+                raise SkillsToggleError("Cannot isolate this TOML table safely; edit it manually", "writer-unsupported") from exc
+            skipping = len(parts) >= 2 and parts[:2] == ['mcp_servers', name]
         if not skipping:
-            out.append(ln)
-    return "\n".join(out) + ("\n" if text.endswith("\n") else "")
+            out.append(raw)
+    return ''.join(out)
 
 
 CLAUDE_DESKTOP_CONFIG_CANDIDATES = [
@@ -3115,16 +3202,7 @@ class McpCore:
             pass
 
     def _backup(self, path: Path) -> str | None:
-        if not path.is_file():
-            return None
-        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        backup = path.with_name(f"{path.name}.bak.hermes-switchboard.{stamp}")
-        n = 1
-        while backup.exists():
-            backup = path.with_name(f"{path.name}.bak.hermes-switchboard.{stamp}-{n}")
-            n += 1
-        shutil.copy2(path, backup)
-        return str(backup)
+        return _private_config_backup(path)
 
     # -- catalog ------------------------------------------------------------
 
@@ -3154,13 +3232,13 @@ class McpCore:
         return _read_json_object(self.claude_config, "mcpServers")
 
     def _read_codex(self) -> tuple[dict, str]:
-        if self.codex_config is None or not self.codex_config.is_file():
+        if self.codex_config is None or (not self.codex_config.exists() and not self.codex_config.is_symlink()):
             return {}, ""
         try:
             text = self.codex_config.read_text(encoding="utf-8")
             return parse_codex_mcp(text), text
-        except OSError:
-            return {}, ""
+        except (OSError, UnicodeError) as exc:
+            raise SkillsToggleError("Cannot read Codex configuration; repair permissions and refresh", "config-unreadable") from exc
 
     def _write_codex(self, name: object, create: bool, force: bool = False) -> dict:
         if not isinstance(name, str) or not name.strip():
@@ -3176,20 +3254,36 @@ class McpCore:
             return {"ok": True, "name": name, "action": "noop", "state": "missing"}
         if not create and entry is None:
             raise SkillsToggleError(f"{name!r} is not in the Hermes catalog — refusing to remove", "unknown-server")
-        if name in codex and entry is not None and codex[name]["definition"] != entry["projection"] and not force:
+        if name in codex and entry is not None and _claude_projection(codex[name]["definition"]) != entry["projection"] and not force:
             raise SkillsToggleError(
                 f"Codex's copy of {name!r} differs from the catalog — pass force to overwrite", "drifted"
             )
-        backup = self._backup(self.codex_config)
+        before = _codex_document(raw)
         if create:
             base = _remove_codex_block(raw, name) if name in codex else raw
-            new_text = (base.rstrip("\n") + "\n\n" if base.strip() else "") + codex_server_block(name, entry["projection"])
+            extras = {key: value for key, value in codex.get(name, {}).get("definition", {}).items()
+                      if key not in _MCP_UNIVERSAL_KEYS}
+            projection = {**extras, **entry["projection"]}
+            new_text = (base + ("\n" if base.endswith("\n") else "\n\n") if base else "") + codex_server_block(name, projection)
             action = "updated" if name in codex else "created"
             state = "enabled"
         else:
             new_text = _remove_codex_block(raw, name)
             action = "removed"
             state = "missing"
+        after = _codex_document(new_text)
+        expected = copy.deepcopy(before)
+        servers = expected.setdefault("mcp_servers", {})
+        if create:
+            servers[name] = _codex_document(codex_server_block(name, projection))["mcp_servers"][name]
+        else:
+            servers.pop(name, None)
+        # Reject inline/dotted arrangements the line editor cannot isolate.
+        # Foreign servers and all non-MCP values must remain semantically exact.
+        after.setdefault("mcp_servers", {})
+        if after != expected:
+            raise SkillsToggleError("Cannot isolate this Codex server safely; edit it manually", "writer-unsupported")
+        backup = self._backup(self.codex_config)
         _atomic_write(self.codex_config, new_text, raw)
         self._log(action=f"mcp-codex-{action}", server=name, backup=backup)
         return {"ok": True, "name": name, "writer": "codex", "action": action, "state": state, "backup": backup}
@@ -3238,7 +3332,7 @@ class McpCore:
             if codex_servers is not None and name in codex_servers:
                 if not codex_servers[name]["definition"]:
                     codex_state = "missing"
-                elif codex_servers[name]["definition"] == c["projection"]:
+                elif _claude_projection(codex_servers[name]["definition"]) == c["projection"]:
                     codex_state = "enabled" if codex_servers[name]["enabled"] else "missing"
                 else:
                     codex_state = "drifted"
@@ -3295,7 +3389,7 @@ class McpCore:
                 new_text = set_mcp_server_enabled(text, name, enabled)
             except ConfigEditError as exc:
                 raise SkillsToggleError(f"config.yaml edit refused: {exc}", "config-edit") from exc
-            self.config_path.write_text(new_text, encoding="utf-8")
+            _atomic_write(self.config_path, new_text, text)
             self._log(action="mcp-toggle", server=name, enabled=enabled, backup=backup)
             return {"ok": True, "name": name, "enabled": enabled, "action": "config-updated", "backup": backup}
 
