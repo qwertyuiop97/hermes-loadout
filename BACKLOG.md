@@ -27,7 +27,7 @@ until items 6-12 pass their acceptance gates.
     onboarding; auto-detect known folders, accept additional scan folders, classify
     duplicates/conflicts, keep Hermes as the canonical destination, and apply only
     after a reviewed dry run.
-11. [ ] Information architecture cleanup — primary sections Tools, Sets, Problems,
+11. [x] Information architecture cleanup — primary sections Tools, Sets, Problems,
     and MCP; move blueprints, backups, watch mode, custom paths, and auto-link regexes
     under Advanced; keep an expert Matrix view only for sufficiently wide containers.
 12. [ ] Performance, accessibility, and safety gates — validate 100+ skills, keyboard
