@@ -1,4 +1,4 @@
-"""skills-toggle — backend routes for the Hermes desktop pane.
+"""hermes-switchboard — backend routes for the Hermes desktop pane.
 
 # MIT License — Copyright (c) 2026 qwertyuiop97
 # See LICENSE at the package root.
@@ -6,15 +6,15 @@
 Unified Hermes plugin package (see the Desktop Plugin SDK doc, "One package,
 both SDKs")::
 
-    ~/.hermes/plugins/skills-toggle/
+    ~/.hermes/plugins/hermes-switchboard/
     ├── plugin.yaml               # agent half (metadata only)
     ├── dashboard/
-    │   ├── manifest.json         # {"name": "skills-toggle", "api": "plugin_api.py"}
+    │   ├── manifest.json         # {"name": "hermes-switchboard", "api": "plugin_api.py"}
     │   └── plugin_api.py         # THIS FILE — exports `router` (FastAPI APIRouter)
     └── desktop/
         └── plugin.js             # desktop half — pane UI, calls ctx.rest('/...')
 
-Routes mount under ``/api/plugins/skills-toggle/``:
+Routes mount under ``/api/plugins/hermes-switchboard/``:
 
     GET  /health          → liveness + resolved paths (for the pane's error banner)
     GET  /state           → every skill + per-tool state (lean payload, cached)
@@ -30,7 +30,7 @@ Routes mount under ``/api/plugins/skills-toggle/``:
     POST /import/plan     → read-only multi-source adoption preview
     POST /import/apply-plan → exact-entry adoption + durable restore receipt
 
-Design rules (see DECISIONS.md):
+Design rules:
   * Hermes (~/.hermes/skills/<category>/<name>/SKILL.md) is the source of truth.
   * Consumer tools get SYMLINKS (never copies); link name == skill name.
   * Never delete a skill source dir, a real (non-symlink) dir, or a foreign
@@ -40,7 +40,7 @@ Design rules (see DECISIONS.md):
   * Zero hardcoded paths: home resolves via ``~``/``$HOME``, the Hermes root via
     ``$HERMES_HOME`` or ``$HERMES_PROFILE`` (→ ~/.hermes/profiles/<name>) or
     ``~/.hermes``; tool target dirs are overridable via
-    ``<hermes_home>/skills-toggle.json`` with ``~`` and ``${VAR:-default}``
+    ``<hermes_home>/hermes-switchboard.json`` with ``~`` and ``${VAR:-default}``
     expansion.
 
 The core is deliberately dependency-free (stdlib only) so it can be imported
@@ -62,8 +62,9 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-PLUGIN_ID = "skills-toggle"
+PLUGIN_ID = "hermes-switchboard"
 PLUGIN_VERSION = "3.0.0"
+LEGACY_PLUGIN_ID = "skills-toggle"
 
 # ---------------------------------------------------------------------------
 # Stable core API (v2) — consumed by the desktop pane's backend mount AND by
@@ -104,7 +105,7 @@ __all__ = [
 ]
 
 # ---------------------------------------------------------------------------
-# Tool map: defaults (overridable via <hermes_home>/skills-toggle.json)
+# Tool map: defaults (overridable via <hermes_home>/hermes-switchboard.json)
 # ---------------------------------------------------------------------------
 
 DEFAULT_TOOLS: dict = {
@@ -160,7 +161,7 @@ def _strip_extended(path_str: str) -> str:
 
 
 def _canonical(path_str: str) -> str:
-    """strip \\?\ → realpath → strip again (realpath re-adds it on Windows)
+    r"""strip \\?\ → realpath → strip again (realpath re-adds it on Windows)
     → normcase/normpath."""
     once = _strip_extended(path_str)
     twice = _strip_extended(os.path.realpath(once))
@@ -694,7 +695,12 @@ class SkillsToggleCore:
             cat_dirs = sorted(p for p in self.skills_root.iterdir() if p.is_dir()) if self.skills_root.is_dir() else []
         except OSError:
             cat_dirs = []
-        probes = [self.skills_root, self.config_path, user_config_path(self.home)] + cat_dirs
+        probes = [
+            self.skills_root,
+            self.config_path,
+            user_config_path(self.home),
+            legacy_user_config_path(self.home),
+        ] + cat_dirs
         for tool_id in self.tools:
             d = self.tool_dir(tool_id)
             if d is not None:
@@ -865,10 +871,10 @@ class SkillsToggleCore:
         if not path.is_file():
             return None
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        backup = path.with_name(f"{path.name}.bak.skills-toggle.{stamp}")
+        backup = path.with_name(f"{path.name}.bak.hermes-switchboard.{stamp}")
         n = 1
         while backup.exists():
-            backup = path.with_name(f"{path.name}.bak.skills-toggle.{stamp}-{n}")
+            backup = path.with_name(f"{path.name}.bak.hermes-switchboard.{stamp}-{n}")
             n += 1
         shutil.copy2(path, backup)
         return str(backup)
@@ -877,10 +883,10 @@ class SkillsToggleCore:
         if not self.config_path.is_file():
             return None
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        backup = self.config_path.with_name(f"config.yaml.bak.skills-toggle.{stamp}")
+        backup = self.config_path.with_name(f"config.yaml.bak.hermes-switchboard.{stamp}")
         n = 1
         while backup.exists():
-            backup = self.config_path.with_name(f"config.yaml.bak.skills-toggle.{stamp}-{n}")
+            backup = self.config_path.with_name(f"config.yaml.bak.hermes-switchboard.{stamp}-{n}")
             n += 1
         shutil.copy2(self.config_path, backup)
         return str(backup)
@@ -1700,7 +1706,7 @@ class SkillsToggleCore:
 
                 backup = None
                 if item["tool"] is not None:
-                    backup_path = item["source"] / f"{name}.skills-toggle-backup-{stamp}"
+                    backup_path = item["source"] / f"{name}.hermes-switchboard-backup-{stamp}"
                     try:
                         os.rename(src, backup_path)
                         os.symlink(str(dest.resolve()), str(src))
@@ -1762,7 +1768,7 @@ class SkillsToggleCore:
     def import_apply(self, tool_id: object, names: object, category: str = "imported") -> dict:
         """Adopt unmanaged skills: copy into the skills tree, then replace the
         tool's real dir with a symlink — the original is PRESERVED as a
-        timestamped `<name>.skills-toggle-backup-<ts>` sibling (never deleted)."""
+        timestamped `<name>.hermes-switchboard-backup-<ts>` sibling (never deleted)."""
         tool_id = self._validate_tool(tool_id)
         if tool_id == "hermes":
             raise SkillsToggleError("hermes has no importable dir", "no-dir")
@@ -1814,7 +1820,7 @@ class SkillsToggleCore:
             except OSError as exc:
                 results.append({"name": name, "ok": False, "error": f"copy failed: {exc}"})
                 continue
-            backup = tool_dir / f"{name}.skills-toggle-backup-{stamp}"
+            backup = tool_dir / f"{name}.hermes-switchboard-backup-{stamp}"
             try:
                 os.rename(src, backup)
                 os.symlink(str(dest.resolve()), str(tool_dir / name))
@@ -1908,7 +1914,7 @@ class SkillsToggleCore:
                     f"{entry} is not a skill directory — refusing to touch it", "unmanaged-dir"
                 )
             stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-            backup = tool_dir / f"{name}.skills-toggle-backup-{stamp}"
+            backup = tool_dir / f"{name}.hermes-switchboard-backup-{stamp}"
             try:
                 os.rename(entry, backup)
                 os.symlink(str(existing["dir"].resolve()), str(entry))
@@ -1931,7 +1937,7 @@ class SkillsToggleCore:
                 "tool_backup": str(backup),
             }
 
-    # -- v3: conflict resolution (PROPOSAL-v3 #1, D31 completion) --------------
+    # -- conflict resolution --------------------------------------------------
 
     def _conflict_context(self, tool_id: object, name: object, require_in_tree: bool):
         if not isinstance(name, str) or "/" in name or name in (".", "..") or not name.strip():
@@ -1962,8 +1968,8 @@ class SkillsToggleCore:
             existing, tool_dir, entry = self._conflict_context(tool_id, name, require_in_tree=True)
             hermes_dir = existing["dir"]
             stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-            hermes_backup = hermes_dir.parent / f".skills-toggle-backup-{name}-{stamp}"
-            tool_backup = tool_dir / f"{name}.skills-toggle-backup-{stamp}"
+            hermes_backup = hermes_dir.parent / f".hermes-switchboard-backup-{name}-{stamp}"
+            tool_backup = tool_dir / f"{name}.hermes-switchboard-backup-{stamp}"
             try:
                 os.rename(hermes_dir, hermes_backup)
             except OSError as exc:
@@ -2013,7 +2019,7 @@ class SkillsToggleCore:
             if dest.exists():
                 raise SkillsToggleError(f"destination {dest} already exists", "invalid-destination")
             stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-            tool_backup = tool_dir / f"{name}.skills-toggle-backup-{stamp}"
+            tool_backup = tool_dir / f"{name}.hermes-switchboard-backup-{stamp}"
             try:
                 dest_dir.mkdir(parents=True, exist_ok=True)
                 shutil.copytree(entry, dest, symlinks=True)
@@ -2100,7 +2106,7 @@ class SkillsToggleCore:
                 raise SkillsToggleError(f"hermes backup {hb} is missing", "backup-missing")
             self._restore_tool_entry(tool_dir, name, Path(tool_backup))
             # canonical: move the pulled copy aside (dotted), restore original
-            pulled_aside = hermes_dir.parent / f".skills-toggle-reverted-{name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+            pulled_aside = hermes_dir.parent / f".hermes-switchboard-reverted-{name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
             os.rename(hermes_dir, pulled_aside)
             try:
                 os.rename(hb, hermes_dir)
@@ -2129,7 +2135,7 @@ class SkillsToggleCore:
             self._restore_tool_entry(tool_dir, name, Path(tool_backup))
             adopted = self.skills_root / skill.split("/")[0] / skill.split("/")[1]
             if adopted.is_dir():
-                aside = adopted.parent / f".skills-toggle-reverted-{adopted.name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+                aside = adopted.parent / f".hermes-switchboard-reverted-{adopted.name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
                 os.rename(adopted, aside)
             else:
                 aside = None
@@ -2155,7 +2161,7 @@ class SkillsToggleCore:
             "ok": True,
             "blueprint": {
                 "version": 2,
-                "generated_by": f"skills-toggle {PLUGIN_VERSION}",
+                "generated_by": f"hermes-switchboard {PLUGIN_VERSION}",
                 "links": links,
                 "skills_disabled": sorted(self._disabled_set()),
             },
@@ -2255,6 +2261,11 @@ class SkillsToggleCore:
     # -- v3-6: backup browser + restore ----------------------------------------
 
     _BACKUP_PATTERNS = (
+        re.compile(r"^config\.yaml\.bak\.hermes-switchboard\.(\d{8}-\d{6})(?:-\d+)?$"),
+        re.compile(r"^hermes-switchboard\.json\.bak\.hermes-switchboard\.(\d{8}-\d{6})(?:-\d+)?$"),
+        re.compile(r"^(.+)\.hermes-switchboard-backup\.(\d{8}-\d{6})(?:-\d+)?$"),
+        re.compile(r"^(.+)\.hermes-switchboard-backup-(\d{8}-\d{6})$"),
+        re.compile(r"^\.hermes-switchboard-(?:backup|reverted)-(.+)-(\d{8}-\d{6})$"),
         re.compile(r"^config\.yaml\.bak\.skills-toggle\.(\d{8}-\d{6})(?:-\d+)?$"),
         re.compile(r"^skills-toggle\.json\.bak\.skills-toggle\.(\d{8}-\d{6})(?:-\d+)?$"),
         re.compile(r"^(.+)\.skills-toggle-backup\.(\d{8}-\d{6})(?:-\d+)?$"),
@@ -2265,8 +2276,12 @@ class SkillsToggleCore:
     def list_backups(self) -> dict:
         rows = []
         home = self.home
+        for ln in sorted(home.glob("config.yaml.bak.hermes-switchboard.*")):
+            rows.append({"path": str(ln), "kind": "config", "name": ln.name})
         for ln in sorted(home.glob("config.yaml.bak.skills-toggle.*")):
             rows.append({"path": str(ln), "kind": "config", "name": ln.name})
+        for ln in sorted(home.glob("hermes-switchboard.json.bak.hermes-switchboard.*")):
+            rows.append({"path": str(ln), "kind": "tools-json", "name": ln.name})
         for ln in sorted(home.glob("skills-toggle.json.bak.skills-toggle.*")):
             rows.append({"path": str(ln), "kind": "tools-json", "name": ln.name})
         for tool_id in self.tools:
@@ -2280,7 +2295,12 @@ class SkillsToggleCore:
             except OSError:
                 continue
             for ln in children:
-                if ln.name.endswith(".skills-toggle-backup") or ".skills-toggle-backup-" in ln.name:
+                if (
+                    ln.name.endswith(".hermes-switchboard-backup")
+                    or ".hermes-switchboard-backup-" in ln.name
+                    or ln.name.endswith(".skills-toggle-backup")
+                    or ".skills-toggle-backup-" in ln.name
+                ):
                     if ln.is_dir():
                         rows.append({"path": str(ln), "kind": "tool-link", "tool": tool_id, "name": ln.name})
         if self.skills_root.is_dir():
@@ -2292,7 +2312,12 @@ class SkillsToggleCore:
                 except OSError:
                     continue
                 for ln in children:
-                    if ln.name.startswith(".skills-toggle-backup-") or ln.name.startswith(".skills-toggle-reverted-"):
+                    if ln.name.startswith((
+                        ".hermes-switchboard-backup-",
+                        ".hermes-switchboard-reverted-",
+                        ".skills-toggle-backup-",
+                        ".skills-toggle-reverted-",
+                    )):
                         if ln.is_dir():
                             rows.append({"path": str(ln), "kind": "hermes-copy", "name": ln.name, "category": cat_dir.name})
         rows.sort(key=lambda r: r["path"], reverse=True)
@@ -2308,11 +2333,16 @@ class SkillsToggleCore:
             live = {r["path"]: r for r in self.list_backups()["backups"]}
             row = live.get(path)
             if not row:
-                raise SkillsToggleError("not a known skills-toggle backup", "unknown-backup")
+                raise SkillsToggleError("not a known hermes-switchboard backup", "unknown-backup")
             src = Path(path)
             kind = row["kind"]
             if kind in ("config", "tools-json"):
-                target = self.config_path if kind == "config" else user_config_path(self.home)
+                if kind == "config":
+                    target = self.config_path
+                elif row["name"].startswith("skills-toggle.json."):
+                    target = legacy_user_config_path(self.home)
+                else:
+                    target = user_config_path(self.home)
                 if not target.is_file():
                     raise SkillsToggleError(f"{target} is missing — nothing to replace", "restore-failed")
                 pre = self._backup(target)
@@ -2325,21 +2355,21 @@ class SkillsToggleCore:
                 tool_dir = self.tool_dir(row["tool"])
                 if tool_dir is None:
                     raise SkillsToggleError("tool dir missing", "absent-dir")
-                name = row["name"].split(".skills-toggle-backup")[0]
+                name = re.split(r"\.(?:hermes-switchboard|skills-toggle)-backup", row["name"], maxsplit=1)[0]
                 self._restore_tool_entry(tool_dir, name, src)
                 self._log(action="restore", kind=kind, path=path)
                 self.invalidate()
                 return {"ok": True, "kind": kind, "action": "restored", "name": name}
             if kind == "hermes-copy":
-                # dotted name: .skills-toggle-backup-<name>-<stamp> or .skills-toggle-reverted-<name>-<stamp>
-                m = re.match(r"^\.skills-toggle-(?:backup|reverted)-(.+)-\d{8}-\d{6}$", row["name"])
+                # Accept current and pre-rename backup names.
+                m = re.match(r"^\.(?:hermes-switchboard|skills-toggle)-(?:backup|reverted)-(.+)-\d{8}-\d{6}$", row["name"])
                 if not m:
                     raise SkillsToggleError("cannot parse backup name", "restore-failed")
                 name = m.group(1)
                 canonical = self.skills_root / row["category"] / name
                 if not canonical.is_dir():
                     raise SkillsToggleError(f"canonical {canonical} is missing", "restore-failed")
-                aside = canonical.parent / f".skills-toggle-replaced-{name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+                aside = canonical.parent / f".hermes-switchboard-replaced-{name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
                 os.rename(canonical, aside)
                 try:
                     os.rename(src, canonical)
@@ -2354,7 +2384,7 @@ class SkillsToggleCore:
     # -- v2: custom tool config ------------------------------------------------
 
     def set_tool(self, tool_id: object, label: object, dir_str: object) -> dict:
-        """Add or override a tool target dir in <hermes_home>/skills-toggle.json
+        """Add or override a tool target dir in <hermes_home>/hermes-switchboard.json
         (timestamped backup first). Hermes itself is config-backed and locked."""
         with self._lock:
             if (
@@ -2381,7 +2411,7 @@ class SkillsToggleCore:
             backup = None
             if cfg_path.is_file():
                 stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-                backup_path = cfg_path.with_name(f"{cfg_path.name}.bak.skills-toggle.{stamp}")
+                backup_path = cfg_path.with_name(f"{cfg_path.name}.bak.hermes-switchboard.{stamp}")
                 shutil.copy2(cfg_path, backup_path)
                 backup = str(backup_path)
             tools = data.setdefault("tools", {})
@@ -2406,12 +2436,17 @@ class SkillsToggleCore:
 
 
 # ---------------------------------------------------------------------------
-# Tools config loading (defaults + <hermes_home>/skills-toggle.json override)
+# Tools config loading (defaults + <hermes_home>/hermes-switchboard.json override)
 # ---------------------------------------------------------------------------
 
 
 def user_config_path(home: Path) -> Path:
-    return home / "skills-toggle.json"
+    return home / "hermes-switchboard.json"
+
+
+def legacy_user_config_path(home: Path) -> Path:
+    """Return the pre-rename path so existing custom tool maps still load."""
+    return home / f"{LEGACY_PLUGIN_ID}.json"
 
 
 def load_tools_config(home: Path) -> dict:
@@ -2424,6 +2459,8 @@ def load_tools_config(home: Path) -> dict:
         zcode["dir"] = zcode["fallback_dir"]
 
     cfg_path = user_config_path(home)
+    if not cfg_path.is_file() and legacy_user_config_path(home).is_file():
+        cfg_path = legacy_user_config_path(home)
     if cfg_path.is_file():
         try:
             user_cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
@@ -2751,10 +2788,10 @@ class McpCore:
         if not path.is_file():
             return None
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        backup = path.with_name(f"{path.name}.bak.skills-toggle.{stamp}")
+        backup = path.with_name(f"{path.name}.bak.hermes-switchboard.{stamp}")
         n = 1
         while backup.exists():
-            backup = path.with_name(f"{path.name}.bak.skills-toggle.{stamp}-{n}")
+            backup = path.with_name(f"{path.name}.bak.hermes-switchboard.{stamp}-{n}")
             n += 1
         shutil.copy2(path, backup)
         return str(backup)
@@ -3045,7 +3082,7 @@ def reset_core() -> None:
 
 
 # ---------------------------------------------------------------------------
-# FastAPI route layer (mounted at /api/plugins/skills-toggle/)
+# FastAPI route layer (mounted at /api/plugins/hermes-switchboard/)
 # ---------------------------------------------------------------------------
 
 try:

@@ -34,7 +34,14 @@ const scanPlan = JSON.parse(readFileSync(scanFixturePath, 'utf8'))
 const channel = {
   mode: 'ready',
   state,
-  diff: { ok: true, counts: { broken: 1, foreign: 1, unmanaged: 1, unlinked: 1 } },
+  diff: {
+    ok: true,
+    unlinked: ['research/deep-research'],
+    broken: [{ tool: 'claude', name: 'broken-skill', target: '/missing/skills' }],
+    foreign: [{ tool: 'opencode', name: 'foreign-skill', target: '/opt/team/foreign-skill' }],
+    unmanaged: [{ tool: 'grok', name: 'real-skill-dir' }],
+    counts: { broken: 1, foreign: 1, unmanaged: 1, unlinked: 1 }
+  },
   drift: {
     ok: true,
     count: 1,
@@ -44,22 +51,25 @@ const channel = {
     ok: true,
     rows: [
       { name: 'chrome-devtools', enabled: true, writers: { claude: 'enabled', codex: 'enabled' } },
-      { name: 'docs', enabled: true, writers: { claude: 'drifted', codex: 'missing' } },
+      { name: 'docs', enabled: true, writers: { claude: 'enabled', codex: 'drifted' } },
       { name: 'weather', enabled: false, writers: { claude: 'missing', codex: 'missing' } }
     ],
     foreign: [{ name: 'foreign-server' }],
     counts: { catalog: 3, foreign: 1 },
-    writers: { claude: { label: 'Claude Desktop', path: '/tmp/claude.json', present: true } }
+    writers: {
+      claude: { label: 'Claude Desktop', path: '/tmp/claude.json', present: true },
+      codex: { label: 'Codex', path: '/tmp/config.toml', present: true }
+    }
   },
   bundle: {}, registry: [], notifications: [], navigations: [], invalidated: [], workspaces: [], restCalls: [],
-  holdScan: false, holdApply: false, resolveScan: null, resolveApply: null
+  holdScan: false, holdApply: false, resolveScan: null, resolveApply: null, scanResponse: null
 }
 globalThis.__SKT = channel
 
 const plugin = (await import(STAGING)).default
 const storage = new Map()
 plugin.register({
-  source: 'plugin:skills-toggle',
+  source: 'plugin:hermes-switchboard',
   rest: async (path, options = {}) => {
     channel.restCalls.push({ path, body: options.body })
     if (path === '/state') return channel.state
@@ -68,19 +78,19 @@ plugin.register({
     if (path === '/mcp/state') return channel.mcpState
     if (path === '/import/plan') {
       if (channel.holdScan) return new Promise(resolve => { channel.resolveScan = resolve })
-      return scanPlan
+      return channel.scanResponse || scanPlan
     }
     if (path === '/import/apply-plan') {
       const entries = options.body.entries
       const response = {
         ok: true,
         results: entries.map((entry, index) => index === 0
-          ? { ...entry, ok: true, code: 'adopted', skill: `imported/${entry.name}`, path: `/Users/demo/.hermes/skills/imported/${entry.name}`, backup: `${entry.source}/${entry.name}.skills-toggle-backup-fixture` }
+          ? { ...entry, ok: true, code: 'adopted', skill: `imported/${entry.name}`, path: `/Users/demo/.hermes/skills/imported/${entry.name}`, backup: `${entry.source}/${entry.name}.hermes-switchboard-backup-fixture` }
           : { ...entry, ok: false, code: 'link-swap-failed', error: 'link swap failed; original state restored', changed_since_preview: false }),
         receipt: {
           receipt_id: 'import-receipt-001', adopted: 1, failed: entries.length - 1, refused: 0,
           items: [],
-          undo: [{ path: `${entries[0].source}/${entries[0].name}`, backup: `${entries[0].source}/${entries[0].name}.skills-toggle-backup-fixture`, kind: 'restore-tool-entry' }]
+          undo: [{ path: `${entries[0].source}/${entries[0].name}`, backup: `${entries[0].source}/${entries[0].name}.hermes-switchboard-backup-fixture`, kind: 'restore-tool-entry' }]
         },
         adopted: 1, failed: entries.length - 1, refused: 0
       }
@@ -149,8 +159,8 @@ const page = channel.registry.find(c => c.id === 'page')
 open.data.run()
 ok(channel.workspaces.length === 1, 'palette opens one workspace')
 const workspace = channel.activeWorkspace
-ok(workspace.id === 'skills-toggle.control-center', 'workspace uses stable id')
-ok(workspace.minWidth === '680px' && workspace.title === 'Skills Control Center', 'workspace options set title and minimum width')
+ok(workspace.id === 'hermes-switchboard.control-center', 'workspace uses stable id')
+ok(workspace.minWidth === '680px' && workspace.title === 'Hermes Switchboard', 'workspace options set title and minimum width')
 ok(workspace.dock === undefined && typeof workspace.render === 'function', 'workspace keeps default dock and supplies render')
 ok(channel.navigations.length === 0, 'workspace path does not navigate to fallback route')
 
@@ -255,13 +265,13 @@ ok(singleCategoryButtons.length === 8 && singleCategoryButtons.every(node => nod
 const search = interactive.root.findByProps({ placeholder: 'Search skills…' })
 await act(async () => {
   search.props.onChange('test-driven-development')
-  await new Promise(resolve => setTimeout(resolve, 230))
+  await new Promise(resolve => setTimeout(resolve, 350))
 })
 singleRows = interactive.root.findAll(node => node.props['data-single-tool-skill'])
 ok(singleRows.length === 1 && singleRows[0].props['data-single-tool-skill'] === 'software-development/test-driven-development', 'single-tool search is debounced and filters the full catalog')
 await act(async () => {
   interactive.root.findByProps({ placeholder: 'Search skills…' }).props.onChange('')
-  await new Promise(resolve => setTimeout(resolve, 230))
+  await new Promise(resolve => setTimeout(resolve, 350))
 })
 
 const issuesButton = interactive.root.findAllByProps({ role: 'radio' }).find(node => node.children.join('') === 'Issues')
@@ -386,6 +396,17 @@ channel.atoms[0].set('tools')
 html = renderToString(workspace.render())
 ok(!html.includes('data-onboarding-entry="true"'), 'completed onboarding hides the first-run entry without caching filesystem truth')
 
+channel.scanResponse = { ok: true, entries: [], adoptable: [], duplicate_groups: [], counts: {} }
+channel.atoms[0].set('onboarding')
+let emptyWizard
+await act(async () => { emptyWizard = TestRenderer.create(workspace.render()); await Promise.resolve() })
+const emptyWizardButton = label => emptyWizard.root.findAllByType('button').find(node => node.children.join('') === label)
+await act(async () => { emptyWizardButton('Get started').props.onClick(); await Promise.resolve() })
+await act(async () => { emptyWizardButton('Run scan').props.onClick(); await Promise.resolve(); await Promise.resolve() })
+const emptyWizardText = JSON.stringify(emptyWizard.toJSON())
+ok(emptyWizardText.includes('No skills found') && emptyWizardText.includes('Nothing changed') && emptyWizardButton('View Tools') && !emptyWizardButton('Continue'), 'empty first-run scan ends clearly instead of advancing to a disabled adoption step')
+channel.scanResponse = null
+
 channel.atoms[0].set('sets')
 html = renderToString(workspace.render())
 ok(html.includes('Coding') && html.includes('Writing') && html.includes('Minimal'), 'Sets mounts existing presets')
@@ -396,11 +417,14 @@ report.data.run()
 html = renderToString(channel.activeWorkspace.render())
 ok(html.includes('architecture-diagram') && html.includes('Use Hermes'), 'Problems mounts the live drift panel')
 ok(html.includes('Repair all') && html.includes('data-broken-entry'), 'Problems exposes reachable repair actions for broken entries')
+ok(html.includes('data-protected-entries') && html.includes('foreign-skill') && html.includes('real-skill-dir'), 'Problems shows protected foreign links and real directories instead of silently counting them')
+ok(html.includes('data-unlinked-skills') && html.includes('research/deep-research'), 'Problems explains and lists skills counted as unlinked')
 
 mcp.data.run()
 html = renderToString(channel.activeWorkspace.render())
 ok(html.includes('MCP servers') && html.includes('chrome-devtools'), 'MCP mounts the live MCP pane')
 ok((html.match(/role="switch"/g) || []).length === 9, 'MCP keeps nine live projection switches')
+ok(html.includes('Claude Desktop') && html.includes('Codex') && html.includes('drifted'), 'MCP labels both supported clients and surfaces drift from either writer')
 
 channel.atoms[0].set('advanced')
 html = renderToString(workspace.render())
@@ -417,9 +441,9 @@ const realOpenWorkspace = sdk.host.openWorkspace
 sdk.host.openWorkspace = undefined
 channel.navigations.length = 0
 open.data.run()
-ok(channel.navigations.includes('/skills-toggle'), 'older hosts navigate to the route fallback')
+ok(channel.navigations.includes('/hermes-switchboard'), 'older hosts navigate to the route fallback')
 html = renderToString(page.render())
-ok(html.includes('Skills Control Center') && html.includes('aria-label="Tools"'), 'route fallback renders the same Control Center')
+ok(html.includes('Hermes Switchboard') && html.includes('aria-label="Tools"'), 'route fallback renders the same Control Center')
 sdk.host.openWorkspace = realOpenWorkspace
 
 ok((readFileSync(process.env.PLUGIN_SRC, 'utf8').match(/jsx\(BackgroundHost/g) || []).length === 2, 'both roots mount BackgroundHost')

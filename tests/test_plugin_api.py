@@ -1,4 +1,4 @@
-"""Round-trip tests for skills-toggle's backend core.
+"""Round-trip tests for hermes-switchboard's backend core.
 
 Everything runs against throwaway fixtures in a temp dir — the machine's real
 ~/.hermes and tool dirs are never touched.
@@ -64,7 +64,7 @@ class Fixture:
     """Fake hermes home + five consumer tool dirs covering every state."""
 
     def __init__(self) -> None:
-        self.tmp = Path(tempfile.mkdtemp(prefix="skills-toggle-test-"))
+        self.tmp = Path(tempfile.mkdtemp(prefix="hermes-switchboard-test-"))
         self.home = self.tmp / "hermes"
         (self.home / "skills").mkdir(parents=True)
         (self.home / "config.yaml").write_text(CONFIG_YAML, encoding="utf-8")
@@ -217,7 +217,7 @@ class FixtureTest(unittest.TestCase):
         self.assertIn("creation_nudge_interval: 15", text)
         self.assertIn("- airtable", text)  # pre-existing member untouched
         # backup created
-        backups = list(self.fx.home.glob("config.yaml.bak.skills-toggle.*"))
+        backups = list(self.fx.home.glob("config.yaml.bak.hermes-switchboard.*"))
         self.assertEqual(len(backups), 1)
         self.assertNotIn("- \"apple-notes\"", backups[0].read_text(encoding="utf-8"))
         # idempotent
@@ -614,7 +614,7 @@ class FrontmatterTests(unittest.TestCase):
 
 class PathAndConfigTests(unittest.TestCase):
     def test_expand_path(self) -> None:
-        base = tempfile.mkdtemp(prefix="skills-toggle-expand-")
+        base = tempfile.mkdtemp(prefix="hermes-switchboard-expand-")
         os.environ["SKT_TEST_VAR"] = base
         try:
             self.assertTrue(pa.same_path(pa.expand_path("${SKT_TEST_VAR}/skills"), Path(base) / "skills"))
@@ -628,7 +628,7 @@ class PathAndConfigTests(unittest.TestCase):
     def test_user_tool_overrides_and_custom_tool(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             home = Path(td)
-            (home / "skills-toggle.json").write_text(
+            (home / "hermes-switchboard.json").write_text(
                 json.dumps(
                     {
                         "tools": {
@@ -649,9 +649,20 @@ class PathAndConfigTests(unittest.TestCase):
     def test_user_config_garbage_ignored(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             home = Path(td)
-            (home / "skills-toggle.json").write_text("{not json", encoding="utf-8")
+            (home / "hermes-switchboard.json").write_text("{not json", encoding="utf-8")
             tools = pa.load_tools_config(home)
             self.assertIn("claude", tools)
+
+    def test_pre_rename_user_config_still_loads(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            (home / "skills-toggle.json").write_text(
+                json.dumps({"tools": {"cursor": {"label": "Cursor", "dir": "~/cursor-skills"}}}),
+                encoding="utf-8",
+            )
+            tools = pa.load_tools_config(home)
+            self.assertEqual(tools["cursor"]["label"], "Cursor")
+            self.assertEqual(pa.user_config_path(home).name, "hermes-switchboard.json")
 
     def test_hermes_home_resolution(self) -> None:
         with tempfile.TemporaryDirectory() as td:

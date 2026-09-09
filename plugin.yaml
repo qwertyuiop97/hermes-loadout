@@ -1,15 +1,15 @@
-# skills-toggle — agent-plugin manifest (the agent half of a unified package).
+# hermes-switchboard — agent-plugin manifest (the agent half of a unified package).
 # The desktop half lives in desktop/plugin.js (loaded by the Hermes desktop app);
 # the backend routes live in dashboard/plugin_api.py (mounted at
-# /api/plugins/skills-toggle/ when this plugin is in `plugins.enabled`).
-name: skills-toggle
+# /api/plugins/hermes-switchboard/ when this plugin is in `plugins.enabled`).
+name: hermes-switchboard
 version: 3.0.0
 description: >-
-  Skills on/off control — Hermes desktop pane that toggles ~/.hermes/skills
+  Hermes Switchboard — a desktop plugin that manages ~/.hermes/skills
   symlinks across Claude, Codex, OpenCode, Grok, ZCode, and Hermes itself
   (skills.disabled), with repair, diff, and bulk actions. Hermes stays the
   single source of truth.
 author: qwertyuiop97
 license: MIT
-homepage: https://github.com/qwertyuiop97/skills-toggle
+homepage: https://github.com/qwertyuiop97/hermes-switchboard
 hooks: []

@@ -91,7 +91,7 @@ class ImportDriftTests(unittest.TestCase):
         self.assertTrue(link.is_symlink())
         self.assertTrue(pa.same_path(Path(os.readlink(link)), dest.parent.resolve()))
         # original preserved as a backup dir, never deleted
-        backups = list(self.fx.codex.glob("my-local-skill.skills-toggle-backup-*"))
+        backups = list(self.fx.codex.glob("my-local-skill.hermes-switchboard-backup-*"))
         self.assertEqual(len(backups), 1)
         self.assertTrue((backups[0] / "SKILL.md").is_file())
         # the new skill shows up in /state and is linkable everywhere
@@ -148,7 +148,7 @@ class ImportDriftTests(unittest.TestCase):
         # original restored exactly where it was, backup cleaned up by restore
         self.assertTrue(self.local.is_dir())
         self.assertFalse(self.local.is_symlink())
-        self.assertEqual(list(self.fx.codex.glob("my-local-skill.skills-toggle-backup-*")), [])
+        self.assertEqual(list(self.fx.codex.glob("my-local-skill.hermes-switchboard-backup-*")), [])
 
     def test_drift_reports_differing_copies(self) -> None:
         d = self.core.drift()
@@ -190,7 +190,7 @@ class ConflictResolutionTests(unittest.TestCase):
         canonical = self.fx.home / "skills" / "creative" / "architecture-diagram" / "SKILL.md"
         self.assertIn("local improved edit", canonical.read_text())
         # hermes original preserved as a DOTTED backup inside the category
-        backups = list((self.fx.home / "skills" / "creative").glob(".skills-toggle-backup-*"))
+        backups = list((self.fx.home / "skills" / "creative").glob(".hermes-switchboard-backup-*"))
         self.assertEqual(len(backups), 1)
         self.assertIn("draw diagrams", (backups[0] / "SKILL.md").read_text())
         # tool entry is a symlink to the new canonical
@@ -276,7 +276,7 @@ class DriftPushTests(unittest.TestCase):
                 self.fx.home / "skills" / "creative" / "architecture-diagram",
             )
         )
-        backups = list(self.fx.codex.glob("architecture-diagram.skills-toggle-backup-*"))
+        backups = list(self.fx.codex.glob("architecture-diagram.hermes-switchboard-backup-*"))
         self.assertEqual(len(backups), 1)
         self.assertIn("local drifted edit", (backups[0] / "SKILL.md").read_text())
         # drift is resolved
@@ -344,7 +344,7 @@ class RevertTests(unittest.TestCase):
         entry = self.fx.codex / "architecture-diagram"
         self.assertTrue(entry.is_dir() and not entry.is_symlink())
         self.assertIn("local edit", (entry / "SKILL.md").read_text())
-        self.assertEqual(list(self.fx.codex.glob("*.skills-toggle-backup-*")), [])
+        self.assertEqual(list(self.fx.codex.glob("*.hermes-switchboard-backup-*")), [])
         # double revert refuses (entry is no longer managed)
         r2 = call(self.core.revert_push, "codex", "architecture-diagram", push["tool_backup"])
         self.assertFalse(r2["ok"])
@@ -358,7 +358,7 @@ class RevertTests(unittest.TestCase):
         canonical = self.fx.home / "skills" / "creative" / "architecture-diagram" / "SKILL.md"
         self.assertIn("draw diagrams", canonical.read_text())
         # pulled copy kept aside, dotted (scanner must skip it)
-        asides = list((self.fx.home / "skills" / "creative").glob(".skills-toggle-reverted-*"))
+        asides = list((self.fx.home / "skills" / "creative").glob(".hermes-switchboard-reverted-*"))
         self.assertEqual(len(asides), 1)
         self.assertEqual(self.core.state()["counts"]["skills"], 7)
         # tool entry is the real local edit again
@@ -373,7 +373,7 @@ class RevertTests(unittest.TestCase):
         entry = self.fx.codex / "architecture-diagram"
         self.assertTrue(entry.is_dir() and not entry.is_symlink())
         self.assertIn("local edit", (entry / "SKILL.md").read_text())
-        asides = list((self.fx.home / "skills" / "imported").glob(".skills-toggle-reverted-*"))
+        asides = list((self.fx.home / "skills" / "imported").glob(".hermes-switchboard-reverted-*"))
         self.assertEqual(len(asides), 1)
         self.assertNotIn(kb["skill"], [x["id"] for x in self.core.state()["skills"]])
 
@@ -570,22 +570,22 @@ class ConfigToolsTests(unittest.TestCase):
     def test_set_tool_writes_config_with_backup(self) -> None:
         r = self.core.set_tool("cursor", "Cursor", "~/cursor-skills")
         self.assertTrue(r["ok"])
-        cfg = self.fx.home / "skills-toggle.json"
+        cfg = self.fx.home / "hermes-switchboard.json"
         self.assertTrue(cfg.is_file())
         data = json.loads(cfg.read_text())
         self.assertEqual(data["tools"]["cursor"]["label"], "Cursor")
-        backups = list(self.fx.home.glob("skills-toggle.json.bak.skills-toggle.*"))
+        backups = list(self.fx.home.glob("hermes-switchboard.json.bak.hermes-switchboard.*"))
         self.assertEqual(len(backups), 0)  # first write: no prior file to back up
         # a second write backs up the first version
         self.core.set_tool("cursor", "Cursor 2", "~/cursor2")
-        backups = list(self.fx.home.glob("skills-toggle.json.bak.skills-toggle.*"))
+        backups = list(self.fx.home.glob("hermes-switchboard.json.bak.hermes-switchboard.*"))
         self.assertEqual(len(backups), 1)
 
     def test_set_tool_rejects_bad_input(self) -> None:
         for bad in (("HERMES", "x", "~/y"), ("bad id", "x", "~/y"), ("ok-id", "", "~/y"), ("ok-id", "x", "")):
             r = call(self.core.set_tool, *bad)
             self.assertFalse(r["ok"])
-        self.assertFalse((self.fx.home / "skills-toggle.json").exists())
+        self.assertFalse((self.fx.home / "hermes-switchboard.json").exists())
 
     def test_set_tool_then_state_includes_it(self) -> None:
         with self.assertRaises(SkillsToggleError):

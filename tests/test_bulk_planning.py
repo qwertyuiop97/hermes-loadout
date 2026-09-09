@@ -125,7 +125,7 @@ class BulkPlanningTest(unittest.TestCase):
         ids = ["apple/apple-notes", "creative/architecture-diagram"]
         result = self.core.execute_bulk(self.core.plan_bulk(ids, "hermes", False)["would_change"], "hermes", False)
         self.assertEqual(result["receipt"]["changed"], 2)
-        self.assertEqual(len(list(self.fx.home.glob("config.yaml.bak.skills-toggle.*"))), 1)
+        self.assertEqual(len(list(self.fx.home.glob("config.yaml.bak.hermes-switchboard.*"))), 1)
         text = (self.fx.home / "config.yaml").read_text(encoding="utf-8")
         self.assertIn('"apple-notes"', text)
         self.assertIn('"architecture-diagram"', text)

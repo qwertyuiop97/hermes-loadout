@@ -71,7 +71,7 @@ globalThis.__SKT = channel
 const plugin = (await import(STAGING)).default
 const storage = new Map()
 plugin.register({
-  source: 'plugin:skills-toggle',
+  source: 'plugin:hermes-switchboard',
   rest: async path => {
     channel.restCalls.push({ path })
     if (path === '/state') return channel.state
@@ -90,14 +90,14 @@ plugin.register({
   registerMany: contributions => contributions.forEach(c => channel.registry.push(c))
 })
 
-ok(plugin.id === 'skills-toggle', 'plugin id matches')
+ok(plugin.id === 'hermes-switchboard', 'plugin id matches')
 ok(plugin.defaultEnabled === false, 'desktop half remains opt-in')
 ok(channel.registry.length === 6, 'six contributions remain registered')
 const pane = channel.registry.find(c => c.area === 'panes')
 const page = channel.registry.find(c => c.area === 'routes')
 const chip = channel.registry.find(c => c.area === 'statusbar.right')
 ok(pane?.data?.placement === 'right' && pane?.data?.width === '320px', 'pane stays right at 320px')
-ok(page?.data?.path === '/skills-toggle', 'route fallback stays /skills-toggle')
+ok(page?.data?.path === '/hermes-switchboard', 'route fallback stays /hermes-switchboard')
 ok(renderToString(chip.render()).includes('1 broken'), 'status chip retains health summary')
 
 const source = (await import('fs')).readFileSync(PLUGIN_SRC, 'utf8')
@@ -112,7 +112,7 @@ ok(html.includes('3 skills · 5 tools'), 'compact stat line renders')
 ok((html.match(/data-summary-tool=/g) || []).length === 6, 'five link tools plus Hermes render')
 ok(html.includes('2 on') && html.includes('1 on') && html.includes('0 on'), 'enabled counts render as labels')
 ok((html.match(/role="switch"/g) || []).length === 0, 'compact pane renders zero switches')
-ok(html.includes('Open Control Center') && html.includes('Scan') && html.includes('Problems (5)'), 'three quick actions render for problems')
+ok(html.includes('Open Switchboard') && html.includes('Scan') && html.includes('Problems (5)'), 'three quick actions render for problems')
 ok(!html.includes('Search skills') && !html.includes('Set up your tools'), 'catalog controls are absent from the pane')
 
 const fs = await import('fs')
@@ -121,7 +121,7 @@ for (const [name, expectedTools, expectedRows] of [['tools-zero', 0, 1], ['tools
   channel.diff = { ok: true, counts: {} }
   channel.drift = { ok: true, count: 0, drifted: [] }
   html = render()
-  ok(html.includes(`1 skills · ${expectedTools} tools`), `${name} reports the correct detected-tool count`)
+  ok(html.includes(`1 skill · ${expectedTools} tool${expectedTools === 1 ? '' : 's'}`), `${name} reports the correct detected-tool count`)
   ok((html.match(/data-summary-tool=/g) || []).length === expectedRows, `${name} renders every eligible row plus Hermes`)
 }
 const mixed = JSON.parse(fs.readFileSync(new URL('./fixtures/mixed-problems.json', import.meta.url), 'utf8'))

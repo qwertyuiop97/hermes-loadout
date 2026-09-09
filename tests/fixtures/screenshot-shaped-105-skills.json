@@ -1,7 +1,7 @@
 {
   "ok": true,
-  "hermes_home": "/Users/bakirmousa/.hermes",
-  "skills_root": "/Users/bakirmousa/.hermes/skills",
+  "hermes_home": "/Users/demo/.hermes",
+  "skills_root": "/Users/demo/.hermes/skills",
   "skills_root_exists": true,
   "tools": [
     {
