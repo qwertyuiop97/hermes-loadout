@@ -20,7 +20,7 @@ until items 6-12 pass their acceptance gates.
    wide containers without hidden tools, clipped descriptions, or ambiguous switches.
 8. [x] Tool-first overview — default to one card/row per detected tool with enabled,
    disabled, and issue counts plus Manage, Enable all, and Disable all actions.
-9. [ ] Single-tool management + bulk planning — one switch per skill for the selected
+9. [x] Single-tool management + bulk planning — one switch per skill for the selected
    tool; selection/category/all operations; dry-run preview, protected-entry report,
    confirmation, mutation receipt, and undo.
 10. [ ] First-run scan wizard — promote the existing import/adoption scan into guided
