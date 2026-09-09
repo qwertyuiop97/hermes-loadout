@@ -19,22 +19,46 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Apply the exact reviewed recovery patch
+      - name: Apply hash-anchored reviewed file edits
         shell: python
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
         run: |
           import base64, hashlib, json, lzma, os, subprocess, urllib.request
-          sha = '040c805f251444e03fab09594c2a1717563fd606'
-          request = urllib.request.Request('https://api.github.com/repos/' + os.environ['REPOSITORY'] + '/git/blobs/' + sha, headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'], 'Accept': 'application/vnd.github+json'})
-          with urllib.request.urlopen(request, timeout=30) as response:
-              part = base64.b64decode(json.load(response)['content'])
-          assert hashlib.sha1(b'blob ' + str(len(part)).encode() + b'\0' + part).hexdigest() == sha
-          patch = lzma.decompress(base64.b64decode(part))
-          assert hashlib.sha256(patch).hexdigest() == 'e698e4776fa45be0786d9411b56405253cf06529b514dda1147da5006b8ca806'
-          subprocess.run(['git', 'apply', '--check', '-'], input=patch, check=True)
-          subprocess.run(['git', 'apply', '--index', '-'], input=patch, check=True)
+          from pathlib import Path
+          hashes = ['dcca2d028b6208c086dbb91f614960b7148b6466', '2b0a0af10138776a2b96703029f606dc9dee1ae0', '42b4725604c22686434ea912e49a2a5e452f7013', 'ec7a706ee27a5266981ea281f8033ba828199190', '3527a09f669e15e7049bdc51acfd31eeb826e03c']
+          parts = []
+          for sha in hashes:
+              request = urllib.request.Request('https://api.github.com/repos/' + os.environ['REPOSITORY'] + '/git/blobs/' + sha, headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'], 'Accept': 'application/vnd.github+json'})
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  part = base64.b64decode(json.load(response)['content'])
+              assert hashlib.sha1(b'blob ' + str(len(part)).encode() + b'\0' + part).hexdigest() == sha
+              parts.append(part)
+          manifest = lzma.decompress(base64.b64decode(b''.join(parts)))
+          assert hashlib.sha256(manifest).hexdigest() == '7e4b76d0d9c14a74be6c12cc1e03b0bb95958236d4b25c6e6a203d41cf2b29f7'
+          prepared = []
+          for item in json.loads(manifest):
+              path = Path(item['path'])
+              assert not path.is_absolute() and '..' not in path.parts and path.parts[0] in ('dashboard', 'desktop', 'tests')
+              assert not path.is_symlink()
+              if item['before'] is None:
+                  assert not path.exists()
+                  original = b''
+              else:
+                  original = path.read_bytes()
+                  assert hashlib.sha256(original).hexdigest() == item['before'], str(path)
+              lines = original.decode('utf-8').splitlines(keepends=True)
+              for start, end, replacement in reversed(item['edits']):
+                  assert 0 <= start <= end <= len(lines)
+                  lines[start:end] = replacement
+              output = ''.join(lines).encode('utf-8')
+              assert hashlib.sha256(output).hexdigest() == item['after'], str(path)
+              prepared.append((path, output))
+          for path, output in prepared:
+              path.parent.mkdir(parents=True, exist_ok=True)
+              path.write_bytes(output)
+          subprocess.run(['git', 'add', '--'] + [str(path) for path, _ in prepared], check=True)
       - name: Verify backend and interface contracts
         run: |
           python -m pip install --quiet fastapi httpx
@@ -49,7 +73,7 @@ jobs:
           test "$(git ls-remote origin refs/heads/astra/switchboard-alpha-hardening | cut -f1)" = "$EXPECTED_HEAD"
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git commit -m 'fix: retain import and undo evidence across interrupted operations'
+          git commit -m 'feat: connect reviewed loadouts, maintenance, and one-step undo'
           git push origin HEAD:refs/heads/astra/switchboard-alpha-hardening
       - name: Archive committed source
         run: |
@@ -57,7 +81,7 @@ jobs:
           git rev-parse HEAD > "$RUNNER_TEMP/source-commit.txt"
       - uses: actions/upload-artifact@v4
         with:
-          name: recovery-source
+          name: reviewed-interface-source
           path: |
             ${{ runner.temp }}/source.tar
             ${{ runner.temp }}/source-commit.txt
