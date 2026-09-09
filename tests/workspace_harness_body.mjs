@@ -15,6 +15,8 @@ const ok = (condition, message) => {
 
 const fixturePath = new URL('./fixtures/screenshot-shaped-105-skills.json', import.meta.url).pathname
 const state = JSON.parse(readFileSync(fixturePath, 'utf8'))
+const scanFixturePath = new URL('./fixtures/first-run-scan-plan.json', import.meta.url).pathname
+const scanPlan = JSON.parse(readFileSync(scanFixturePath, 'utf8'))
 const channel = {
   mode: 'ready',
   state,
@@ -35,7 +37,8 @@ const channel = {
     counts: { catalog: 3, foreign: 1 },
     writers: { claude: { label: 'Claude Desktop', path: '/tmp/claude.json', present: true } }
   },
-  bundle: {}, registry: [], notifications: [], navigations: [], invalidated: [], workspaces: [], restCalls: []
+  bundle: {}, registry: [], notifications: [], navigations: [], invalidated: [], workspaces: [], restCalls: [],
+  holdScan: false, holdApply: false, resolveScan: null, resolveApply: null
 }
 globalThis.__SKT = channel
 
@@ -49,6 +52,29 @@ plugin.register({
     if (path === '/diff') return channel.diff
     if (path === '/drift') return channel.drift
     if (path === '/mcp/state') return channel.mcpState
+    if (path === '/import/plan') {
+      if (channel.holdScan) return new Promise(resolve => { channel.resolveScan = resolve })
+      return scanPlan
+    }
+    if (path === '/import/apply-plan') {
+      const entries = options.body.entries
+      const response = {
+        ok: true,
+        results: entries.map((entry, index) => index === 0
+          ? { ...entry, ok: true, code: 'adopted', skill: `imported/${entry.name}`, path: `/Users/demo/.hermes/skills/imported/${entry.name}`, backup: `${entry.source}/${entry.name}.skills-toggle-backup-fixture` }
+          : { ...entry, ok: false, code: 'link-swap-failed', error: 'link swap failed; original state restored', changed_since_preview: false }),
+        receipt: {
+          receipt_id: 'import-receipt-001', adopted: 1, failed: entries.length - 1, refused: 0,
+          items: [],
+          undo: [{ path: `${entries[0].source}/${entries[0].name}`, backup: `${entries[0].source}/${entries[0].name}.skills-toggle-backup-fixture`, kind: 'restore-tool-entry' }]
+        },
+        adopted: 1, failed: entries.length - 1, refused: 0
+      }
+      response.receipt.items = response.results
+      if (channel.holdApply) return new Promise(resolve => { channel.resolveApply = () => resolve(response) })
+      return response
+    }
+    if (path === '/conflict/revert-adopt') return { ok: true, action: 'reverted', name: options.body.name, tool: options.body.tool }
     if (path === '/bulk/plan') {
       const ids = options.body.skills
       const wouldChange = ids.slice(0, 3)
@@ -131,6 +157,7 @@ ok(html.includes('45 on / 105') && html.includes('60</div><div class="text-muted
 ok(html.includes('79 on / 105') && html.includes('13</div><div class="text-muted-foreground">off') && html.includes('13</div><div class="text-muted-foreground">problems'), 'Claude card counts enabled, off, and problems correctly')
 ok((html.match(/role="switch"/g) || []).length === 0 && !html.includes('Search skills'), 'Tools overview replaces the transitional skill matrix')
 ok(html.includes('Add Tool'), 'Tools overview keeps absent optional targets reachable through Add Tool')
+ok(html.includes('data-onboarding-entry="true"') && html.includes('Start setup'), 'incomplete onboarding exposes a dedicated Tools entry point')
 
 let interactive
 await act(async () => { interactive = TestRenderer.create(workspace.render()) })
@@ -203,6 +230,73 @@ const overviewEnableAll = overviewGrok.findAllByType('button').find(node => node
 await act(async () => { overviewEnableAll.props.onClick(); await Promise.resolve() })
 const overviewPlan = channel.restCalls.filter(call => call.path === '/bulk/plan').at(-1)
 ok(overviewPlan.body.enabled === true && overviewPlan.body.skills.length === state.skills.length, 'overview page-level actions also use the bulk planner with explicit ids')
+
+const pane = channel.registry.find(c => c.id === 'pane')
+let compact
+await act(async () => { compact = TestRenderer.create(pane.render()) })
+const compactScan = compact.root.findAllByType('button').find(node => node.children.join('') === 'Scan')
+await act(async () => { compactScan.props.onClick() })
+const wizardWorkspace = channel.activeWorkspace
+let wizard
+await act(async () => { wizard = TestRenderer.create(wizardWorkspace.render()); await Promise.resolve() })
+ok(wizard.root.findByProps({ 'data-first-run-wizard': 'welcome' }) && JSON.stringify(wizard.toJSON()).includes('Hermes your canonical skills library'), 'wizard step 1 explains canonical storage and preserved backups')
+
+const wizardButton = label => wizard.root.findAllByType('button').find(node => node.children.join('') === label)
+await act(async () => { wizardButton('Get started').props.onClick(); await Promise.resolve() })
+ok(wizard.root.findByProps({ 'data-first-run-wizard': 'sources' }), 'wizard step 2 renders source selection')
+const detected = wizard.root.findAll(node => node.props['data-detected-tool'])
+ok(detected.length === 5 && detected.every(node => node.findByType('input').props.checked), 'source selection auto-detects and selects every present non-Hermes tool')
+const folder = wizard.root.findAllByType('input').find(node => node.props.placeholder === '/path/to/another/skills folder')
+await act(async () => { folder.props.onChange({ target: { value: '/Volumes/team/skills' } }) })
+await act(async () => { wizardButton('Add folder').props.onClick() })
+ok(wizard.root.findByProps({ 'data-scan-root': '/Volumes/team/skills' }), 'source selection accepts an additional scan folder')
+
+channel.holdScan = true
+await act(async () => { wizardButton('Run scan').props.onClick(); await Promise.resolve() })
+ok(wizard.root.findByProps({ 'data-first-run-wizard': 'scanning' }) && wizard.root.findByProps({ 'data-wizard-scanning': 'true' }), 'wizard step 3 renders while the fresh import plan is pending')
+const scanCall = channel.restCalls.filter(call => call.path === '/import/plan').at(-1)
+ok(scanCall.body.tools.length === 5 && scanCall.body.scan_roots[0] === '/Volumes/team/skills', 'scan posts selected tool ids and owner-added roots')
+channel.holdScan = false
+await act(async () => { channel.resolveScan(scanPlan); await Promise.resolve(); await Promise.resolve() })
+ok(wizard.root.findByProps({ 'data-first-run-wizard': 'review' }), 'wizard step 4 renders the classification review')
+ok(['managed', 'unmanaged-skill', 'identical-duplicate', 'drifted', 'name-conflict', 'broken-link', 'foreign-link', 'unmanaged-dir'].every(kind => wizard.root.findByProps({ 'data-classification': kind })), 'classification review covers all required groups')
+ok(wizard.root.findByProps({ 'data-duplicate-groups': 'true' }) && JSON.stringify(wizard.toJSON()).includes('shared-name'), 'duplicate names across sources are grouped and visibly flagged')
+
+await act(async () => { wizardButton('Continue').props.onClick() })
+ok(wizard.root.findByProps({ 'data-first-run-wizard': 'choose' }), 'wizard step 5 renders tool and adoption checkboxes')
+ok(wizard.root.findAll(node => node.props['data-manage-tool']).length === 5 && wizard.root.findAll(node => node.props['data-adopt-entry']).length === 2, 'choice step exposes detected tools and only safe adoptable entries')
+ok(wizard.root.findByProps({ 'data-duplicates-flagged': 'true' }), 'choice step keeps duplicate and drift exclusions visible')
+
+await act(async () => { wizardButton('Review dry run').props.onClick() })
+ok(wizard.root.findByProps({ 'data-first-run-wizard': 'preview' }) && wizard.root.findByProps({ 'data-import-preview': 'true' }), 'wizard step 6 renders the dry-run plan')
+let wizardText = JSON.stringify(wizard.toJSON())
+ok(wizardText.includes('2 selected') && wizardText.includes('3 sources') && wizardText.includes('3 conflicts') && wizardText.includes('/missing/skills'), 'dry run shows counts, examples, paths, and refusals')
+await act(async () => { wizardButton('Apply plan…').props.onClick() })
+ok(wizardText !== JSON.stringify(wizard.toJSON()) && JSON.stringify(wizard.toJSON()).includes('Confirm adoption'), 'apply is gated by an explicit confirmation dialog')
+
+channel.holdApply = true
+await act(async () => { wizardButton('Confirm adoption').props.onClick(); await Promise.resolve() })
+ok(wizard.root.findByProps({ 'data-first-run-wizard': 'apply' }) && wizard.root.findByProps({ 'data-wizard-applying': 'true' }), 'wizard step 7 renders while the exact reviewed plan is applying')
+const importApply = channel.restCalls.filter(call => call.path === '/import/apply-plan').at(-1)
+ok(JSON.stringify(importApply.body.entries) === JSON.stringify(scanPlan.adoptable.map(row => ({ name: row.name, source: row.source, tool: row.tool }))), 'apply posts only the exact chosen name/source/tool entries')
+channel.holdApply = false
+await act(async () => { channel.resolveApply(); await Promise.resolve(); await Promise.resolve() })
+ok(wizard.root.findByProps({ 'data-first-run-wizard': 'receipt' }) && wizard.root.findByProps({ 'data-import-receipt': 'import-receipt-001' }), 'wizard step 8 renders the durable receipt')
+wizardText = JSON.stringify(wizard.toJSON())
+ok(wizardText.includes('1 adopted') && wizardText.includes('1 failed') && wizardText.includes('original state restored'), 'receipt clearly surfaces partial adoption failure and rollback status')
+ok(wizard.root.findByProps({ 'data-import-undo': 'restore-tool-entry' }), 'receipt renders its durable Undo/Restore path')
+
+await act(async () => { wizardButton('Undo').props.onClick(); await Promise.resolve(); await Promise.resolve() })
+const importUndo = channel.restCalls.filter(call => call.path === '/conflict/revert-adopt').at(-1)
+ok(importUndo.body.name === 'solo-copy' && importUndo.body.skill === 'imported/solo-copy', 'Undo restores only the adopted receipt item through the existing revert route')
+ok(wizard.root.findByProps({ 'data-import-undo-results': 'true' }), 'undo result remains visible beside the durable receipt')
+await act(async () => { wizardButton('View Tools').props.onClick() })
+const onboarding = storage.get('onboarding')
+ok(onboarding.version === 1 && onboarding.complete === true && !('plan' in onboarding) && !('entries' in onboarding), 'step 9 lands on Tools and persists only versioned UI progress/preferences')
+
+channel.atoms[0].set('tools')
+html = renderToString(workspace.render())
+ok(!html.includes('data-onboarding-entry="true"'), 'completed onboarding hides the first-run entry without caching filesystem truth')
 
 channel.atoms[0].set('sets')
 html = renderToString(workspace.render())

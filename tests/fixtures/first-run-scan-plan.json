@@ -1,0 +1,43 @@
+{
+  "ok": true,
+  "category": "imported",
+  "entries": [
+    {"name": "managed-link", "source": "/Users/demo/.codex/skills", "tool": "codex", "kind": "managed", "path": "/Users/demo/.codex/skills/managed-link", "conflict": false, "drifted": false},
+    {"name": "solo-copy", "source": "/Users/demo/.codex/skills", "tool": "codex", "kind": "unmanaged-skill", "path": "/Users/demo/.codex/skills/solo-copy", "hash": "aaa", "conflict": false, "drifted": false},
+    {"name": "failed-copy", "source": "/Users/demo/.codex/skills", "tool": "codex", "kind": "unmanaged-skill", "path": "/Users/demo/.codex/skills/failed-copy", "hash": "aab", "conflict": false, "drifted": false},
+    {"name": "same-copy", "source": "/Users/demo/.claude/skills", "tool": "claude", "kind": "identical-duplicate", "path": "/Users/demo/.claude/skills/same-copy", "hash": "bbb", "conflict": true, "drifted": false},
+    {"name": "changed-copy", "source": "/Users/demo/.claude/skills", "tool": "claude", "kind": "drifted", "path": "/Users/demo/.claude/skills/changed-copy", "hash": "ccc", "conflict": true, "drifted": true},
+    {"name": "shared-name", "source": "/Users/demo/.codex/skills", "tool": "codex", "kind": "name-conflict", "path": "/Users/demo/.codex/skills/shared-name", "hash": "ddd", "conflict": true, "drifted": false},
+    {"name": "shared-name", "source": "/Volumes/team/skills", "tool": null, "kind": "name-conflict", "path": "/Volumes/team/skills/shared-name", "hash": "eee", "conflict": true, "drifted": false},
+    {"name": "broken-copy", "source": "/Users/demo/.codex/skills", "tool": "codex", "kind": "broken-link", "path": "/Users/demo/.codex/skills/broken-copy", "conflict": false, "drifted": false},
+    {"name": "foreign-copy", "source": "/Users/demo/.codex/skills", "tool": "codex", "kind": "foreign-link", "path": "/Users/demo/.codex/skills/foreign-copy", "conflict": false, "drifted": false},
+    {"name": "notes", "source": "/Users/demo/.codex/skills", "tool": "codex", "kind": "unmanaged-dir", "path": "/Users/demo/.codex/skills/notes", "conflict": false, "drifted": false}
+  ],
+  "adoptable": [
+    {"name": "solo-copy", "source": "/Users/demo/.codex/skills", "tool": "codex", "kind": "unmanaged-skill", "path": "/Users/demo/.codex/skills/solo-copy", "hash": "aaa", "conflict": false, "drifted": false},
+    {"name": "failed-copy", "source": "/Users/demo/.codex/skills", "tool": "codex", "kind": "unmanaged-skill", "path": "/Users/demo/.codex/skills/failed-copy", "hash": "aab", "conflict": false, "drifted": false}
+  ],
+  "conflicts": [
+    {"name": "same-copy", "source": "/Users/demo/.claude/skills", "tool": "claude", "kind": "identical-duplicate", "path": "/Users/demo/.claude/skills/same-copy", "conflict": true, "drifted": false},
+    {"name": "changed-copy", "source": "/Users/demo/.claude/skills", "tool": "claude", "kind": "drifted", "path": "/Users/demo/.claude/skills/changed-copy", "conflict": true, "drifted": true},
+    {"name": "shared-name", "source": "/Users/demo/.codex/skills", "tool": "codex", "kind": "name-conflict", "path": "/Users/demo/.codex/skills/shared-name", "conflict": true, "drifted": false}
+  ],
+  "drifted": [
+    {"name": "changed-copy", "source": "/Users/demo/.claude/skills", "tool": "claude", "kind": "drifted", "path": "/Users/demo/.claude/skills/changed-copy", "conflict": true, "drifted": true}
+  ],
+  "refused": [
+    {"root": "/missing/skills", "code": "not-dir"}
+  ],
+  "duplicate_groups": [
+    {"name": "shared-name", "entries": [{"source": "/Users/demo/.codex/skills", "tool": "codex", "kind": "name-conflict"}, {"source": "/Volumes/team/skills", "tool": null, "kind": "name-conflict"}]}
+  ],
+  "totals": {
+    "sources": 3,
+    "entries": 10,
+    "adoptable": 2,
+    "conflicts": 3,
+    "drifted": 1,
+    "refused": 1,
+    "kinds": {"managed": 1, "unmanaged-skill": 2, "identical-duplicate": 1, "drifted": 1, "name-conflict": 2, "broken-link": 1, "foreign-link": 1, "unmanaged-dir": 1}
+  }
+}
