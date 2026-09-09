@@ -86,6 +86,8 @@ ok(html.includes('whitespace-normal break-words') && !html.includes('title="A co
 channel.atoms[0].set('sets')
 html = renderToString(workspace.render())
 ok(html.includes('Coding') && html.includes('Writing') && html.includes('Minimal'), 'Sets mounts existing presets')
+ok(html.includes('Download') && html.includes('Open file…') && html.includes('Copy current'), 'Sets retains preset import and export controls')
+ok(!html.includes('Search skills'), 'Sets is a distinct section, not the Tools catalog')
 
 report.data.run()
 html = renderToString(channel.activeWorkspace.render())
