@@ -47,6 +47,22 @@ class LinkSafetyTests(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in self.fx.codex.iterdir()), ["apple-notes"])
 
 
+    def test_windows_swap_failure_restores_the_previous_pointer(self):
+        link = self.fx.codex / "apple-notes"
+        os.symlink(self.fx.home / "skills/old/apple-notes", link, target_is_directory=True)
+        original = os.readlink(link)
+        real_rename = pa.os.rename
+        def fail_new_pointer(source, destination):
+            if Path(source).name.startswith(".hermes-switchboard-") and not Path(source).name.startswith(".hermes-switchboard-previous-"):
+                raise PermissionError("fixture replacement denied")
+            return real_rename(source, destination)
+        with patch.object(pa.sys, "platform", "win32"), patch.object(pa.os, "rename", side_effect=fail_new_pointer):
+            with self.assertRaises(pa.SkillsToggleError):
+                self.fx.core.toggle("apple/apple-notes", "codex", True)
+        self.assertEqual(os.readlink(link), original)
+        self.assertEqual([p.name for p in self.fx.codex.iterdir()], ["apple-notes"])
+
+
 class ConfigSafetyTests(unittest.TestCase):
     def setUp(self):
         self.fx = Fixture()
@@ -130,6 +146,7 @@ class McpSafetyTests(unittest.TestCase):
                       nested={"token": secret})
         self.assertNotIn(secret, self.mcp.log_path.read_text(encoding="utf-8"))
         # Redaction is only for public state, not the actual client projection.
+        source.write_text('mcp_servers:\n  private:\n    command: node\n    args:\n      - ' + secret + '\n    env:\n      KEY: ' + secret + '\n', encoding="utf-8")
         self.mcp.sync_to_claude("private")
         written = json.loads(self.fx.claude.read_text(encoding="utf-8"))
         self.assertEqual(written["mcpServers"]["private"]["env"]["KEY"], secret)

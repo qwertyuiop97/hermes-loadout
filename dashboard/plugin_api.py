@@ -1080,7 +1080,7 @@ class SkillsToggleCore:
                     if not link.is_symlink() or os.readlink(link) != target:
                         raise SkillsToggleError("target changed during repair; refresh and review it again",
                                                 "changed-since-preview")
-                    os.replace(temporary, link)
+                    self._replace_managed_link(temporary, link)
                 else:
                     os.symlink(str(skill_dir_resolved), str(link), target_is_directory=True)
             except (OSError, NotImplementedError) as exc:
@@ -1400,6 +1400,31 @@ class SkillsToggleCore:
         except OSError:
             return {"kind": "unreadable"}
 
+    @staticmethod
+    def _replace_managed_link(temporary: Path, destination: Path) -> None:
+        """Replace a checked link without discarding its before-image on error.
+
+        NTFS refuses replacement of directory symlinks with os.replace. Move
+        the old link aside there, then rename exclusively and roll back on
+        failure. A process interruption leaves that recoverable link beside
+        the destination, not a deleted skill directory.
+        """
+        if sys.platform != "win32":
+            os.replace(temporary, destination)
+            return
+        if not destination.is_symlink() or not temporary.is_symlink():
+            raise SkillsToggleError("link changed before replacement", "changed-since-preview")
+        parked = destination.with_name(".hermes-switchboard-previous-" + uuid.uuid4().hex)
+        os.rename(destination, parked)
+        try:
+            # Unlike replace, Windows rename refuses a newly occupied path.
+            os.rename(temporary, destination)
+        except OSError:
+            if not destination.exists() and not destination.is_symlink():
+                os.rename(parked, destination)
+            raise
+        parked.unlink()
+
     def undo_bulk(self, receipt_id: object) -> dict:
         """Restore only recorded changes whose post-apply state still matches.
 
@@ -1465,7 +1490,7 @@ class SkillsToggleCore:
                                 os.symlink(raw, temporary, target_is_directory=before["directory"])
                                 if self._entry_snapshot(link) != after:
                                     raise SkillsToggleError("entry changed during undo; left untouched", "changed-since-apply")
-                                os.replace(temporary, link)
+                                self._replace_managed_link(temporary, link)
                             finally:
                                 if temporary.is_symlink():
                                     temporary.unlink()
@@ -1535,7 +1560,9 @@ class SkillsToggleCore:
                     try:
                         self._validate_client_skill(skill, tool_id)
                     except SkillsToggleError as exc:
-                        refused.append({"skill": valid_sid, "code": exc.code, "reason": str(exc)})
+                        results.append({"skill": valid_sid, "ok": False, "state": "refused",
+                                        "code": exc.code, "error": str(exc), "changed_since_preview": True})
+                        receipt_items.append({"skill": valid_sid, "ok": False, "from": "refused", "to": "refused"})
                         continue
                 disposition = self._bulk_disposition(skill, tool_id, enabled, disabled)
                 if disposition["kind"] != "change":
@@ -1821,7 +1848,7 @@ class SkillsToggleCore:
 
     @staticmethod
     def _validate_import_category(category: object) -> str:
-        if not isinstance(category, str) or not re.match(r"^[^/\0]+$", category) or category in (".", ".."):
+        if not isinstance(category, str) or not re.match(r"^[^/\0]+$", category) or category in (".", "..") or "\\" in category:
             raise SkillsToggleError(f"invalid category {category!r}", "invalid-category")
         return category
 
@@ -2220,7 +2247,7 @@ class SkillsToggleCore:
         for tool_id in self.tools:
             if tool_id == "hermes":
                 continue
-            tool_dir = self.tool_dir(tool_id)
+            tool_dir = self._inventory_dir(tool_id)
             if tool_dir is None or not tool_dir.is_dir():
                 continue
             try:
@@ -2264,7 +2291,7 @@ class SkillsToggleCore:
             tool_id = self._validate_tool(tool_id)
             if tool_id == "hermes":
                 raise SkillsToggleError("hermes already is the source of truth", "no-dir")
-            if not isinstance(name, str) or "/" in name or name in (".", "..") or not name.strip():
+            if not isinstance(name, str) or any(c in name for c in ("/", "\\", "\0")) or name in (".", "..") or not name.strip():
                 raise SkillsToggleError(f"invalid skill name {name!r}", "invalid-name")
             skills = self._scan_skills()
             existing = next((s for s in skills.values() if s["name"] == name), None)
@@ -2307,7 +2334,7 @@ class SkillsToggleCore:
     # -- conflict resolution --------------------------------------------------
 
     def _conflict_context(self, tool_id: object, name: object, require_in_tree: bool):
-        if not isinstance(name, str) or "/" in name or name in (".", "..") or not name.strip():
+        if not isinstance(name, str) or any(c in name for c in ("/", "\\", "\0")) or name in (".", "..") or not name.strip():
             raise SkillsToggleError(f"invalid skill name {name!r}", "invalid-name")
         tool_id = self._validate_tool(tool_id)
         if tool_id == "hermes":
@@ -2411,20 +2438,50 @@ class SkillsToggleCore:
 
     # -- v3-4: undo symmetry for adoption/drift operations ---------------------
 
+    @staticmethod
+    def _entry_name(name: object) -> str:
+        if (not isinstance(name, str) or not name.strip() or name in (".", "..")
+                or any(char in name for char in ("/", "\\", "\0"))):
+            raise SkillsToggleError("Expected one skill directory name", "invalid-name")
+        return name
+
+    @staticmethod
+    def _checked_backup(backup: Path, parent: Path, pattern: str) -> Path:
+        if not backup.is_dir():
+            raise SkillsToggleError("The preserved backup directory is missing", "backup-missing")
+        if (not backup.is_absolute() or backup.is_symlink()
+                or not same_path(backup.parent, parent)
+                or not is_inside(backup, parent)
+                or not re.fullmatch(pattern, backup.name)):
+            raise SkillsToggleError("Backup is not a recognized preserved entry in this target", "invalid-backup")
+        return backup
+
     def _restore_tool_entry(self, tool_dir: Path, name: str, backup: Path) -> None:
-        """Swap a managed symlink back to its backed-up real dir. Refuses if
-        the current entry is not our symlink or the backup is missing."""
+        """Restore only a named sibling backup; retain the link on failure."""
+        name = self._entry_name(name)
         entry = tool_dir / name
         if not entry.is_symlink():
-            raise SkillsToggleError(f"{entry} is not a symlink — refusing to revert", "not-managed")
-        if not backup.is_dir():
-            raise SkillsToggleError(f"backup {backup} is missing", "backup-missing")
+            raise SkillsToggleError("The current entry is not a managed link", "not-managed")
+        self._checked_backup(backup, tool_dir,
+            re.escape(name) + r"\.(?:hermes-switchboard|skills-toggle)-backup[-.]\d{8}-\d{6}(?:-\d+)?")
         resolved = Path(os.readlink(entry))
         base = resolved if resolved.is_absolute() else (entry.parent / resolved)
         if not is_inside(base, self.skills_root_resolved):
-            raise SkillsToggleError(f"{entry} does not point into the skills tree", "not-managed")
-        entry.unlink()
-        os.rename(backup, entry)
+            raise SkillsToggleError("The current link is outside the Hermes library", "not-managed")
+        parked = entry.with_name(".switchboard-restore-" + uuid.uuid4().hex)
+        try:
+            os.rename(entry, parked)
+            try:
+                if os.path.lexists(entry):
+                    raise OSError("target changed during restore")
+                os.rename(backup, entry)
+            except OSError:
+                if not os.path.lexists(entry):
+                    os.rename(parked, entry)
+                raise
+            parked.unlink()
+        except OSError as exc:
+            raise SkillsToggleError("Restore failed; preserved data was not deleted", "restore-failed") from exc
 
     def revert_push(self, tool_id: object, name: object, tool_backup: object) -> dict:
         """Undo drift_push: restore the backed-up tool copy and drop the
@@ -2434,8 +2491,7 @@ class SkillsToggleCore:
             tool_id = self._validate_tool(tool_id)
             if tool_id == "hermes":
                 raise SkillsToggleError("hermes has no tool entry", "no-dir")
-            if not isinstance(name, str) or not name.strip():
-                raise SkillsToggleError("invalid name", "invalid-name")
+            name = self._entry_name(name)
             if not isinstance(tool_backup, str):
                 raise SkillsToggleError("missing tool_backup", "invalid-body")
             tool_dir = self.tool_dir(tool_id)
@@ -2452,8 +2508,7 @@ class SkillsToggleCore:
         is restored as canonical, and the tool entry returns to a real dir."""
         with self._lock:
             tool_id = self._validate_tool(tool_id)
-            if not isinstance(name, str) or not name.strip():
-                raise SkillsToggleError("invalid name", "invalid-name")
+            name = self._entry_name(name)
             if not isinstance(hermes_backup, str) or not isinstance(tool_backup, str):
                 raise SkillsToggleError("missing backup paths", "invalid-body")
             skills = self._scan_skills()
@@ -2469,8 +2524,10 @@ class SkillsToggleCore:
                     f"{tool_dir / name} is not a symlink — refusing to revert", "not-managed"
                 )
             hb = Path(hermes_backup)
-            if not hb.is_dir():
-                raise SkillsToggleError(f"hermes backup {hb} is missing", "backup-missing")
+            self._checked_backup(hb, hermes_dir.parent,
+                r"\.(?:hermes-switchboard|skills-toggle)-backup-" + re.escape(name) + r"-\d{8}-\d{6}(?:-\d+)?")
+            if not same_path(tool_dir / name, hermes_dir):
+                raise SkillsToggleError("The link no longer points to the pulled skill", "changed-since-preview")
             self._restore_tool_entry(tool_dir, name, Path(tool_backup))
             # canonical: move the pulled copy aside (dotted), restore original
             pulled_aside = hermes_dir.parent / f".hermes-switchboard-reverted-{name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
@@ -2492,15 +2549,17 @@ class SkillsToggleCore:
         move the adopted tree copy aside (dotted, never deleted)."""
         with self._lock:
             tool_id = self._validate_tool(tool_id)
-            if not isinstance(name, str) or not name.strip():
-                raise SkillsToggleError("invalid name", "invalid-name")
-            if not isinstance(skill, str) or len(skill.split("/")) != 2:
-                raise SkillsToggleError(f"invalid adopted skill id {skill!r}", "invalid-skill")
+            name = self._entry_name(name)
+            skill = self._validate_skill(skill)
+            if not isinstance(tool_backup, str):
+                raise SkillsToggleError("missing tool_backup", "invalid-body")
             tool_dir = self.tool_dir(tool_id)
             if tool_dir is None:
                 raise SkillsToggleError("tool dir missing", "absent-dir")
+            adopted = self._scan_skills()[skill]["dir"]
+            if not same_path(tool_dir / name, adopted):
+                raise SkillsToggleError("The link no longer points to the adopted skill", "changed-since-preview")
             self._restore_tool_entry(tool_dir, name, Path(tool_backup))
-            adopted = self.skills_root / skill.split("/")[0] / skill.split("/")[1]
             if adopted.is_dir():
                 aside = adopted.parent / f".hermes-switchboard-reverted-{adopted.name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
                 os.rename(adopted, aside)
@@ -2568,7 +2627,14 @@ class SkillsToggleCore:
                 if skill_id not in skills:
                     refused.append({"row": row, "error": f"unknown skill {skill_id!r}"})
                     continue
-                tool_dir = self.tool_dir(tool_id)
+                try:
+                    self._validate_tool(tool_id)
+                    self._validate_skill(skill_id)
+                    self._validate_client_skill(skills[skill_id], tool_id)
+                    tool_dir = self.tool_dir(tool_id)
+                except SkillsToggleError as exc:
+                    refused.append({"row": row, "error": str(exc), "code": exc.code})
+                    continue
                 if tool_dir is None:
                     refused.append({"row": row, "error": "tool has no dir configured"})
                     continue
@@ -3019,103 +3085,48 @@ def load_tools_config(home: Path) -> dict:
 CODEX_CONFIG_CANDIDATES = ["~/.codex/config.toml"]
 
 
-def _toml_scalar(value: str):
-    v = value.strip()
-    if v in ("true", "false"):
-        return v == "true"
-    if len(v) >= 2 and v[0] == '"' and v[-1] == '"':
-        return json.loads(v)
-    if v.startswith("[") and v.endswith("]"):
-        inner = v[1:-1].strip()
-        if not inner:
-            return []
-        return [json.loads(item.strip()) for item in inner.split(",") if item.strip()]
-    return v
+_TOML_SUPPORT = None
+_TOML_LOCK = threading.RLock()
+
+
+def _toml_support():
+    """Load packaged helpers by path, independent of the host's sys.path."""
+    global _TOML_SUPPORT
+    with _TOML_LOCK:
+        if _TOML_SUPPORT is None:
+            import importlib.util
+            path = Path(__file__).with_name("toml_document.py")
+            spec = importlib.util.spec_from_file_location("_switchboard_toml_document", path)
+            if spec is None or spec.loader is None:
+                raise SkillsToggleError("TOML support is missing; reinstall Switchboard", "config-unreadable")
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            _TOML_SUPPORT = module
+        return _TOML_SUPPORT
 
 
 def parse_codex_mcp(text: str) -> dict:
-    """Line-based parse of [mcp_servers.<name>] tables (+ sub-tables like env)
-    from a codex config.toml. {name: {enabled, definition}} — enabled defaults
-    to True; a native `enabled = false` flag is honored."""
-    out: dict = {}
-    current = None
-    current_sub = None
-    for raw in text.splitlines():
-        ln = raw.strip()
-        if not ln or ln.startswith("#"):
-            continue
-        m = re.match(r"^\[mcp_servers\.(.+)\]$", ln)
-        if m:
-            key = m.group(1).strip().strip('"')
-            if "." in key:
-                current, current_sub = key.split(".", 1)
-                out.setdefault(current, {"enabled": True, "definition": {}})
-                out[current]["definition"].setdefault(current_sub, {})
-            else:
-                current = key
-                current_sub = None
-                out.setdefault(current, {"enabled": True, "definition": {}})
-            continue
-        if current is None or ln.startswith("["):
-            if ln.startswith("["):
-                current, current_sub = None, None  # left the mcp_servers area
-            continue
-        m = re.match(r"^([^=]+?)\s*=\s*(.*)$", ln)
-        if not m:
-            continue
-        key = m.group(1).strip().strip('"')
-        value = _toml_scalar(m.group(2))
-        if current_sub:
-            out[current]["definition"].setdefault(current_sub, {})[key] = value
-        elif key == "enabled":
-            out[current]["enabled"] = bool(value)
-        else:
-            out[current]["definition"][key] = value
-    return out
-
-
-def _toml_string(value: str) -> str:
-    return json.dumps(str(value))  # basic string; close enough for our values
+    try:
+        servers = _toml_support().load(text).get("mcp_servers", {})
+    except ValueError as exc:
+        raise SkillsToggleError(str(exc), "config-invalid") from exc
+    return {name: {"enabled": entry.get("enabled", True),
+                   "definition": {k: v for k, v in entry.items() if k != "enabled"}}
+            for name, entry in servers.items()}
 
 
 def codex_server_block(name: str, projection: dict) -> str:
-    """Render one [mcp_servers.<name>] block (universal keys only)."""
-    safe_name = name.replace('"', '')
-    lines = [f"[mcp_servers.{safe_name}]"]
-    for key in ("command", "url", "headers"):
-        if key in projection:
-            lines.append(f"{key} = {_toml_string(projection[key])}")
-    if "args" in projection:
-        lines.append(f"args = [{', '.join(_toml_string(a) for a in projection['args'])}]")
-    lines.append("")
-    if isinstance(projection.get("env"), dict) and projection["env"]:
-        lines.append(f"[mcp_servers.{safe_name}.env]")
-        for k, v in projection["env"].items():
-            lines.append(f"{k} = {_toml_string(v)}")
-        lines.append("")
-    return "\n".join(lines)
+    try:
+        return _toml_support().block(name, _codex_projection(projection))
+    except ValueError as exc:
+        raise SkillsToggleError(str(exc), "config-edit") from exc
 
 
 def _remove_codex_block(text: str, name: str) -> str:
-    """Delete the [mcp_servers.<name>] block and its sub-tables."""
-    safe = name.replace('"', '')
-    lines = text.splitlines()
-    out = []
-    skipping = False
-    for ln in lines:
-        stripped = ln.strip()
-        m = re.match(r"^\[mcp_servers\.(.+)\]$", stripped)
-        if m:
-            key = m.group(1).strip().strip('"')
-            is_ours = key == safe or key.split(".", 1)[0] == safe
-            skipping = is_ours
-            if skipping:
-                continue
-        if skipping and stripped.startswith("["):
-            skipping = False  # reached an unrelated table
-        if not skipping:
-            out.append(ln)
-    return "\n".join(out) + ("\n" if text.endswith("\n") else "")
+    try:
+        return _toml_support().replace_server(text, name, None)
+    except ValueError as exc:
+        raise SkillsToggleError(str(exc), "config-edit") from exc
 
 
 CLAUDE_DESKTOP_CONFIG_CANDIDATES = [
@@ -3275,8 +3286,40 @@ def _redact_env(definition: dict) -> dict:
 
 
 def _claude_projection(definition: dict) -> dict:
-    """Catalog definition -> the keys Claude Desktop understands."""
+    """Legacy helper name for the shared Hermes projection."""
     return {k: v for k, v in definition.items() if k in _MCP_UNIVERSAL_KEYS}
+
+
+def _codex_projection(definition: dict) -> dict:
+    projection = _claude_projection(definition)
+    if "headers" in projection:
+        projection["http_headers"] = projection.pop("headers")
+    return projection
+
+
+def _shared_mcp_definition(definition: dict, writer: str) -> dict:
+    keys = ("command", "args", "env", "url", "http_headers", "headers") if writer == "codex" else _MCP_UNIVERSAL_KEYS
+    return {k: v for k, v in definition.items() if k in keys}
+
+
+def _check_mcp_projection(projection: dict, writer: str) -> None:
+    command, url = projection.get("command"), projection.get("url")
+    if bool(command) == bool(url) or (writer == "claude" and url):
+        raise SkillsToggleError("this transport is unsupported by the selected writer; use the client's native connector setup", "unsupported-transport")
+    for field in ("command", "url"):
+        if field in projection and not isinstance(projection[field], str):
+            raise SkillsToggleError("MCP commands and URLs must be strings", "invalid-definition")
+    args = projection.get("args", [])
+    if not isinstance(args, list) or any(not isinstance(arg, str) for arg in args):
+        raise SkillsToggleError("MCP arguments must be a list of strings", "invalid-definition")
+    for field in ("env", "headers", "http_headers"):
+        mapping = projection.get(field, {})
+        if not isinstance(mapping, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in mapping.items()):
+            raise SkillsToggleError("MCP environment and header values must be strings", "invalid-definition")
+    if command and ("headers" in projection or "http_headers" in projection):
+        raise SkillsToggleError("HTTP headers require a URL transport", "unsupported-transport")
+    if url and ("args" in projection or "env" in projection):
+        raise SkillsToggleError("command arguments and environment values require a local command", "unsupported-transport")
 
 
 class McpCore:
@@ -3299,7 +3342,7 @@ class McpCore:
                 continue
             if expanded.is_file():
                 return expanded
-        return None
+        return expand_path(CODEX_CONFIG_CANDIDATES[0])
 
     def _default_claude_config(self) -> Path | None:
         for candidate in CLAUDE_DESKTOP_CONFIG_CANDIDATES:
@@ -3309,7 +3352,8 @@ class McpCore:
                 continue
             if expanded.is_file():
                 return expanded
-        return expand_path(CLAUDE_DESKTOP_CONFIG_CANDIDATES[0])
+        index = 2 if sys.platform == "win32" else (0 if sys.platform == "darwin" else 1)
+        return expand_path(CLAUDE_DESKTOP_CONFIG_CANDIDATES[index])
 
     def _log(self, **rec: object) -> None:
         if not self.log_path:
@@ -3360,46 +3404,60 @@ class McpCore:
     def _read_claude(self) -> tuple[dict, str]:
         if self.claude_config is None:
             return {}, ""
+        if self.claude_config.is_symlink():
+            raise SkillsToggleError("Claude config is a symlink; manage it in the client", "config-protected")
         return _read_json_mapping(self.claude_config, "mcpServers")
 
     def _read_codex(self) -> tuple[dict, str]:
-        if self.codex_config is None or not self.codex_config.is_file():
+        if self.codex_config is None:
             return {}, ""
+        if self.codex_config.is_symlink():
+            raise SkillsToggleError("Codex config is a symlink; use the client to manage this configuration", "config-protected")
         try:
-            text = self.codex_config.read_text(encoding="utf-8")
-            return parse_codex_mcp(text), text
-        except OSError:
+            with self.codex_config.open("r", encoding="utf-8", newline="") as stream:
+                text = stream.read()
+        except FileNotFoundError:
             return {}, ""
+        except (OSError, UnicodeError) as exc:
+            raise SkillsToggleError("Codex config cannot be read; no changes made", "config-unreadable") from exc
+        return parse_codex_mcp(text), text
 
     def _write_codex(self, name: object, create: bool, force: bool = False) -> dict:
-        if not isinstance(name, str) or not name.strip():
+        if not isinstance(name, str) or not name.strip() or "\0" in name:
             raise SkillsToggleError("invalid server name", "invalid-name")
         if self.codex_config is None:
-            raise SkillsToggleError("no codex config path resolved", "no-writer")
+            raise SkillsToggleError("no Codex config path resolved", "no-writer")
         cat = self.catalog()
         entry = next((c for c in cat["catalog"] if c["name"] == name), None)
         codex, raw = self._read_codex()
-        if create and entry is None:
-            raise SkillsToggleError(f"unknown MCP server {name!r} in the catalog", "unknown-server")
         if not create and name not in codex:
             return {"ok": True, "name": name, "action": "noop", "state": "missing"}
-        if not create and entry is None:
-            raise SkillsToggleError(f"{name!r} is not in the Hermes catalog — refusing to remove", "unknown-server")
-        if name in codex and entry is not None and codex[name]["definition"] != entry["projection"] and not force:
-            raise SkillsToggleError(
-                f"Codex's copy of {name!r} differs from the catalog — pass force to overwrite", "drifted"
-            )
-        backup = self._backup(self.codex_config)
+        if entry is None:
+            raise SkillsToggleError("server is not in the Hermes catalog; no changes made", "unknown-server")
+        projection = _codex_projection(entry["projection"])
         if create:
-            base = _remove_codex_block(raw, name) if name in codex else raw
-            new_text = (base.rstrip("\n") + "\n\n" if base.strip() else "") + codex_server_block(name, entry["projection"])
-            action = "updated" if name in codex else "created"
-            state = "enabled"
-        else:
-            new_text = _remove_codex_block(raw, name)
-            action = "removed"
-            state = "missing"
+            _check_mcp_projection(projection, "codex")
+        current = codex.get(name, {}).get("definition", {})
+        if name in codex and _shared_mcp_definition(current, "codex") != projection and not force:
+            raise SkillsToggleError("Codex's server definition differs from Hermes; confirm overwrite", "drifted")
+        definition = None
+        if create:
+            # Preserve client-only flags, timeouts, auth references, and tool policy.
+            definition = {k: v for k, v in current.items() if k not in _MCP_UNIVERSAL_KEYS and k != "http_headers"}
+            definition.update(projection)
+            if name in codex and not codex[name]["enabled"]:
+                definition["enabled"] = False
+        try:
+            new_text = _toml_support().replace_server(raw, name, definition)
+        except ValueError as exc:
+            raise SkillsToggleError(str(exc), "config-edit") from exc
+        # External edits during planning are refused, not overwritten.
+        if self._read_codex()[1] != raw:
+            raise SkillsToggleError("Codex config changed during review; refresh and retry", "changed-since-preview")
+        backup = self._backup(self.codex_config)
         _atomic_write_text(self.codex_config, new_text)
+        action = ("updated" if name in codex else "created") if create else "removed"
+        state = ("disabled" if definition.get("enabled") is False else "enabled") if create else "missing"
         self._log(action=f"mcp-codex-{action}", server=name, backup=backup)
         return {"ok": True, "name": name, "writer": "codex", "action": action, "state": state, "backup": backup}
 
@@ -3417,60 +3475,53 @@ class McpCore:
 
     def mcp_state(self) -> dict:
         cat = self.catalog()
-        claude, _raw = self._read_claude()
-        servers = claude.get("mcpServers") if isinstance(claude, dict) else None
-        servers = servers if isinstance(servers, dict) else {}
-        codex_servers, _codex_raw = self._read_codex()
-        codex_servers = codex_servers if codex_servers else None
-        projection_by_name = {c["name"]: c["projection"] for c in cat["catalog"]}
+        writers = {
+            "claude": {"label": "Claude Desktop", "path": str(self.claude_config) if self.claude_config else None,
+                       "present": bool(self.claude_config and self.claude_config.is_file()), "available": True},
+            "codex": {"label": "Codex", "path": str(self.codex_config) if self.codex_config else None,
+                      "present": bool(self.codex_config and self.codex_config.is_file()), "available": True},
+        }
+        entries = {"claude": {}, "codex": {}}
+        for writer, read in (("claude", self._read_claude), ("codex", self._read_codex)):
+            try:
+                doc, _ = read()
+                entries[writer] = doc.get("mcpServers", {}) if writer == "claude" else doc
+            except SkillsToggleError as exc:
+                writers[writer].update(available=False, error=str(exc), code=exc.code)
+        names = {c["name"] for c in cat["catalog"]}
         foreign = []
-        for name, definition in servers.items():
-            if name not in projection_by_name:
-                foreign.append({"name": name, "keys": sorted(definition.keys()) if isinstance(definition, dict) else []})
+        for writer, servers in entries.items():
+            for name, definition in servers.items():
+                if name not in names:
+                    definition = definition["definition"] if writer == "codex" else definition
+                    foreign.append({"name": name, "writer": writer, "keys": sorted(definition) if isinstance(definition, dict) else []})
         rows = []
         for c in cat["catalog"]:
-            name = c["name"]
-            if name not in servers:
-                claude_state = "missing"
-            elif servers[name] == c["projection"]:
-                claude_state = "enabled"
-            else:
-                claude_state = "drifted"
-            codex_state = "missing"
-            if codex_servers is not None and name in codex_servers:
-                if not codex_servers[name]["definition"]:
-                    codex_state = "missing"
-                elif codex_servers[name]["definition"] == c["projection"]:
-                    codex_state = "enabled" if codex_servers[name]["enabled"] else "missing"
+            states = {}
+            for writer in writers:
+                projection = _codex_projection(c["projection"]) if writer == "codex" else c["projection"]
+                if not writers[writer]["available"]:
+                    states[writer] = "unavailable"
+                    continue
+                try:
+                    _check_mcp_projection(projection, writer)
+                except SkillsToggleError:
+                    states[writer] = "unsupported"
+                    continue
+                current = entries[writer].get(c["name"])
+                if current is None:
+                    states[writer] = "missing"
+                elif not isinstance(current, dict):
+                    states[writer] = "drifted"
                 else:
-                    codex_state = "drifted"
-            rows.append(
-                {
-                    "name": name,
-                    "enabled": c["enabled"],
-                    # env VALUES are secrets — the payload carries key names only
-                    "definition": _redact_env(c["definition"]),
-                    "writers": {"claude": claude_state, "codex": codex_state},
-                }
-            )
-        return {
-            "ok": True,
-            "rows": rows,
-            "foreign": foreign,
-            "counts": {"catalog": len(rows), "foreign": len(foreign)},
-            "writers": {
-                "claude": {
-                    "label": "Claude Desktop",
-                    "path": str(self.claude_config) if self.claude_config else None,
-                    "present": bool(self.claude_config and self.claude_config.is_file()),
-                },
-                "codex": {
-                    "label": "Codex",
-                    "path": str(self.codex_config) if self.codex_config else None,
-                    "present": bool(self.codex_config and self.codex_config.is_file()),
-                },
-            },
-        }
+                    definition = current["definition"] if writer == "codex" else current
+                    same = _shared_mcp_definition(definition, writer) == projection
+                    states[writer] = ("disabled" if writer == "codex" and not current["enabled"] else "enabled") if same else "drifted"
+            rows.append({"name": c["name"], "enabled": c["enabled"],
+                         "definition": _redact_env(c["definition"]), "writers": states})
+        return {"ok": True, "rows": rows, "foreign": foreign,
+                "counts": {"catalog": len(rows), "foreign": len(foreign)}, "writers": writers,
+                "partial_failure": any(not writer["available"] for writer in writers.values())}
 
     def toggle_hermes(self, name: object, enabled: object) -> dict:
         with self._lock:
@@ -3524,19 +3575,26 @@ class McpCore:
         if not create and entry is None:
             # present in Claude but not in the catalog: foreign, never touched
             raise SkillsToggleError(f"{name!r} is not in the Hermes catalog — refusing to remove", "unknown-server")
-        if name in servers and entry is not None and servers[name] != entry["projection"] and not force:
+        if create:
+            _check_mcp_projection(entry["projection"], "claude")
+        current = servers.get(name, {})
+        shared = _shared_mcp_definition(current, "claude") if isinstance(current, dict) else None
+        if name in servers and entry is not None and shared != entry["projection"] and not force:
             raise SkillsToggleError(
                 f"Claude's copy of {name!r} differs from the catalog — pass force to overwrite", "drifted"
             )
         if self.claude_config is None:
             raise SkillsToggleError("no Claude Desktop config path resolved", "no-writer")
+        if self._read_claude()[1] != raw:
+            raise SkillsToggleError("Claude config changed during review; refresh and retry", "changed-since-preview")
         backup = self._backup(self.claude_config)
         if raw == "" or not claude:
             doc = {"mcpServers": servers}
         else:
             doc = claude if isinstance(claude, dict) else {"mcpServers": servers}
         if create:
-            doc["mcpServers"] = {**servers, name: entry["projection"]}
+            native = {k: v for k, v in current.items() if k not in _MCP_UNIVERSAL_KEYS} if isinstance(current, dict) else {}
+            doc["mcpServers"] = {**servers, name: {**native, **entry["projection"]}}
             action = "updated" if name in servers else "created"
         else:
             remaining = {k: v for k, v in servers.items() if k != name}
@@ -3555,7 +3613,7 @@ class McpCore:
         }
 
     def health(self) -> dict:
-        return {"ok": True, "catalog": self.catalog()["count"], "writer": "claude"}
+        return {"ok": True, "catalog": self.catalog()["count"], "writer": "claude", "writers": ["claude", "codex"]}
 
 
 # ---------------------------------------------------------------------------

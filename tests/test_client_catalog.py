@@ -121,6 +121,15 @@ class ScopeTests(unittest.TestCase):
         state = self.core.state()
         self.assertTrue(all(row["configured"] for row in state["tools"] if row["id"] in {r["tool"] for r in records}))
 
+    def test_apply_revalidates_metadata_changed_after_preview(self):
+        active = self.activate()
+        plan = self.core.plan_bulk([self.sid], active["tool"], True)
+        (self.home / "skills" / self.sid / "SKILL.md").write_text("No frontmatter", encoding="utf-8")
+        result = self.core.execute_bulk(plan["would_change"], active["tool"], True)
+        self.assertEqual(result["changed"], 0)
+        self.assertEqual(result["results"][0]["code"], "skill-incompatible")
+        self.assertFalse(Path(active["dir"]).exists())
+
     def test_existing_custom_and_legacy_settings_are_preserved_on_activation(self):
         old = self.home / "skills-toggle.json"
         data = {"tools": {"special-client": str(self.root / "custom"), "cursor": {"label": "My cursor", "dir": str(self.root / "other")}}, "preferences": {"keep": True}}

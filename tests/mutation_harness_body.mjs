@@ -6,8 +6,8 @@ import { readFileSync, writeFileSync } from 'fs'
 import assert from 'node:assert/strict'
 
 const testPath = process.env.STAGING_PLUGIN.replace(/plugin\.js$/, 'mutation-plugin.mjs')
-writeFileSync(testPath, readFileSync(process.env.STAGING_PLUGIN, 'utf8') + '\nexport { SkillsPane, ToolsOverview }\n')
-const { default: plugin, SkillsPane, ToolsOverview } = await import(testPath)
+writeFileSync(testPath, readFileSync(process.env.STAGING_PLUGIN, 'utf8') + '\nexport { SkillsPane, ToolsOverview, McpPane }\n')
+const { default: plugin, SkillsPane, ToolsOverview, McpPane } = await import(testPath)
 const state = {
   ok: true, skills_root_exists: true,
   tools: [{ id: 'hermes', label: 'Hermes', special: 'config', present: true },
@@ -86,4 +86,16 @@ assert(button(tree, 'Undo'), 'failed undo keeps its retry action')
 assert(channel.notifications.slice(notificationsBefore).every(n => n.kind === 'error'), 'failed undo never reports success')
 await act(async () => { tree.unmount() })
 console.log('ok  saved receipt reload and failed-undo recovery survive a fresh workspace')
+channel.mcpState = { ok: true, partial_failure: true, counts: { catalog: 2, foreign: 0 },
+  writers: { claude: { label: 'Claude Desktop', present: false, available: false }, codex: { label: 'Codex', present: true, available: true } },
+  rows: [{ name: 'remote', enabled: true, writers: { claude: 'unsupported', codex: 'disabled' } },
+    { name: 'local', enabled: true, writers: { claude: 'unavailable', codex: 'enabled' } }] }
+await act(async () => { tree = TestRenderer.create(createElement(McpPane)) })
+for (const label of ['remote — Claude', 'remote — Codex', 'local — Claude']) {
+  assert.equal(tree.root.findAllByType('button').find(n => n.props['aria-label'] === label).props.disabled, true)
+}
+assert(!tree.root.findAllByType('button').find(n => n.props['aria-label'] === 'local — Codex').props.disabled)
+assert(button(tree, 'Retry'), 'partial writer failure offers recovery without hiding healthy writers')
+await act(async () => { tree.unmount() })
+console.log('ok  MCP partial failures, native-disabled flags, and unsupported transports stay non-mutating')
 console.log('MUTATION HARNESS: ALL CHECKS PASSED')

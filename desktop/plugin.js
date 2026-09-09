@@ -2568,7 +2568,7 @@ function McpPane() {
       pluginCtx
         .rest(path, { method: 'POST', body: payload })
         .then(res => {
-          if (res && res.ok) host.notify({ kind: 'success', message: t(successKey, name, writerLabel) })
+          if (res && res.ok) host.notify({ kind: 'success', message: res.state === 'disabled' ? t('mcpKeptDisabled') : t(successKey, name, writerLabel) })
           else host.notify({ kind: 'error', message: res && res.error ? res.error : t('mcpFailed') })
         })
         .catch(err => host.notifyError(err, t('mcpFailed')))
@@ -2602,11 +2602,17 @@ function McpPane() {
             className: 'flex flex-wrap items-center gap-2 text-xs text-muted-foreground',
             children: Object.keys(st.writers).map(wid =>
               jsxs('span', { className: 'inline-flex items-center gap-1', children: [
-                jsx(StatusDot, { tone: st.writers[wid].present ? 'good' : 'muted' }),
-                jsx('span', { className: 'truncate', children: t('mcpWriterLine', st.writers[wid].label, st.writers[wid].present ? '' : t('dirAbsentTip')) })
+                jsx(StatusDot, { tone: st.writers[wid].available === false ? 'warn' : st.writers[wid].present ? 'good' : 'muted' }),
+                jsx('span', { className: 'truncate', children: t('mcpWriterLine', st.writers[wid].label, st.writers[wid].available === false ? t('mcpUnavailable') : st.writers[wid].present ? '' : t('dirAbsentTip')) })
               ] }, wid)
             )
           })
+        : null,
+      st && st.partial_failure
+        ? jsxs('div', { role: 'status', className: 'flex flex-wrap items-center gap-2 text-xs', children: [
+            jsx('span', { children: t('mcpPartialFailure') }),
+            jsx(Button, { variant: 'secondary', size: 'xs', onClick: () => stateQuery.refetch(), children: t('retry') })
+          ] })
         : null,
       st && st.ok && st.counts.foreign > 0
         ? jsx(Tip, {
@@ -2662,13 +2668,14 @@ function McpPane() {
               writers.map(writer => {
                 const wstate = row.writers[writer.id] || 'missing'
                 const wdrifted = wstate === 'drifted'
+                const blocked = ['unavailable', 'unsupported', 'disabled'].includes(wstate)
                 return jsxs('span', { className: 'inline-flex items-center justify-between gap-1', children: [
                   jsx('span', { className: 'text-[0.625rem] text-muted-foreground', children: writer.label }),
                   jsxs('span', { className: 'inline-flex items-center gap-1', children: [
                     jsx(Switch, {
                       size: 'xs',
                       checked: wstate === 'enabled',
-                      disabled: busyName !== null,
+                      disabled: busyName !== null || blocked,
                       'aria-label': row.name + ' — ' + writer.label,
                       onCheckedChange: next => {
                         if (next && !wdrifted) {
@@ -2694,6 +2701,10 @@ function McpPane() {
                         }
                       }
                     }),
+                    blocked ? jsx(Tip, {
+                      label: t(wstate === 'unsupported' ? 'mcpUnsupportedTip' : wstate === 'disabled' ? 'mcpDisabledTip' : 'mcpUnavailableTip'),
+                      children: jsx('span', { className: 'text-[0.625rem] text-muted-foreground', children: t(wstate === 'unsupported' ? 'mcpUnsupported' : wstate === 'disabled' ? 'mcpNativeDisabled' : 'mcpUnavailable') })
+                    }) : null,
                     wdrifted
                       ? jsx(Button, {
                           variant: 'secondary', size: 'xs', className: 'h-4 px-1 text-[0.625rem]',
@@ -4331,6 +4342,14 @@ export default {
         mcpTitle: 'MCP servers',
         mcpCount: n => `${n} in Hermes`,
         mcpEmpty: 'No MCP servers in Hermes',
+        mcpKeptDisabled: 'Server definition synced. Its native disabled flag and client policy are unchanged.',
+        mcpPartialFailure: 'A client configuration needs repair. Other clients remain available. Repair the file, then retry.',
+        mcpUnavailable: 'Needs repair',
+        mcpUnavailableTip: 'The configuration could not be read safely. Repair it in the client, then refresh Switchboard.',
+        mcpUnsupported: 'Native setup',
+        mcpUnsupportedTip: 'This transport is not supported by this file writer. Use the client’s native connector setup.',
+        mcpNativeDisabled: 'Disabled in client',
+        mcpDisabledTip: 'The definition is synced but the client has disabled it. Change that native setting in the client.',
         mcpEmptyDesc: 'Servers configured under mcp_servers in config.yaml appear here and can be mirrored into supported clients.',
         mcpWriterLine: (label, absent) => `${label} — ${absent ? absent : 'config found'}`,
         mcpForeignNote: n => `${n} server(s) in Claude Desktop are not in the Hermes catalog (never touched)`,
