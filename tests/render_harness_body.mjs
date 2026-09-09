@@ -1,6 +1,20 @@
 // Compact-pane render harness. Workspace behavior is tested separately.
 import { renderToString } from 'react-dom/server'
 
+const originalConsoleError = console.error
+const originalConsoleWarn = console.warn
+const consoleErrors = []
+const consoleWarnings = []
+const formatConsole = args => args.map(value => value instanceof Error ? value.stack || value.message : String(value)).join(' ')
+console.error = (...args) => {
+  consoleErrors.push(formatConsole(args))
+  originalConsoleError(...args)
+}
+console.warn = (...args) => {
+  consoleWarnings.push(formatConsole(args))
+  originalConsoleWarn(...args)
+}
+
 const PLUGIN_SRC = process.env.PLUGIN_SRC
 const STAGING = process.env.STAGING_PLUGIN
 const failures = []
@@ -154,6 +168,13 @@ for (const skill of largeState.skills) {
   }
 }
 ok(['claude', 'codex', 'grok', 'opencode', 'zcode'].every(id => html.includes(`${enabledCounts.get(id)} on`)), 'large fixture per-tool counts are derived from state')
+
+const reactKeyWarnings = consoleErrors.concat(consoleWarnings).filter(message => /unique key|same key|key prop/i.test(message))
+ok(reactKeyWarnings.length === 0, `render paths emit zero React key warnings${reactKeyWarnings.length ? `: ${reactKeyWarnings.join(' | ')}` : ''}`)
+ok(consoleErrors.length === 0, `render paths emit zero console.error messages${consoleErrors.length ? `: ${consoleErrors.join(' | ')}` : ''}`)
+ok(consoleWarnings.length === 0, `render paths emit zero console.warn messages${consoleWarnings.length ? `: ${consoleWarnings.join(' | ')}` : ''}`)
+console.error = originalConsoleError
+console.warn = originalConsoleWarn
 
 console.log()
 if (failures.length) {

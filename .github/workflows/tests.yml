@@ -9,7 +9,7 @@ jobs:
   backend:
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -20,10 +20,22 @@ jobs:
         run: python3 -m unittest discover -s tests -p 'test_plugin_api.py' -v
       - name: Backend v2 (import/drift/config)
         run: python3 -m unittest discover -s tests -p 'test_v2_backend.py' -v
+      - name: Bulk planning, scan wizard, and MCP backend
+        run: python3 -m unittest tests.test_bulk_planning tests.test_scan_wizard tests.test_mcp_backend -v
       - name: HTTP route round-trips (fastapi + httpx)
         run: |
           python3 -m pip install --quiet fastapi httpx
           python3 -m unittest discover -s tests -p 'test_routes_http.py' -v
+
+  python39-core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+      - name: Python 3.9 stdlib-only core compatibility gate
+        run: python3 -m unittest tests.test_core_api tests.test_mcp_backend tests.test_plugin_api tests.test_v2_backend tests.test_bulk_planning tests.test_scan_wizard -v
 
   frontend:
     runs-on: ubuntu-latest
