@@ -1023,13 +1023,13 @@ class SkillsToggleCore:
             try:
                 if state == "broken-link":
                     temporary = link.with_name(".hermes-switchboard-" + uuid.uuid4().hex)
-                    os.symlink(str(skill_dir_resolved), str(temporary))
+                    os.symlink(str(skill_dir_resolved), str(temporary), target_is_directory=True)
                     if not link.is_symlink() or os.readlink(link) != target:
                         raise SkillsToggleError("target changed during repair; refresh and review it again",
                                                 "changed-since-preview")
                     os.replace(temporary, link)
                 else:
-                    os.symlink(str(skill_dir_resolved), str(link))
+                    os.symlink(str(skill_dir_resolved), str(link), target_is_directory=True)
             except (OSError, NotImplementedError) as exc:
                 raise SkillsToggleError(
                     f"could not create symlink at {link}: {exc} "
@@ -1315,9 +1315,12 @@ class SkillsToggleCore:
                 valid = (kind == "config" and isinstance(image.get("disabled"), bool)) if data["tool"] == "hermes" else (
                     kind == "missing" or (kind == "symlink" and isinstance(image.get("target"), str)
                     and "\0" not in image["target"] and isinstance(image.get("identity"), list)
-                    and len(image["identity"]) == 4 and all(isinstance(n, int) for n in image["identity"])))
+                    and len(image["identity"]) == 4 and all(isinstance(n, int) for n in image["identity"])
+                    and isinstance(image.get("directory", True), bool)))
                 if not valid:
                     raise SkillsToggleError("receipt contains an invalid before/after image", "invalid-receipt")
+                if kind == "symlink":
+                    image.setdefault("directory", True)  # old receipts describe skill directories
         if data.get("undo_result") is not None and (data.get("status") != "undone"
                 or not isinstance(data["undo_result"], dict) or data["undo_result"].get("ok") is not True):
             raise SkillsToggleError("receipt contains an invalid undo result", "invalid-receipt")
@@ -1330,6 +1333,7 @@ class SkillsToggleCore:
             stat = path.lstat()
             if path.is_symlink():
                 return {"kind": "symlink", "target": os.readlink(path),
+                        "directory": bool(getattr(stat, "st_file_attributes", 16) & 16),
                         "identity": [stat.st_dev, stat.st_ino, stat.st_mtime_ns, stat.st_ctime_ns]}
             return {"kind": "protected"}
         except FileNotFoundError:
@@ -1395,11 +1399,11 @@ class SkillsToggleCore:
                             raise SkillsToggleError("original target is no longer inside the skill library", "changed-since-apply")
                         if now.get("kind") == "missing":
                             # Exclusive symlink creation refuses a concurrently created entry.
-                            os.symlink(raw, link)
+                            os.symlink(raw, link, target_is_directory=before["directory"])
                         else:
                             temporary = link.with_name(".hermes-switchboard-" + uuid.uuid4().hex)
                             try:
-                                os.symlink(raw, temporary)
+                                os.symlink(raw, temporary, target_is_directory=before["directory"])
                                 if self._entry_snapshot(link) != after:
                                     raise SkillsToggleError("entry changed during undo; left untouched", "changed-since-apply")
                                 os.replace(temporary, link)

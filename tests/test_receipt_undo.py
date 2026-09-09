@@ -25,7 +25,7 @@ class ReceiptUndoTests(unittest.TestCase):
 
     def test_repaired_broken_link_restores_its_exact_relative_target_after_restart(self):
         target = os.path.relpath(self.fx.home / "skills" / "old" / "apple-notes", self.fx.codex)
-        os.symlink(target, self.link)
+        os.symlink(target, self.link, target_is_directory=True)
         receipt = self.apply()
         restarted = pa.SkillsToggleCore(self.fx.home, self.core.tools)
         result = restarted.undo_bulk(receipt["receipt_id"])
@@ -44,11 +44,12 @@ class ReceiptUndoTests(unittest.TestCase):
         self.link.unlink()
         outside = self.fx.tmp / "foreign"
         outside.mkdir()
-        os.symlink(outside, self.link)
+        os.symlink(outside, self.link, target_is_directory=True)
+        original_link = os.readlink(self.link)
         result = self.core.undo_bulk(receipt["receipt_id"])
         self.assertEqual((result["changed"], result["failed"]), (1, 1))
         self.assertEqual(result["results"][0]["code"], "changed-since-apply")
-        self.assertEqual(os.readlink(self.link), str(outside))
+        self.assertEqual(os.readlink(self.link), original_link)
         self.assertFalse(other.exists())
         self.assertTrue((self.fx.codex / "airtable").is_dir())
 
@@ -115,9 +116,10 @@ class ReceiptUndoTests(unittest.TestCase):
             return original(skill, tool, enabled)
         with patch.object(self.core, "_link_tool", side_effect=change_between):
             receipt = self.core.execute_bulk([self.skill, "productivity/two words"], "codex", True)["receipt"]
+        original_link = os.readlink(self.link)
         undone = self.core.undo_bulk(receipt["receipt_id"])
         self.assertEqual(undone["results"][0]["code"], "changed-since-apply")
-        self.assertEqual(os.readlink(self.link), str(replacement))
+        self.assertEqual(os.readlink(self.link), original_link)
 
     def test_invalid_later_receipt_item_refuses_the_whole_undo_before_writing(self):
         receipt = self.core.execute_bulk([self.skill, "productivity/two words"], "codex", True)["receipt"]

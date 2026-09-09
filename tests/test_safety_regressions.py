@@ -21,7 +21,8 @@ class LinkSafetyTests(unittest.TestCase):
     def test_foreign_broken_link_is_refused_by_preview_toggle_and_repair(self):
         link = self.fx.codex / "apple-notes"
         target = self.fx.tmp / "not-ours" / "missing"
-        os.symlink(target, link)
+        os.symlink(target, link, target_is_directory=True)
+        original = os.readlink(link)
         core = self.fx.core
         plan = core.plan_bulk(["apple/apple-notes"], "codex", True)
         self.assertEqual(plan["would_change"], [])
@@ -31,17 +32,18 @@ class LinkSafetyTests(unittest.TestCase):
             with self.assertRaises(pa.SkillsToggleError) as error:
                 operation()
             self.assertEqual(error.exception.code, "foreign-link")
-            self.assertEqual(os.readlink(link), str(target))
+            self.assertEqual(os.readlink(link), original)
 
     def test_failed_repair_does_not_unlink_the_previous_managed_target(self):
         link = self.fx.codex / "apple-notes"
         target = self.fx.home / "skills" / "old" / "apple-notes"
-        os.symlink(target, link)
+        os.symlink(target, link, target_is_directory=True)
+        original = os.readlink(link)
         with patch.object(pa.os, "symlink", side_effect=OSError("fixture denial")):
             with self.assertRaises(pa.SkillsToggleError):
                 self.fx.core.toggle("apple/apple-notes", "codex", True)
         self.assertTrue(link.is_symlink())
-        self.assertEqual(os.readlink(link), str(target))
+        self.assertEqual(os.readlink(link), original)
         self.assertEqual(sorted(p.name for p in self.fx.codex.iterdir()), ["apple-notes"])
 
 

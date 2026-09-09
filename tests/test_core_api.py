@@ -117,7 +117,7 @@ class Blocker:
 BLOCKED = {'fastapi', 'yaml'}
 sys.meta_path.insert(0, Blocker())
 import importlib.util
-spec = importlib.util.spec_from_file_location('sib_core', 'MODULE_PATH')
+spec = importlib.util.spec_from_file_location('sib_core', MODULE_PATH)
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
 assert m.router is None, m.router
@@ -127,7 +127,7 @@ core = m.SkillsToggleCore(m.Path('/tmp/does-not-exist-hermes-switchboard'), {'he
 st = core.state()
 assert st['ok'] and st['skills'] == []
 print('PROBE_OK', m.PLUGIN_VERSION)
-""".replace('MODULE_PATH', str(MODULE))
+""".replace('MODULE_PATH', repr(str(MODULE)))
         r = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, timeout=60)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("PROBE_OK", r.stdout)
