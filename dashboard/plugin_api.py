@@ -21,6 +21,8 @@ Routes mount under ``/api/plugins/skills-toggle/``:
     GET  /detail?skill=   → full SKILL.md text for one skill
     POST /toggle          → {skill, tool, enabled} link/unlink (or config edit for hermes)
     POST /toggle-bulk     → {skills: [...], tool, enabled}
+    POST /bulk/plan       → immutable explicit-id bulk preview
+    POST /bulk/apply      → exact-id execution + durable undo receipt
     POST /repair          → {skill, tool} fix a broken link
     POST /repair-all      → fix every broken link that points into the skills tree
     POST /ensure-tool-dir → {tool} create a missing tool skills dir
@@ -54,6 +56,7 @@ import re
 import shutil
 import threading
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -545,6 +548,27 @@ class SkillsToggleError(Exception):
         self.code = code
 
 
+_SECRET_LOG_KEY_RE = re.compile(
+    r"(?:api[_-]?key|apikey|secret|token|password|credential|authorization|private[_-]?key|access[_-]?key|env)",
+    re.I,
+)
+
+
+def _redact_log_record(value: object, key: str = "") -> object:
+    """Recursively prevent credentials and environment values reaching logs."""
+    if key and _SECRET_LOG_KEY_RE.search(key):
+        if key.lower() == "env" and isinstance(value, dict):
+            return sorted(str(name) for name in value)
+        return "[REDACTED]"
+    if isinstance(value, dict):
+        return {str(k): _redact_log_record(v, str(k)) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_redact_log_record(item) for item in value]
+    if isinstance(value, tuple):
+        return [_redact_log_record(item) for item in value]
+    return value
+
+
 class SkillsToggleCore:
     """All state/mutation logic. Hermes root + tools config injected for tests."""
 
@@ -579,6 +603,7 @@ class SkillsToggleCore:
             return
         rec.setdefault("ts", datetime.now(timezone.utc).isoformat(timespec="seconds"))
         rec.setdefault("plugin", PLUGIN_ID)
+        rec = _redact_log_record(rec)
         try:
             self.log_path.parent.mkdir(parents=True, exist_ok=True)
             with self.log_path.open("a", encoding="utf-8") as fh:
@@ -981,17 +1006,269 @@ class SkillsToggleCore:
             return {"ok": True, "skill": skill_id, "tool": tool_id, "enabled": enabled, "state": after, "action": action}
 
     def toggle_bulk(self, skill_ids: object, tool_id: object, enabled: object) -> dict:
-        if not isinstance(skill_ids, list) or not skill_ids:
-            raise SkillsToggleError("'skills' must be a non-empty list of skill ids", "invalid-body")
+        """Backward-compatible bulk toggle, now backed by one plan/apply pass.
+
+        The legacy response keys remain intact.  In particular, entries that
+        are already in the requested state are still successful no-ops.
+        """
+        plan = self.plan_bulk(skill_ids, tool_id, enabled)
+        applied = self.execute_bulk(plan["would_change"], tool_id, enabled)
         results = []
         for sid in skill_ids:
-            try:
-                res = self.toggle(sid, tool_id, enabled)
-                results.append({"skill": sid, "ok": True, "state": res["state"]})
-            except SkillsToggleError as exc:
-                results.append({"skill": sid, "ok": False, "error": str(exc), "code": exc.code})
-        changed = sum(1 for r in results if r.get("ok") and r.get("state") in ("enabled", "disabled", "missing"))
-        return {"ok": True, "results": results, "changed": changed, "failed": len(results) - sum(1 for r in results if r["ok"])}
+            applied_item = next((item for item in applied["results"] if item["skill"] == sid), None)
+            refused_item = next((item for item in plan["refused"] if item["skill"] == sid), None)
+            if applied_item is not None:
+                results.append(applied_item)
+            elif sid in plan["already_satisfied"]:
+                state = "enabled" if enabled else ("disabled" if tool_id == "hermes" else "missing")
+                results.append({"skill": sid, "ok": True, "state": state})
+            else:
+                results.append({
+                    "skill": sid, "ok": False, "error": refused_item["reason"], "code": refused_item["code"]
+                })
+        return {
+            "ok": True,
+            "results": results,
+            # Legacy /toggle-bulk counted every successful item, including
+            # no-ops; retain that contract for the item-8 frontend.
+            "changed": sum(1 for item in results if item["ok"]),
+            "failed": sum(1 for item in results if not item["ok"]),
+        }
+
+    def _bulk_inputs(
+        self, skill_ids: object, tool_id: object, enabled: object, allow_empty: bool = False
+    ) -> tuple[list, str, bool]:
+        if not isinstance(skill_ids, list) or (not skill_ids and not allow_empty):
+            raise SkillsToggleError("'skills' must be a non-empty list of skill ids", "invalid-body")
+        tool = self._validate_tool(tool_id)
+        if not isinstance(enabled, bool):
+            raise SkillsToggleError("'enabled' must be a boolean", "invalid-body")
+        ordered = []
+        for sid in skill_ids:
+            if sid not in ordered:
+                ordered.append(sid)
+        return ordered, tool, enabled
+
+    def _bulk_disposition(self, skill: dict, tool_id: str, enabled: bool, disabled: set[str]) -> dict:
+        """Read-only mirror of toggle's state-dependent decisions."""
+        state_info = self._one_state(skill, tool_id, disabled)
+        state = state_info["state"]
+        desired = "enabled" if enabled else ("disabled" if tool_id == "hermes" else "missing")
+        if tool_id == "hermes":
+            return {"kind": "satisfied" if state == desired else "change", "state": state, "next": desired}
+
+        tool_dir = self.tool_dir(tool_id)
+        if tool_dir is None:
+            return {
+                "kind": "refused", "state": state, "next": state, "code": "no-dir",
+                "reason": f"tool {tool_id} has no target dir configured",
+            }
+        link = tool_dir / skill["name"]
+        if state == "foreign-link":
+            target = state_info.get("target")
+            if enabled:
+                reason = f"{link} is a symlink to {target} (outside this skill) — resolve it manually before enabling"
+            else:
+                reason = f"{link} is a foreign symlink ({target}) — refusing to remove"
+            return {"kind": "refused", "state": state, "next": state, "code": "foreign-link", "reason": reason}
+        if state == "unmanaged-dir":
+            if enabled:
+                reason = f"{link} is a real directory/file, not a symlink — refusing to overwrite (never delete real dirs)"
+            else:
+                reason = f"{link} is a real directory/file — refusing to remove"
+            return {"kind": "refused", "state": state, "next": state, "code": "unmanaged-dir", "reason": reason}
+        if not enabled and state == "broken-link":
+            target = state_info.get("target")
+            base = Path(target) if os.path.isabs(target) else (link.parent / target)
+            if not is_inside(base.resolve(), self.skills_root_resolved):
+                return {
+                    "kind": "refused", "state": state, "next": state, "code": "foreign-link",
+                    "reason": f"{link} points at {target} which is outside the skills tree — refusing",
+                }
+        if enabled and state == "missing" and tool_dir.exists() and not tool_dir.is_dir():
+            return {
+                "kind": "refused", "state": state, "next": state, "code": "not-a-dir",
+                "reason": f"{tool_dir} exists but is not a directory — refusing to replace it",
+            }
+        return {"kind": "satisfied" if state == desired else "change", "state": state, "next": desired}
+
+    def plan_bulk(self, skill_ids: object, tool_id: object, enabled: object) -> dict:
+        """Build a deterministic, mutation-free plan for explicit skill ids."""
+        with self._lock:
+            ordered, tool_id, enabled = self._bulk_inputs(skill_ids, tool_id, enabled)
+            skills = self._scan_skills()
+            disabled = self._disabled_set()
+            hermes_text = ""
+            hermes_read_error = None
+            if tool_id == "hermes" and self.config_path.is_file():
+                try:
+                    hermes_text = self.config_path.read_text(encoding="utf-8")
+                    disabled = parse_disabled(hermes_text)
+                except OSError as exc:
+                    hermes_read_error = SkillsToggleError(
+                        f"cannot read {self.config_path}: {exc}", "config-unreadable"
+                    )
+            would_change = []
+            already_satisfied = []
+            refused = []
+            sample = []
+            for sid in ordered:
+                try:
+                    valid_sid = self._validate_skill(sid)
+                except SkillsToggleError as exc:
+                    refused.append({"skill": sid, "code": exc.code, "reason": str(exc)})
+                    continue
+                skill = skills[valid_sid]
+                disposition = self._bulk_disposition(skill, tool_id, enabled, disabled)
+                if tool_id == "hermes":
+                    if hermes_read_error is not None:
+                        disposition = {
+                            "kind": "refused", "state": disposition["state"], "next": disposition["state"],
+                            "code": hermes_read_error.code, "reason": str(hermes_read_error),
+                        }
+                    else:
+                        try:
+                            next_text = set_disabled_member(hermes_text, skill["name"], add=not enabled)
+                            disposition = {
+                                **disposition,
+                                "kind": "satisfied" if next_text == hermes_text else "change",
+                            }
+                            hermes_text = next_text
+                        except ConfigEditError as exc:
+                            disposition = {
+                                "kind": "refused", "state": disposition["state"], "next": disposition["state"],
+                                "code": "config-edit", "reason": f"config.yaml edit refused: {exc}",
+                            }
+                if disposition["kind"] == "refused":
+                    refused.append({"skill": valid_sid, "code": disposition["code"], "reason": disposition["reason"]})
+                elif disposition["kind"] == "satisfied":
+                    already_satisfied.append(valid_sid)
+                else:
+                    would_change.append(valid_sid)
+                    if len(sample) < 5:
+                        sample.append({
+                            "skill_id": valid_sid,
+                            "name": skill["name"],
+                            "category": skill["category"],
+                            "current_state": disposition["state"],
+                            "next_state": disposition["next"],
+                        })
+            return {
+                "ok": True,
+                "would_change": would_change,
+                "already_satisfied": already_satisfied,
+                "refused": refused,
+                "ordered_explicit_ids": ordered,
+                "sample": sample,
+                "totals": {
+                    "would_change": len(would_change),
+                    "already_satisfied": len(already_satisfied),
+                    "refused": len(refused),
+                },
+            }
+
+    def execute_bulk(
+        self, planned_ids: object, tool_id: object, enabled: object, receipt_id: object = None
+    ) -> dict:
+        """Apply exactly the ids supplied by a reviewed plan and emit a receipt."""
+        with self._lock:
+            ordered, tool_id, enabled = self._bulk_inputs(planned_ids, tool_id, enabled, allow_empty=True)
+            if receipt_id is None:
+                receipt_id = uuid.uuid4().hex[:12]
+            if not isinstance(receipt_id, str) or not re.match(r"^[A-Za-z0-9._:-]{1,128}$", receipt_id):
+                raise SkillsToggleError("'receipt_id' must be a short identifier", "invalid-body")
+
+            skills = self._scan_skills()
+            disabled = self._disabled_set()
+            results = []
+            receipt_items = []
+            ready = []
+            for sid in ordered:
+                try:
+                    valid_sid = self._validate_skill(sid)
+                except SkillsToggleError as exc:
+                    results.append({
+                        "skill": sid, "ok": False, "state": "unknown", "error": str(exc),
+                        "code": exc.code, "changed_since_preview": True,
+                    })
+                    receipt_items.append({"skill": sid, "ok": False, "from": "unknown", "to": "unknown"})
+                    continue
+                skill = skills[valid_sid]
+                disposition = self._bulk_disposition(skill, tool_id, enabled, disabled)
+                if disposition["kind"] != "change":
+                    if disposition["kind"] == "refused":
+                        code = disposition["code"]
+                        error = disposition["reason"]
+                    else:
+                        code = "changed-since-preview"
+                        error = f"{valid_sid} is already {disposition['state']} — state changed since preview"
+                    results.append({
+                        "skill": valid_sid, "ok": False, "state": disposition["state"], "error": error,
+                        "code": code, "changed_since_preview": True,
+                    })
+                    receipt_items.append({
+                        "skill": valid_sid, "ok": False, "from": disposition["state"], "to": disposition["state"]
+                    })
+                    continue
+                ready.append((valid_sid, skill, disposition))
+
+            changed_ids = set()
+            if tool_id == "hermes" and ready:
+                try:
+                    text = self.config_path.read_text(encoding="utf-8") if self.config_path.is_file() else ""
+                    new_text = text
+                    for _, skill, _ in ready:
+                        new_text = set_disabled_member(new_text, skill["name"], add=not enabled)
+                    backup = self._backup_config() if new_text != text else None
+                    if new_text != text:
+                        self.config_path.parent.mkdir(parents=True, exist_ok=True)
+                        self.config_path.write_text(new_text, encoding="utf-8")
+                        self._log(
+                            action="config-edit", tool="hermes", skills=[sid for sid, _, _ in ready],
+                            enabled=enabled, backup=backup,
+                        )
+                    changed_ids.update(sid for sid, _, _ in ready)
+                except (ConfigEditError, OSError) as exc:
+                    code = "config-edit" if isinstance(exc, ConfigEditError) else "config-write"
+                    for sid, _, disposition in ready:
+                        results.append({"skill": sid, "ok": False, "state": disposition["state"], "error": str(exc), "code": code})
+                        receipt_items.append({"skill": sid, "ok": False, "from": disposition["state"], "to": disposition["state"]})
+            elif tool_id != "hermes":
+                for sid, skill, disposition in ready:
+                    try:
+                        _, new_state = self._link_tool(skill, tool_id, enabled)
+                        changed_ids.add(sid)
+                        state = new_state["state"]
+                        results.append({"skill": sid, "ok": True, "state": state})
+                        receipt_items.append({"skill": sid, "ok": True, "from": disposition["state"], "to": state})
+                        self._log(action="toggle", skill=sid, tool=tool_id, enabled=enabled, **{"from": disposition["state"], "to": state})
+                    except (SkillsToggleError, OSError) as exc:
+                        code = exc.code if isinstance(exc, SkillsToggleError) else "filesystem-error"
+                        results.append({"skill": sid, "ok": False, "state": disposition["state"], "error": str(exc), "code": code})
+                        receipt_items.append({"skill": sid, "ok": False, "from": disposition["state"], "to": disposition["state"]})
+
+            if tool_id == "hermes":
+                for sid, _, disposition in ready:
+                    if sid in changed_ids:
+                        results.append({"skill": sid, "ok": True, "state": disposition["next"]})
+                        receipt_items.append({"skill": sid, "ok": True, "from": disposition["state"], "to": disposition["next"]})
+                        self._log(action="toggle", skill=sid, tool=tool_id, enabled=enabled, **{"from": disposition["state"], "to": disposition["next"]})
+
+            results.sort(key=lambda item: ordered.index(item["skill"]))
+            receipt_items.sort(key=lambda item: ordered.index(item["skill"]))
+            changed = sum(1 for item in receipt_items if item["ok"] and item["from"] != item["to"])
+            failed = sum(1 for item in receipt_items if not item["ok"])
+            refused_codes = {"foreign-link", "unmanaged-dir", "no-dir", "not-a-dir"}
+            refused_count = sum(1 for item in results if item.get("code") in refused_codes)
+            undone_by = [{"skill": item["skill"], "enabled": not enabled} for item in receipt_items if item["ok"] and item["from"] != item["to"]]
+            receipt = {
+                "receipt_id": receipt_id, "tool": tool_id, "enabled": enabled, "items": receipt_items,
+                "changed": changed, "failed": failed, "refused": refused_count, "undone_by": undone_by,
+            }
+            self._log(action="bulk", receipt_id=receipt_id, tool=tool_id, enabled=enabled, receipt=receipt)
+            if changed:
+                self.invalidate()
+            return {"ok": True, "results": results, "receipt": receipt, "changed": changed, "failed": failed}
 
     def repair(self, skill_id: object, tool_id: object) -> dict:
         with self._lock:
@@ -2495,6 +2772,20 @@ if APIRouter is not None:
     @router.post("/toggle-bulk")
     async def toggle_bulk(body: dict) -> dict:
         return _call(get_core().toggle_bulk, body.get("skills"), body.get("tool"), body.get("enabled"))
+
+    @router.post("/bulk/plan")
+    async def bulk_plan(body: dict) -> dict:
+        return _call(get_core().plan_bulk, body.get("skills"), body.get("tool"), body.get("enabled"))
+
+    @router.post("/bulk/apply")
+    async def bulk_apply(body: dict) -> dict:
+        return _call(
+            get_core().execute_bulk,
+            body.get("skills"),
+            body.get("tool"),
+            body.get("enabled"),
+            body.get("receipt_id"),
+        )
 
     @router.post("/repair")
     async def repair(body: dict) -> dict:
