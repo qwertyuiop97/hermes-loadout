@@ -646,12 +646,13 @@ class PathAndConfigTests(unittest.TestCase):
             self.assertEqual(tools["hermes"].get("special"), "config")  # hermes stays config-backed
             self.assertEqual(tools["hermes"]["label"], "Hermes (renamed)")
 
-    def test_user_config_garbage_ignored(self) -> None:
+    def test_user_config_garbage_refuses_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             home = Path(td)
             (home / "hermes-switchboard.json").write_text("{not json", encoding="utf-8")
-            tools = pa.load_tools_config(home)
-            self.assertIn("claude", tools)
+            with self.assertRaises(pa.SkillsToggleError) as raised:
+                pa.load_tools_config(home)
+            self.assertEqual(raised.exception.code, "config-invalid")
 
     def test_pre_rename_user_config_still_loads(self) -> None:
         with tempfile.TemporaryDirectory() as td:

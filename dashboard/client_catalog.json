@@ -1,0 +1,546 @@
+{
+  "schema_version": 1,
+  "clients": [
+    {
+      "id": "hermes",
+      "label": "Hermes",
+      "verification": "documented",
+      "checked": "2026-09-09",
+      "sources": [
+        "https://hermes-agent.nousresearch.com/docs/user-guide/features/skills"
+      ],
+      "skills": true,
+      "format": "hermes-canonical",
+      "may_create": false,
+      "platforms": [
+        "darwin",
+        "linux",
+        "win32"
+      ],
+      "global": [],
+      "project": [],
+      "mcp_writer": null,
+      "reserved_names": [],
+      "notes": "The active Hermes home remains the canonical library.",
+      "special": "config",
+      "legacy_default": {
+        "label": "Hermes",
+        "special": "config"
+      }
+    },
+    {
+      "id": "agents",
+      "label": "Shared Agent Skills",
+      "verification": "documented",
+      "checked": "2026-09-09",
+      "sources": [
+        "https://developers.openai.com/codex/skills/"
+      ],
+      "skills": true,
+      "format": "agent-skills",
+      "may_create": true,
+      "platforms": [
+        "darwin",
+        "linux",
+        "win32"
+      ],
+      "global": [
+        "~/.agents/skills"
+      ],
+      "project": [
+        ".agents/skills"
+      ],
+      "mcp_writer": null,
+      "reserved_names": [],
+      "notes": "Shared directory, not a detected app. Codex, Amp, and other compatible clients may all read these links.",
+      "shared": true
+    },
+    {
+      "id": "claude",
+      "label": "Claude Code",
+      "verification": "documented",
+      "checked": "2026-09-09",
+      "sources": [
+        "https://code.claude.com/docs/en/skills"
+      ],
+      "skills": true,
+      "format": "agent-skills",
+      "may_create": true,
+      "platforms": [
+        "darwin",
+        "linux",
+        "win32"
+      ],
+      "global": [
+        "~/.claude/skills"
+      ],
+      "project": [
+        ".claude/skills"
+      ],
+      "mcp_writer": null,
+      "reserved_names": [
+        "synced"
+      ],
+      "notes": "Client permissions, trust settings, and tool-specific skill extensions still apply.",
+      "legacy_default": {
+        "label": "Claude",
+        "dir": "~/.claude/skills"
+      }
+    },
+    {
+      "id": "codex",
+      "label": "Codex",
+      "verification": "documented",
+      "checked": "2026-09-09",
+      "sources": [
+        "https://developers.openai.com/codex/skills/"
+      ],
+      "skills": true,
+      "format": "agent-skills",
+      "may_create": true,
+      "platforms": [
+        "darwin",
+        "linux",
+        "win32"
+      ],
+      "global": [
+        "~/.agents/skills"
+      ],
+      "project": [
+        ".agents/skills"
+      ],
+      "mcp_writer": "codex",
+      "reserved_names": [],
+      "notes": "Current documented skills use .agents/skills. Existing .codex/skills mappings are preserved, not silently moved. Shared-folder changes affect other readers.",
+      "shared": true,
+      "detect_marker": "~/.codex",
+      "legacy_default": {
+        "label": "Codex",
+        "dir": "~/.codex/skills"
+      }
+    },
+    {
+      "id": "opencode",
+      "label": "OpenCode",
+      "verification": "documented",
+      "checked": "2026-09-09",
+      "sources": [
+        "https://opencode.ai/docs/skills/"
+      ],
+      "skills": true,
+      "format": "agent-skills",
+      "may_create": true,
+      "platforms": [
+        "darwin",
+        "linux",
+        "win32"
+      ],
+      "global": [
+        "${OPENCODE_CONFIG_DIR:-~/.config/opencode}/skills"
+      ],
+      "project": [
+        ".opencode/skills"
+      ],
+      "mcp_writer": null,
+      "reserved_names": [],
+      "notes": "Client permissions, trust settings, and tool-specific skill extensions still apply.",
+      "legacy_default": {
+        "label": "OpenCode",
+        "dir": "${OPENCODE_CONFIG_DIR:-~/.config/opencode}/skills"
+      }
+    },
+    {
+      "id": "cursor",
+      "label": "Cursor",
+      "verification": "documented",
+      "checked": "2026-09-09",
+      "sources": [
+        "https://cursor.com/docs/skills"
+      ],
+      "skills": true,
+      "format": "agent-skills",
+      "may_create": true,
+      "platforms": [
+        "darwin",
+        "linux",
+        "win32"
+      ],
+      "global": [
+        "~/.cursor/skills"
+      ],
+      "project": [
+        ".cursor/skills"
+      ],
+      "mcp_writer": null,
+      "reserved_names": [],
+      "notes": "Local skill links only. This does not synchronize skills into Cursor cloud agents.",
+      "legacy_default": {
+        "label": "Cursor",
+        "dir": "~/.cursor/skills",
+        "optional": true
+      }
+    },
+    {
+      "id": "cline",
+      "label": "Cline",
+      "verification": "documented",
+      "checked": "2026-09-09",
+      "sources": [
+        "https://docs.cline.bot/customization/skills"
+      ],
+      "skills": true,
+      "format": "agent-skills",
+      "may_create": true,
+      "platforms": [
+        "darwin",
+        "linux",
+        "win32"
+      ],
+      "global": [
+        "~/.cline/skills"
+      ],
+      "project": [
+        ".cline/skills"
+      ],
+      "mcp_writer": null,
+      "reserved_names": [],
+      "notes": "Client permissions, trust settings, and tool-specific skill extensions still apply."
+    },
+    {
+      "id": "gemini",
+      "label": "Gemini CLI",
+      "verification": "documented",
+      "checked": "2026-09-09",
+      "sources": [
+        "https://geminicli.com/docs/cli/skills/"
+      ],
+      "skills": true,
+      "format": "agent-skills",
+      "may_create": true,
+      "platforms": [
+        "darwin",
+        "linux",
+        "win32"
+      ],
+      "global": [
+        "~/.gemini/skills"
+      ],
+      "project": [
+        ".gemini/skills"
+      ],
+      "mcp_writer": null,
+      "reserved_names": [],
+      "notes": "Gemini also reads .agents/skills; those aliases can take precedence over its native directory.",
+      "legacy_default": {
+        "label": "Gemini",
+        "dir": "~/.gemini/skills",
+        "optional": true
+      }
+    },
+    {
+      "id": "copilot",
+      "label": "GitHub Copilot",
+      "verification": "documented",
+      "checked": "2026-09-09",
+      "sources": [
+        "https://docs.github.com/en/copilot/how-tos/copilot-on-github/customize-copilot/customize-cloud-agent/add-skills"
+      ],
+      "skills": true,
+      "format": "agent-skills",
+      "may_create": true,
+      "platforms": [
+        "darwin",
+        "linux",
+        "win32"
+      ],
+      "global": [
+        "~/.copilot/skills"
+      ],
+      "project": [
+        ".github/skills"
+      ],
+      "mcp_writer": null,
+      "reserved_names": [],
+      "notes": "Local clients only. Links into your Hermes home are not portable to Copilot cloud or other computers.",
+      "legacy_default": {
+        "label": "Copilot",
+        "dir": "~/.copilot/skills",
+        "optional": true
+      }
+    },
+    {
+      "id": "kilo",
+      "label": "Kilo Code",
+      "verification": "documented",
+      "checked": "2026-09-09",
+      "sources": [
+        "https://kilo.ai/docs/customize/skills"
+      ],
+      "skills": true,
+      "format": "agent-skills",
+      "may_create": true,
+      "platforms": [
+        "darwin",
+        "linux",
+        "win32"
+      ],
+      "global": [
+        "~/.kilo/skills"
+      ],
+      "project": [
+        ".kilo/skills"
+      ],
+      "mcp_writer": null,
+      "reserved_names": [],
+      "notes": "Current Kilo CLI-backed platform. Older extension paths are not guessed or migrated."
+    },
+    {
+      "id": "kiro",
+      "label": "Kiro",
+      "verification": "documented",
+      "checked": "2026-09-09",
+      "sources": [
+        "https://kiro.dev/docs/skills/"
+      ],
+      "skills": true,
+      "format": "agent-skills",
+      "may_create": true,
+      "platforms": [
+        "darwin",
+        "linux",
+        "win32"
+      ],
+      "global": [
+        "~/.kiro/skills"
+      ],
+      "project": [
+        ".kiro/skills"
+      ],
+      "mcp_writer": null,
+      "reserved_names": [],
+      "notes": "Kiro CLI custom agents may require skill:// resources in their agent configuration."
+    },
+    {
+      "id": "amp",
+      "label": "Amp",
+      "verification": "documented",
+      "checked": "2026-09-09",
+      "sources": [
+        "https://ampcode.com/docs/customize/skills"
+      ],
+      "skills": true,
+      "format": "agent-skills",
+      "may_create": true,
+      "platforms": [
+        "darwin",
+        "linux",
+        "win32"
+      ],
+      "global": [
+        "~/.config/agents/skills"
+      ],
+      "project": [
+        ".agents/skills"
+      ],
+      "mcp_writer": null,
+      "reserved_names": [],
+      "notes": "Project .agents/skills is shared. Other global compatibility locations may take precedence."
+    },
+    {
+      "id": "vibe",
+      "label": "Mistral Vibe",
+      "verification": "documented",
+      "checked": "2026-09-09",
+      "sources": [
+        "https://docs.mistral.ai/vibe/code/cli/skills"
+      ],
+      "skills": true,
+      "format": "agent-skills",
+      "may_create": true,
+      "platforms": [
+        "darwin",
+        "linux",
+        "win32"
+      ],
+      "global": [
+        "~/.vibe/skills"
+      ],
+      "project": [
+        ".vibe/skills"
+      ],
+      "mcp_writer": null,
+      "reserved_names": [],
+      "notes": "Project skills require a trusted working directory in Vibe."
+    },
+    {
+      "id": "windsurf",
+      "label": "Windsurf / Cascade",
+      "verification": "documented",
+      "checked": "2026-09-09",
+      "sources": [
+        "https://docs.devin.ai/desktop/cascade/skills"
+      ],
+      "skills": true,
+      "format": "agent-skills",
+      "may_create": true,
+      "platforms": [
+        "darwin",
+        "linux",
+        "win32"
+      ],
+      "global": [
+        "~/.codeium/windsurf/skills"
+      ],
+      "project": [
+        ".windsurf/skills"
+      ],
+      "mcp_writer": null,
+      "reserved_names": [],
+      "notes": "Cascade skills format, not Devin Local agent or Windsurf rules.",
+      "legacy_default": {
+        "label": "Windsurf",
+        "dir": "~/.codeium/windsurf/skills",
+        "optional": true
+      }
+    },
+    {
+      "id": "openclaw",
+      "label": "OpenClaw",
+      "verification": "documented",
+      "checked": "2026-09-09",
+      "sources": [
+        "https://docs.openclaw.ai/tools/skills"
+      ],
+      "skills": true,
+      "format": "agent-skills",
+      "may_create": true,
+      "platforms": [
+        "darwin",
+        "linux",
+        "win32"
+      ],
+      "global": [
+        "~/.openclaw/skills"
+      ],
+      "project": [],
+      "mcp_writer": null,
+      "reserved_names": [],
+      "notes": "Default OpenClaw state only. Project roots reject external links unless the owner changes OpenClaw trust settings, which Switchboard does not do."
+    },
+    {
+      "id": "grok",
+      "label": "Grok",
+      "verification": "unverified",
+      "checked": null,
+      "sources": [],
+      "skills": false,
+      "format": null,
+      "may_create": false,
+      "platforms": [],
+      "global": [],
+      "project": [],
+      "mcp_writer": null,
+      "reserved_names": [],
+      "notes": "No primary client path contract was established for this CLI. Existing explicit custom mappings are preserved.",
+      "legacy_default": {
+        "label": "Grok",
+        "dir": "~/.grok/skills"
+      }
+    },
+    {
+      "id": "zcode",
+      "label": "ZCode",
+      "verification": "unverified",
+      "checked": null,
+      "sources": [],
+      "skills": false,
+      "format": null,
+      "may_create": false,
+      "platforms": [],
+      "global": [],
+      "project": [],
+      "mcp_writer": null,
+      "reserved_names": [],
+      "notes": "A shared .agents folder is not evidence that ZCode is installed or compatible. Existing explicit custom mappings are preserved.",
+      "legacy_default": {
+        "label": "ZCode",
+        "dir": "~/.agents/skills",
+        "fallback_dir": "~/.zcode/skills"
+      }
+    },
+    {
+      "id": "kimi",
+      "label": "Kimi",
+      "verification": "unverified",
+      "checked": null,
+      "sources": [],
+      "skills": false,
+      "format": null,
+      "may_create": false,
+      "platforms": [],
+      "global": [],
+      "project": [],
+      "mcp_writer": null,
+      "reserved_names": [],
+      "notes": "Legacy candidate path has not been verified against a current primary client contract. Existing explicit custom mappings are preserved.",
+      "legacy_default": {
+        "label": "Kimi",
+        "dir": "~/.kimi/skills",
+        "optional": true
+      }
+    },
+    {
+      "id": "pi",
+      "label": "pi",
+      "verification": "unverified",
+      "checked": null,
+      "sources": [],
+      "skills": false,
+      "format": null,
+      "may_create": false,
+      "platforms": [],
+      "global": [],
+      "project": [],
+      "mcp_writer": null,
+      "reserved_names": [],
+      "notes": "Not yet verified in this catalog. Existing explicit custom mappings are preserved."
+    },
+    {
+      "id": "roo",
+      "label": "Roo Code",
+      "verification": "unverified",
+      "checked": null,
+      "sources": [],
+      "skills": false,
+      "format": null,
+      "may_create": false,
+      "platforms": [],
+      "global": [],
+      "project": [],
+      "mcp_writer": null,
+      "reserved_names": [],
+      "notes": "Not yet verified in this catalog. Existing explicit custom mappings are preserved."
+    },
+    {
+      "id": "claude-desktop",
+      "label": "Claude Desktop",
+      "verification": "documented",
+      "checked": "2026-09-09",
+      "sources": [
+        "https://modelcontextprotocol.io/docs/develop/connect-local-servers"
+      ],
+      "skills": false,
+      "format": null,
+      "may_create": false,
+      "platforms": [
+        "darwin",
+        "win32"
+      ],
+      "global": [],
+      "project": [],
+      "mcp_writer": "claude",
+      "reserved_names": [],
+      "notes": "MCP writer only. Claude Code skill directories are a different client surface."
+    }
+  ]
+}
