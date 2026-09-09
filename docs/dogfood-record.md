@@ -61,3 +61,39 @@ Isolated `gateway run` / `serve` / leftover `serve --port 0` processes were
 stopped. Dummy `dashboard.basic_auth` added during an auth experiment was
 removed from `profiles/skt-livetest/config.yaml`. The throwaway profile itself
 is left in place for a later GUI pass; it is not the owner's daily profile.
+
+## Re-verification run (2026-09-09, agent headless)
+
+Owner reported the desktop half enabled in Settings → Plugins with a desktop
+plugin reload. Agent-side follow-up on the same disposable profile:
+
+- Profile copy re-synced from `main` (`a8c1023`; previously stale at the Sep-8
+  smoke). `diff -rq` clean.
+- Automated gates re-run green on the repo root: 127 OK
+  (`test_core_api`, `test_mcp_backend`, `test_plugin_api`, `test_v2_backend`,
+  `test_bulk_planning`, `test_scan_wizard`), 13 OK (`test_routes_http`),
+  `check_frontend.py` pass, render + workspace harnesses pass with zero
+  React-key / console.error / console.warn.
+- Headless `serve` (loopback `:8792`) re-verified with the fresh copy: HTTP 200
+  on `/`, 401-not-404 on `/api/plugins/skills-toggle/state` and `/health`;
+  no plugin exceptions in the serve log (server stopped afterwards; one
+  `<defunct>` reaper entry left to the platform — port confirmed free).
+- Backend mutation exercise on fresh disposable `/tmp/skt-live` paths (real
+  `~/.hermes/skills` and real tool dirs untouched):
+  - no-op disable preview: `would_change == []`;
+  - enable-all on 2 fixture skills: receipt `changed == 2`, symlinks point into
+    the disposable Hermes tree; idempotent re-apply: `would_change == []`;
+  - disable-all: `changed == 2`, links removed;
+  - hermes-config disable: `config-updated`, timestamped
+    `config.yaml.bak.skills-toggle.*` created, surfaced by `list_backups`
+    (`count == 1`), `restore_backup` reverted it (`ok`);
+  - foreign symlink + unmanaged real dir on the disposable target untouched;
+  - malformed disposable `config.yaml` refused with `config-edit` (no write).
+
+## Defects observed during re-verification
+
+None. No unexpected mutations. GUI-only items (live ResizeObserver, palette
+atom switching, click navigation, scan wizard / Manage / Disable-all / undo in
+the real window, gateway+desktop restart persistence, current screenshots)
+remain open on `docs/live-host-acceptance.md` for the owner window pass. No
+release tag created.

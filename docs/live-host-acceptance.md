@@ -26,13 +26,16 @@ item below is a case the static harness is known NOT to prove.
   `~/.hermes/plugins/skills-toggle/{plugin.yaml, dashboard/{manifest.json, plugin_api.py}, desktop/plugin.js}`.
   (2026-09-08 isolated profile `skt-livetest`; local copy — private-repo CLI
   install is not non-interactive. See `docs/dogfood-record.md`.)
-- [ ] Both halves enabled: agent half in `plugins.enabled`, desktop half in
+- [x] Both halves enabled: agent half in `plugins.enabled`, desktop half in
   Settings → Plugins (ships `defaultEnabled: false`).
-  Agent half: [x] `skt-livetest plugins enable skills-toggle`. Desktop half: still needs the owner's window.
+  Agent half: [x] `skt-livetest plugins enable skills-toggle`. Desktop half: [x]
+  owner-reported enabled 2026-09-09 (agent cannot inspect the desktop window).
 - [x] **Gateway restart** performed after first install (plugin API routes are
   mounted at gateway startup only — see D19). Headless `serve` on loopback
-  returned 401 (not 404) on `/api/plugins/skills-toggle/state` and `/health`.
-- [ ] Desktop "Reload desktop plugins" (⌘K) applied so the desktop half is live.
+  returned 401 (not 404) on `/api/plugins/skills-toggle/state` and `/health`
+  (re-verified 2026-09-09 with the re-synced profile copy).
+- [x] Desktop "Reload desktop plugins" (⌘K) applied so the desktop half is live
+  (owner-reported 2026-09-09; GUI proof still needs the owner window pass).
 
 ## Entry points
 
@@ -109,6 +112,21 @@ Repeat the above at **narrow, split, and wide** sizes:
 5. enable one category; 6. apply a named set; 7. add and distribute a new
 fixture skill; 8. resolve a fixture conflict three ways; 9. inspect Problems and
 MCP; 10. restart gateway and desktop.
+
+## Verification log
+
+- 2026-09-09 (agent, headless): disposable profile copy re-synced from `main`
+  (`a8c1023`); automated gates re-run green (127 core/v2/scan/bulk/MCP/API +
+  13 HTTP routes + frontend static checks + render + workspace harnesses, zero
+  key/console warnings). Headless `serve` on loopback re-verified with the fresh
+  copy: HTTP 200 `/`, 401-not-404 on `/api/plugins/skills-toggle/state` and
+  `/health`. Backend fixture exercise on fresh `/tmp/skt-live` paths (real tree
+  untouched): no-op preview empty, enable-2 receipt with correct symlinks,
+  idempotent re-apply empty, disable-2 receipt, hermes-config disable wrote a
+  timestamped backup surfaced by `list_backups`, `restore_backup` reverted it,
+  foreign link + unmanaged dir untouched, malformed `config.yaml` refused safely
+  (no write). Details in `docs/dogfood-record.md`. GUI-only items above remain
+for the owner window pass.
 
 Every terminal intervention, ambiguous label, clipped control, and unexpected
 mutation is a **defect** to record — not a cosmetic nit.
