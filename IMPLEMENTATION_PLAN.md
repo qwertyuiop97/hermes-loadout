@@ -2,8 +2,27 @@
 
 Status: approved planning brief for Hermes orchestration.  
 Repository: `/Users/bakirmousa/projects/skills-toggle`  
-Authority: newest owner instruction, `AGENTS.md`, `BACKLOG.md`, this plan, then
-existing proposal/decision documents.
+Authority: newest owner instruction, `AGENTS.md`, `PRODUCT_DIRECTION.md`,
+`BACKLOG.md`, this plan, then existing proposal/decision documents.
+
+## 0. Product boundary
+
+This plan applies to `skills-toggle`, the Hermes-native plugin. The sibling
+`/Users/bakirmousa/projects/skills-dash` repository is a standalone Tauri
+prototype covering much of the same behavior. It is parked during this program,
+not a second active implementation target.
+
+During phase 6, inspect Skills Dash as read-only reference material for useful
+full-window UX, import, bulk, MCP, test, and research patterns. Port only ideas
+that improve the Hermes-native product and verify them against the current
+skills-toggle core and Hermes SDK. Do not copy its vanilla-JS UI or older
+vendored Python core wholesale, do not commit changes there as part of this
+queue, and do not extract a shared package during stabilization.
+
+The standalone product may be reconsidered after the plugin alpha is usable and
+there is evidence that Hermes users need management while Hermes is closed, or
+that a separate non-Hermes audience exists. `PRODUCT_DIRECTION.md` is the
+authoritative explanation of this boundary.
 
 ## 1. Outcome
 
@@ -385,6 +404,7 @@ Deliverables:
 
 - committed screenshot-shaped render fixture;
 - current behavior inventory;
+- concise Skills Dash comparison identifying ideas to port, reject, or defer;
 - live-host acceptance checklist;
 - no product behavior changes.
 
@@ -492,4 +512,3 @@ validate with disposable fixtures and the existing large catalog:
 
 After the alpha is public, use even a small number of external reports to revise
 priorities. Do not claim broad adoption or market validation from solo testing.
-

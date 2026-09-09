@@ -10,9 +10,11 @@ The authoritative implementation specification is `IMPLEMENTATION_PLAN.md`.
 Complete these items in order. Do not start new targets or configuration writers
 until items 6-12 pass their acceptance gates.
 
-6. [ ] Baseline and live-host reproduction — preserve the current screenshot-shaped
-   fixture, document current Hermes tile behavior, and add a live-host acceptance
-   checklist that catches failures the render-to-string harness cannot.
+6. [ ] Baseline, product reconciliation, and live-host reproduction — preserve
+   the current screenshot-shaped fixture, document current Hermes tile behavior,
+   inventory reusable UX/test/MCP ideas from the parked `skills-dash` repository,
+   and add a live-host acceptance checklist that catches failures the
+   render-to-string harness cannot. Do not resume or merge Skills Dash.
 7. [ ] Responsive product shell — make the contributed side pane a compact summary;
    make the route/workspace surface the management UI; support narrow, split, and
    wide containers without hidden tools, clipped descriptions, or ambiguous switches.

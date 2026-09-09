@@ -3,8 +3,22 @@
 Work in `/Users/bakirmousa/projects/skills-toggle` and execute the active product
 stabilization queue in `BACKLOG.md` from top to bottom. The full authoritative
 specification and acceptance criteria are in `IMPLEMENTATION_PLAN.md`. Read both
-files completely, plus `AGENTS.md`, `DECISIONS.md`, and the relevant current
-code/tests before dispatching work.
+files completely, plus `AGENTS.md`, `PRODUCT_DIRECTION.md`, `DECISIONS.md`, and
+the relevant current code/tests before dispatching work.
+
+There are two existing repositories, but only one active product in this plan:
+
+- `/Users/bakirmousa/projects/skills-toggle` is the Hermes-native product and is
+  the only implementation target;
+- `/Users/bakirmousa/projects/skills-dash` is a parked standalone Tauri
+  prototype covering much of the same behavior.
+
+Do not build, release, or maintain both products in parallel. During backlog
+item 6, inspect Skills Dash read-only for reusable full-window UX, import, bulk,
+MCP, test, and research ideas. Produce a concise port/reject/defer inventory.
+Verify every idea against the current skills-toggle core and Hermes SDK. Do not
+copy its vanilla-JS UI or older vendored core wholesale, do not commit changes
+to Skills Dash, and do not extract a shared package during stabilization.
 
 Act as the orchestrator. It is acceptable for the main session to use a fast
 model such as DeepSeek Flash. Do not change my Hermes model/provider/MOA/
@@ -104,6 +118,8 @@ Preserve these product decisions:
 7. Never overwrite or delete real directories, foreign links, or skill sources.
 8. Preserve stable backend APIs and Python 3.9 core compatibility.
 9. Do not add agent targets or MCP writers until stabilization items 6-12 pass.
+10. Skills Dash remains parked and read-only until the skills-toggle alpha is
+    validated and the owner explicitly reactivates standalone development.
 
 Start with backlog item 6. Commit and push after every completed backlog item.
 Finishing one item means starting the next. Put genuine blockers and unresolved
