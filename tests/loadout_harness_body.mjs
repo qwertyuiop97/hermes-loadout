@@ -42,7 +42,7 @@ plugin.register({ source: 'plugin:hermes-loadout', rest: async (url, options = {
   i18n: { register: bundle => Object.assign(channel.bundle, bundle) }, registerMany: () => {}, os: {}, socket: () => () => {} })
 const button = (tree, label) => tree.root.findAllByType('button').find(row => row.children.join('') === label)
 const labeled = (tree, label) => tree.root.findAll(row => typeof row.type === 'string' && row.props['aria-label'] === label)[0]
-const change = async (tree, label, value) => { await act(async () => { const row = labeled(tree, label); row.props.onChange(row.type === 'select' ? { target: { value } } : value) }) }
+const change = async (tree, label, value) => { await act(async () => { const row = labeled(tree, label); row.props.onChange({ target: { value } }) }) }
 const click = async (tree, label) => { await act(async () => { button(tree, label).props.onClick() }) }
 let tree
 await act(async () => { tree = TestRenderer.create(createElement(Fragment, null, createElement(LoadoutPicker), createElement(LoadoutManager))) })

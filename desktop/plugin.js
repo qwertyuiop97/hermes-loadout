@@ -1220,7 +1220,7 @@ function ClientLibrary({ onBack }) {
       ] }),
       jsx('p', { className: 'text-xs text-muted-foreground', children: t(scope === 'global' ? 'globalScopeDesc' : 'projectScopeDesc') }),
       scope === 'project' ? jsxs('div', { className: 'flex min-w-0 flex-col gap-2', children: [
-        jsx(Input, { value: projectInput, onChange: setProjectInput, 'aria-label': t('projectFolder'), placeholder: t('projectFolder'), className: 'min-w-0 flex-1' }),
+        jsx(Input, { value: projectInput, onChange: event => setProjectInput(event.target.value), 'aria-label': t('projectFolder'), placeholder: t('projectFolder'), className: 'min-w-0 flex-1' }),
         jsx(Button, { variant: 'secondary', size: 'sm', disabled: busy || !projectInput.trim(), onClick: () => { setProjectRoot(projectInput.trim()); setRevision(value => value + 1) }, children: t('reviewProjectFolder') }),
         projectRoot ? jsx('code', { className: 'break-words text-xs', children: projectRoot }) : null,
         projectRoot && projectInput.trim() !== projectRoot ? jsx('p', { role: 'status', className: 'text-xs text-muted-foreground', children: t('projectReviewChanged') }) : null
@@ -1238,9 +1238,9 @@ function ClientLibrary({ onBack }) {
         jsx('h3', { className: 'font-medium', children: t('libraryCustom') }),
         jsx('p', { className: 'text-xs text-muted-foreground', children: t('libraryCustomDesc') }),
         clients.filter(client => client.verification !== 'documented').map(client => jsx('p', { className: 'text-xs text-muted-foreground', children: client.label + ': ' + client.notes }, client.id)),
-        jsx(Input, { value: customId, onChange: setCustomId, 'aria-label': t('customClientId'), placeholder: t('customClientId') }),
-        jsx(Input, { value: customLabel, onChange: setCustomLabel, 'aria-label': t('customClientLabel'), placeholder: t('customClientLabel') }),
-        jsx(Input, { value: customPath, onChange: setCustomPath, 'aria-label': t('customClientPath'), placeholder: t('customClientPath') }),
+        jsx(Input, { value: customId, onChange: event => setCustomId(event.target.value), 'aria-label': t('customClientId'), placeholder: t('customClientId') }),
+        jsx(Input, { value: customLabel, onChange: event => setCustomLabel(event.target.value), 'aria-label': t('customClientLabel'), placeholder: t('customClientLabel') }),
+        jsx(Input, { value: customPath, onChange: event => setCustomPath(event.target.value), 'aria-label': t('customClientPath'), placeholder: t('customClientPath') }),
         customPath.trim() ? jsx('code', { className: 'break-words text-xs', children: customPath.trim() }) : null,
         jsx(Button, { variant: 'secondary', size: 'sm', disabled: busy || !/^[a-z0-9-]{1,32}$/.test(customId.trim()) || customId.trim() === 'hermes' || !customLabel.trim() || !customPath.trim(), onClick: addCustom, children: t('saveCustomClient') })
       ] })
@@ -1504,7 +1504,7 @@ function LoadoutManager() {
     error ? jsx('p', { role: 'alert', className: 'break-words text-xs text-(--ui-text-danger)', children: error }) : null,
     !draft ? jsx(EmptyState, { title: 'Choose or create a loadout', description: 'Start empty, or capture your current choices. No starter activates capabilities for you.' }) : jsxs('div', { className: 'flex min-w-0 flex-col gap-3', children: [
       jsx('label', { htmlFor: `${editorId}-name`, className: 'text-xs', children: 'Name' }),
-      jsx(Input, { id: `${editorId}-name`, 'aria-label': 'Loadout name', maxLength: 64, value: draft.name, onChange: value => setDraft(previous => ({ ...previous, name: value })), placeholder: 'For example, Research', disabled: busy }),
+      jsx(Input, { id: `${editorId}-name`, 'aria-label': 'Loadout name', maxLength: 64, value: draft.name, onChange: event => setDraft(previous => ({ ...previous, name: event.target.value })), placeholder: 'For example, Research', disabled: busy }),
       jsx('fieldset', { className: 'min-w-0', children: [jsx('legend', { className: 'mb-2 text-xs', children: 'Applications in this loadout' }, 'legend'), jsx('div', { className: 'flex flex-wrap gap-3', children: availableApps.map(app => jsxs('label', { className: 'flex items-center gap-1.5 text-xs', children: [jsx('input', { type: 'checkbox', checked: apps.includes(app.id), disabled: busy, 'aria-label': `Include ${app.label}`, onChange: event => changeApp(app.id, event.target.checked) }), app.label] }, app.id)) }, 'choices')] }),
       jsxs('div', { className: 'flex flex-wrap items-center gap-2', children: [
         jsx(Button, { variant: 'secondary', size: 'xs', disabled: busy || !apps.length || !backendReady(state), onClick: capture, children: 'Capture current selections' }),
@@ -1969,7 +1969,7 @@ function FirstRunWizard() {
         ]
       }, tool.id)),
       jsxs('div', { className: 'flex gap-2', children: [
-        jsx(Input, { value: folderInput, onChange: setFolderInput, placeholder: t('wizardFolderPlaceholder'), className: 'flex-1' }),
+        jsx(Input, { value: folderInput, onChange: event => setFolderInput(event.target.value), placeholder: t('wizardFolderPlaceholder'), className: 'flex-1' }),
         jsx(Button, { variant: 'secondary', size: 'sm', disabled: !folderInput.trim(), onClick: addFolder, children: t('wizardAddFolder') })
       ] }),
       scanRoots.map(root => jsxs('div', { 'data-scan-root': root, className: 'flex items-center gap-2 text-xs text-muted-foreground', children: [

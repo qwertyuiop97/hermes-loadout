@@ -44,7 +44,8 @@ export const Switch = (props) => el('button', { role: 'switch', 'aria-label': pr
 export const StatusDot = (props) => el('span', { 'data-tone': props.tone }, null)
 export const EmptyState = (props) => el('div', {}, el('div', {}, props.title), props.description ? el('div', {}, props.description) : null, props.children ?? null)
 export const ErrorState = (props) => el('div', {}, el('div', {}, props.title), typeof props.description === 'string' ? el('div', {}, props.description) : null, props.children ?? null)
-export const Input = (props) => el('input', { ...props, onChange: e => props.onChange && props.onChange(e && e.target ? e.target.value : e) })
+// Hermes Input forwards native input props, including the React change event.
+export const Input = (props) => el('input', props)
 export const SearchField = (props) => el('input', { placeholder: props.placeholder, value: props.value, 'aria-label': props['aria-label'], onChange: props.onChange })
 export const Skeleton = (props) => el('div', { 'data-skeleton': 'true', className: props.className }, null)
 export const ScrollArea = (props) => el('div', { className: props.className }, props.children)
