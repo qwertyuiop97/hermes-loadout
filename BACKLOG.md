@@ -23,7 +23,7 @@ until items 6-12 pass their acceptance gates.
 9. [x] Single-tool management + bulk planning — one switch per skill for the selected
    tool; selection/category/all operations; dry-run preview, protected-entry report,
    confirmation, mutation receipt, and undo.
-10. [ ] First-run scan wizard — promote the existing import/adoption scan into guided
+10. [x] First-run scan wizard — promote the existing import/adoption scan into guided
     onboarding; auto-detect known folders, accept additional scan folders, classify
     duplicates/conflicts, keep Hermes as the canonical destination, and apply only
     after a reviewed dry run.
