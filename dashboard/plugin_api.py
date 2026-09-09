@@ -1015,7 +1015,7 @@ class HermesLoadoutCore:
 
     def _validate_client_skill(self, skill: dict, tool_id: str) -> None:
         tool = self.tools[tool_id]
-        if tool.get("scope") not in ("global", "project"):
+        if tool_id == "hermes" or tool.get("scope") not in ("global", "project"):
             return
         client = catalog_client(tool.get("client_id"))
         name = skill["name"]
@@ -1891,6 +1891,12 @@ class HermesLoadoutCore:
             del self._reviews[review_id]
             return review["payload"]
 
+    @staticmethod
+    def _import_identity(path: Path) -> dict:
+        st = path.lstat()
+        return {"device": st.st_dev, "inode": st.st_ino, "created": st.st_ctime_ns,
+                "modified": st.st_mtime_ns, "symlink": path.is_symlink()}
+
     def _import_destination(self, category: object, name: object = None) -> Path:
         category = self._validate_import_category(category)
         if not same_path(self.skills_root, self.skills_root_resolved):
@@ -2113,7 +2119,7 @@ class HermesLoadoutCore:
                     try:
                         row["fingerprint"] = self._skill_fingerprint(child)
                         row["source_root"] = _canonical(str(root))
-                        row["source_identity"] = self._entry_snapshot(child)
+                        row["source_identity"] = self._import_identity(child)
                     except (LoadoutError, OSError) as exc:
                         row["kind"] = "unsafe-source"
                         row["error"] = str(exc)
@@ -2205,7 +2211,7 @@ class HermesLoadoutCore:
                     if not info or info["kind"] != "unmanaged-skill":
                         raise LoadoutError("The source entry changed", info["kind"] if info else "changed-since-preview")
                     if (info.get("conflict") or self._skill_fingerprint(src) != reviewed["fingerprint"]
-                            or self._entry_snapshot(src) != reviewed["source_identity"]):
+                            or self._import_identity(src) != reviewed["source_identity"]):
                         raise LoadoutError("Skill content changed. Review it again.", "changed-since-preview")
                     destination = self._import_destination(category, name)
                     if (_canonical(str(destination.parent)) != review["destination"]
@@ -2244,7 +2250,7 @@ class HermesLoadoutCore:
                     row.update(ok=True, code="adopted", skill=f"{category}/{name}", path=str(destination),
                                backup=str(backup) if backup else None, changed_since_preview=False,
                                hermes_disabled_before=disabled_before,
-                               fingerprint=reviewed["fingerprint"], after=self._entry_snapshot(destination))
+                               fingerprint=reviewed["fingerprint"], after=self._import_identity(destination))
                     if tool_id is not None:
                         row["source_after"] = self._entry_snapshot(src)
                     undo.append({"path": str(src if tool_id else destination),
@@ -3484,6 +3490,8 @@ class McpCore:
             backup = path.with_name(f"{path.name}.bak.hermes-loadout.{stamp}-{n}")
             n += 1
         shutil.copy2(path, backup)
+        if os.name != "nt":
+            backup.chmod(0o600)
         return str(backup)
 
     # -- catalog ------------------------------------------------------------
@@ -3719,6 +3727,77 @@ class McpCore:
             "backup": backup,
         }
 
+    @staticmethod
+    def _native_digest(value):
+        return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()
+
+    def _native_server(self, app: str, name: str):
+        if app == "codex":
+            _, raw = self._read_codex()
+            doc = _toml_support().load(raw)
+            return self.codex_config, doc, raw, doc.get("mcp_servers", {}).get(name)
+        if app == "claude-desktop":
+            doc, raw = self._read_claude()
+            return self.claude_config, doc, raw, doc.get("mcpServers", {}).get(name)
+        raise LoadoutError("No MCP writer is available for this application", "no-writer")
+
+    def restore_server(self, name: str, app: str, definition, expected_fingerprint: str) -> dict:
+        """Replace only one verified native server, preserving unrelated current data.
+
+        Private orchestration helper: the reviewed operation store supplies the
+        before-definition from a verified private backup, never from an HTTP body.
+        """
+        with self._lock:
+            path, doc, raw, current = self._native_server(app, name)
+            if path is None or not isinstance(expected_fingerprint, str):
+                raise LoadoutError("The reviewed MCP target is unavailable", "no-writer")
+            if self._native_digest(current) != expected_fingerprint:
+                raise LoadoutError("The server changed after review", "changed-since-preview")
+            if current == definition:
+                return {"ok": True, "action": "noop", "backup": None}
+            if definition is not None and not isinstance(definition, dict):
+                raise LoadoutError("Invalid native MCP definition", "config-invalid")
+            if app == "codex":
+                new_text = _toml_support().replace_server(raw, name, definition)
+            else:
+                servers = dict(doc.get("mcpServers", {}))
+                if definition is None:
+                    servers.pop(name, None)
+                else:
+                    servers[name] = copy.deepcopy(definition)
+                doc["mcpServers"] = servers
+                new_text = json.dumps(doc, indent=2, ensure_ascii=False) + "\n"
+            if self._native_server(app, name)[2] != raw:
+                raise LoadoutError("The application configuration changed during review", "changed-since-preview")
+            backup = self._backup(path)
+            _atomic_write_text(path, new_text)
+            self._log(action="mcp-reviewed-change", server=name, writer=app, backup=backup)
+            return {"ok": True, "name": name, "writer": app, "backup": backup,
+                    "action": "removed" if definition is None else "updated"}
+
+    def set_activation(self, name: object, app: object, enabled: object) -> dict:
+        """An explicit activation action, unlike synchronization, enables native flags."""
+        with self._lock:
+            if not isinstance(name, str) or not name.strip() or type(enabled) is not bool:
+                raise LoadoutError("Choose a server and an explicit on/off state", "invalid-body")
+            if app == "hermes":
+                return self.toggle_hermes(name, enabled)
+            source = next((r for r in self.catalog()["catalog"] if r["name"] == name), None)
+            if source is None:
+                raise LoadoutError("This server is not in the Hermes inventory", "unknown-server")
+            path, _, _, current = self._native_server(app, name)
+            writer = "claude" if app == "claude-desktop" else app
+            projection = _codex_projection(source["projection"]) if writer == "codex" else source["projection"]
+            _check_mcp_projection(projection, writer)
+            if current is not None and _shared_mcp_definition(current, writer) != projection:
+                raise LoadoutError("This server conflicts with the application configuration", "conflict")
+            desired = None
+            if enabled:
+                desired = copy.deepcopy(current) if current is not None else copy.deepcopy(projection)
+                if app == "codex" and desired.get("enabled") is False:
+                    desired["enabled"] = True
+            return self.restore_server(name, app, desired, self._native_digest(current))
+
     def health(self) -> dict:
         return {"ok": True, "catalog": self.catalog()["count"], "writer": "claude", "writers": ["claude", "codex"]}
 
@@ -3792,6 +3871,26 @@ def reset_core() -> None:
     _CORE_FROZEN = False
 
 
+_LOADOUT_SERVICE = None
+
+
+def get_loadout_service():
+    """Bind orchestration to the current adapters, independent of gateway imports."""
+    global _LOADOUT_SERVICE
+    core, mcp = get_core(), get_mcp_core()
+    if _LOADOUT_SERVICE is None or _LOADOUT_SERVICE.core is not core or _LOADOUT_SERVICE.mcp is not mcp:
+        import importlib.util
+        import types
+        path = Path(__file__).with_name("loadout_service.py")
+        spec = importlib.util.spec_from_file_location("_hermes_loadout_service", path)
+        if spec is None or spec.loader is None:
+            raise LoadoutError("Loadout operation support is missing; reinstall the plugin", "backend-unavailable")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _LOADOUT_SERVICE = module.LoadoutService(core, mcp, types.SimpleNamespace(**globals()))
+    return _LOADOUT_SERVICE
+
+
 # ---------------------------------------------------------------------------
 # FastAPI route layer (mounted at /api/plugins/hermes-loadout/)
 # ---------------------------------------------------------------------------
@@ -3810,9 +3909,70 @@ if APIRouter is not None:
             return fn(*args, **kwargs)
         except LoadoutError as exc:
             return {"ok": False, "error": str(exc), "code": exc.code}
+        except (OSError, ValueError):
+            return {"ok": False, "error": "The operation could not finish. Refresh and inspect recovery before retrying.", "code": "operation-failed"}
 
     def _core_call(method, *args, **kwargs) -> dict:
         return _call(lambda: getattr(get_core(), method)(*args, **kwargs))
+
+    def _service_call(method, *args, **kwargs) -> dict:
+        return _call(lambda: getattr(get_loadout_service(), method)(*args, **kwargs))
+
+    @router.get("/inventory/metadata")
+    async def inventory_metadata() -> dict:
+        return _service_call("metadata")
+
+    @router.post("/inventory/classify")
+    async def inventory_classify(body: dict) -> dict:
+        return _service_call("classify", body.get("skill"), body.get("classification"))
+
+    @router.get("/loadouts")
+    async def loadouts() -> dict:
+        return _service_call("list_loadouts")
+
+    @router.post("/loadouts/save")
+    async def save_loadout(body: dict) -> dict:
+        return _service_call("save_loadout", body.get("name"), body.get("states"), body.get("loadout_id"))
+
+    @router.post("/loadouts/edit")
+    async def edit_loadout(body: dict) -> dict:
+        return _service_call("edit_loadout", body.get("loadout_id"), body.get("action"), body.get("name"))
+
+    @router.post("/loadouts/capture")
+    async def capture_loadout(body: dict) -> dict:
+        return _service_call("capture", body.get("apps"))
+
+    @router.post("/loadouts/plan")
+    async def plan_loadout(body: dict) -> dict:
+        return _service_call("plan_loadout", body.get("loadout_id"))
+
+    @router.post("/operations/plan")
+    async def operation_plan(body: dict) -> dict:
+        return _service_call("plan", body.get("states"), body.get("label", "Selection"))
+
+    @router.post("/operations/apply")
+    async def operation_apply(body: dict) -> dict:
+        return _service_call("apply", body.get("plan_id"))
+
+    @router.get("/operations/latest")
+    async def operation_latest() -> dict:
+        return _service_call("latest")
+
+    @router.post("/operations/undo-plan")
+    async def operation_undo_plan() -> dict:
+        return _service_call("undo_plan")
+
+    @router.post("/operations/undo")
+    async def operation_undo(body: dict) -> dict:
+        return _service_call("undo", body.get("plan_id"))
+
+    @router.post("/catalog-bypass/plan")
+    async def catalog_repair_plan(body: dict) -> dict:
+        return _core_call("plan_catalog_repair", body.get("tool"), body.get("name"))
+
+    @router.post("/catalog-bypass/repair")
+    async def catalog_repair_apply(body: dict) -> dict:
+        return _service_call("apply_catalog_repair", body.get("plan_id"))
 
     @router.get("/clients")
     async def clients(project_root: str = "") -> dict:
@@ -3886,7 +4046,7 @@ if APIRouter is not None:
 
     @router.post("/import/apply")
     async def import_apply(body: dict) -> dict:
-        return _core_call("import_apply_plan", body.get("entries"), body.get("category", "imported"), plan_id=body.get("plan_id"))
+        return _service_call("apply_import", body.get("entries"), body.get("category", "imported"), body.get("plan_id"))
 
     @router.post("/import/plan")
     async def import_plan(body: dict) -> dict:
@@ -3898,10 +4058,7 @@ if APIRouter is not None:
 
     @router.post("/import/apply-plan")
     async def import_apply_plan(body: dict) -> dict:
-        return _core_call("import_apply_plan",
-            body.get("entries"),
-            body.get("category", "imported"), plan_id=body.get("plan_id"),
-        )
+        return _service_call("apply_import", body.get("entries"), body.get("category", "imported"), body.get("plan_id"))
 
     @router.get("/drift")
     async def drift() -> dict:
