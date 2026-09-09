@@ -557,6 +557,10 @@ def _backup_file(path: Path) -> str | None:
         for number in range(10000):
             suffix = '' if number == 0 else '-' + str(number)
             backup = path.with_name(f'{path.name}.bak.hermes-loadout.{stamp}{suffix}')
+            # Windows may follow an existing dangling reparse point even with
+            # O_EXCL. Check the entry itself, not whether its target exists.
+            if os.path.lexists(backup):
+                continue
             try:
                 descriptor = os.open(str(backup), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             except FileExistsError:

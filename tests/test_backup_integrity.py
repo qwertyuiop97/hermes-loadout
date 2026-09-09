@@ -18,18 +18,18 @@ class BackupIntegrityTests(unittest.TestCase):
         self.fx = Fixture()
         self.addCleanup(self.fx.cleanup)
         self.source = self.fx.tmp / 'client.json'
-        self.source.write_bytes(b'fixture-private-value')
+        self.source.write_bytes(b'fixture-private-value\r\nline\n\x00end')
         self.mcp = pa.McpCore(self.fx.home, self.source)
 
     def test_private_distinct_backups_preserve_bytes_for_both_adapters(self):
         for adapter in (self.fx.core, self.mcp):
-            self.source.write_bytes(b'fixture-private-value')
+            self.source.write_bytes(b'fixture-private-value\r\nline\n\x00end')
             self.source.chmod(0o644)
             first = Path(adapter._backup(self.source))
             self.source.write_bytes(b'new-fixture-value')
             second = Path(adapter._backup(self.source))
             self.assertNotEqual(first, second)
-            self.assertEqual(first.read_bytes(), b'fixture-private-value')
+            self.assertEqual(first.read_bytes(), b'fixture-private-value\r\nline\n\x00end')
             self.assertEqual(second.read_bytes(), b'new-fixture-value')
             if os.name != 'nt':
                 self.assertEqual(stat.S_IMODE(first.stat().st_mode), 0o600)
@@ -43,12 +43,14 @@ class BackupIntegrityTests(unittest.TestCase):
         occupied = self.source.with_name(self.source.name + '.bak.hermes-loadout.20260101-120000')
         external = self.fx.tmp / 'foreign-target'
         occupied.symlink_to(external)
+        original_target = os.readlink(occupied)
         with patch.object(pa, 'datetime', FixedTime):
             for adapter in (self.fx.core, self.mcp):
                 backup = Path(adapter._backup(self.source))
                 self.assertNotEqual(backup, occupied)
                 self.assertEqual(backup.read_bytes(), self.source.read_bytes())
                 self.assertTrue(occupied.is_symlink())
+                self.assertEqual(os.readlink(occupied), original_target)
                 self.assertFalse(external.exists())
 
     def test_linked_config_is_not_copied_and_failed_backup_cleans_only_owned_file(self):
