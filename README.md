@@ -3,11 +3,10 @@
 [![tests](https://github.com/qwertyuiop97/skills-toggle/actions/workflows/tests.yml/badge.svg)](https://github.com/qwertyuiop97/skills-toggle/actions/workflows/tests.yml)
 
 A Hermes desktop plugin that makes **Hermes the source of truth for your skills
-across every coding tool**. A native pane inside the Hermes desktop app lists
-every skill under `~/.hermes/skills/<category>/<name>/SKILL.md` and gives you a
-per-tool on/off switch for each one — Hermes itself, Claude, Codex, OpenCode,
-Grok, and ZCode — plus broken-link repair, a health diff, search, filters, and
-bulk actions.
+across every coding tool**. The compact right pane is a summary. Full management
+lives in Control Center: one card per tool, single-tool switches, bulk preview
+and undo, a first-run scan wizard, Problems, MCP, and Advanced. An optional
+expert matrix appears only on wide screens and never silently omits a tool.
 
 Consumer tools get **symlinks** into the Hermes skills tree (never copies), so
 there is exactly one copy of every skill on your machine. Disabling a skill for
@@ -15,18 +14,14 @@ a tool removes that tool's symlink; the skill source is never deleted. For
 Hermes itself, toggling edits the `skills.disabled` list in `config.yaml`.
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│ Skills                      3 skills  1 broken  Repair all│
-│ [Search skills…                                 ] Refresh │
-│ All · Hermes · Claude · Codex · OpenCode · Grok · ZCode   │
-│ ( All | Issues | Off )                                    │
-│                                                           │
-│ APPLE ────────────────────────────────────── 2 ────────── │
-│ ● apple-notes                              apple          │
-│   control Apple Notes via JXA                             │
-│   [●] Hermes [○] Claude [●] Codex [○] OpenCode …          │
-│ …                                                         │
-└──────────────────────────────────────────────────────────┘
+Compact pane (right, ~320px)          Control Center (workspace / /skills-toggle)
+┌──────────────────────────┐          ┌ Tools | Sets | Problems | MCP | Advanced ─┐
+│ Skills   105 · 5 tools   │          │ Claude     39 on / 105                    │
+│ 3 broken · 1 drift       │          │ [Manage]  [Enable all]  [Disable all]     │
+│ Claude    39 on  Manage  │          │ …                                         │
+│ Codex     62 on  Manage  │          │ Single-tool: one switch per skill         │
+│ Open Control Center      │          │ Preview → confirm → receipt → Undo        │
+└──────────────────────────┘          └───────────────────────────────────────────┘
 ```
 
 ## Package layout (unified: one folder, both SDKs)
@@ -38,8 +33,9 @@ skills-toggle/
 │   ├── manifest.json        # {"name": "skills-toggle", "api": "plugin_api.py"}
 │   └── plugin_api.py        # FastAPI routes → /api/plugins/skills-toggle/…
 ├── desktop/
-│   └── plugin.js            # the native desktop pane (+ ⌘K command, page)
-├── tests/                   # backend round-trips + HTTP tests + render harness
+│   └── plugin.js            # compact pane + Control Center + ⌘K commands
+├── tests/                   # backend, HTTP, static SDK checks, render harness
+├── docs/                    # shell design, live-host checklist, dogfood record
 ├── README.md                # this file
 ├── DECISIONS.md             # every material build decision, with reasons
 ├── LICENSE                  # MIT
@@ -57,6 +53,7 @@ Or with the Hermes CLI:
 
 ```bash
 hermes plugins install qwertyuiop97/skills-toggle
+hermes plugins enable skills-toggle
 ```
 
 Or one click in the desktop app: [Install in Hermes](hermes://plugin/install?repo=qwertyuiop97/skills-toggle) (deep links always ask before installing).
@@ -68,10 +65,9 @@ Or one click in the desktop app: [Install in Hermes](hermes://plugin/install?rep
 | Python backend (`plugin_api.py`) | add `skills-toggle` to `plugins.enabled` in `~/.hermes/config.yaml`, or run `hermes plugins enable skills-toggle`. Without it the pane renders an explicit "backend unavailable" error state; with it, routes mount at gateway start (restart the gateway once after enabling). |
 | Desktop pane (`desktop/plugin.js`) | **Settings → Plugins → Skills Toggle** → switch on (it inventories disabled). |
 
-Then in the desktop app: **⌘K → "Reload desktop plugins"**. Open the pane from
-the right-pane tabs, the **⌘K palette ("Skills: toggle…")**, or the
-`/skills-toggle` page. Everything lives inside the Hermes desktop app — there is
-no external UI.
+Then in the desktop app: **⌘K → "Reload desktop plugins"**. Open the compact
+pane from the right-pane tabs. Open Control Center from **Open Control Center**,
+the **⌘K palette ("Skills: toggle…")**, or the `/skills-toggle` page.
 
 ## Uninstall
 
@@ -80,7 +76,7 @@ hermes plugins disable skills-toggle   # if enabled
 rm -rf ~/.hermes/plugins/skills-toggle
 ```
 
-The plugin only ever creates/removes symlinks named after skills and appends to
+The plugin only ever creates/removes skill-named symlinks and appends to
 `skills.disabled` (with timestamped `config.yaml` backups). Removing the plugin
 folder removes nothing else. Tool dirs the plugin auto-created (e.g. a fresh
 `~/.codex/skills/`) are left in place — they contain only links you made.
@@ -117,71 +113,112 @@ clobber it):
 
 `~` and `${VAR:-default}` are expanded in `dir`.
 
-## What the pane shows
+## What you actually use
 
-- **Per-tool switch per skill.** Switch on → real symlink created (absolute
-  target, link name = skill name). Switch off → that symlink removed. Hermes's
-  switch edits `skills.disabled` instead (with a `config.yaml.bak.skills-toggle.<ts>` backup).
-- **State dots.** `enabled` (green), `missing` (muted), `broken-link` (amber,
-  with a one-click *fix* button), `foreign-link`/`unmanaged-dir` (red, locked —
-  the plugin refuses to touch symlinks pointing outside the skills tree or real
-  directories, and tells you why on hover).
-- **Absent tool dirs.** A tool whose skills dir doesn't exist shows its switches
-  as available; the first enable creates the directory and links in one step
-  (toast confirms `created-dir+linked`).
-- **Repair all** (header, when broken links exist) and **per-category Link
-  all / Unlink all** for the selected tool (confirm dialog first, per-skill
-  results reported).
-- **Search** (200 ms debounce), **tool filter chips**, and an
-  **All / Issues / Off** view switch. Filter + view persist via plugin storage.
-- **Toasts** confirm every mutation; failures roll the optimistic toggle back
-  and name the error. All colors come from theme variables — the pane follows
-  light/dark and every theme automatically.
+**Compact pane (right, default 320 px).** Counts, per-tool on/off totals, a
+Problems shortcut, and **Open Control Center**. It is a summary, not the
+six-switch catalog.
+
+**Control Center → Tools.** One card per detected tool with enabled / off /
+problem counts plus **Manage**, **Enable all**, and **Disable all**. Manage
+opens a single-tool list: one switch per skill, category filters, selection,
+and bulk actions. Every bulk change is preview → confirm → receipt → Undo.
+Protected entries (foreign links, real directories) are refused and named.
+
+**First-run scan.** If no tool folders exist, or from Scan & import: pick
+detected tools and optional extra folders, review classifications, dry-run,
+confirm, then apply. Hermes is the only canonical write target. Extra folders
+are scan sources, never a second store.
+
+**Sets.** Named presets (Coding / Writing / Minimal) plus import/export of a
+preset JSON. Additive except Minimal, which unlinks consumer tools and keeps
+Hermes sources.
+
+**Problems.** Broken-link repair (per item and Repair all) plus drift: Use
+Hermes, Use tool copy, or Keep both. Originals are preserved.
+
+**MCP.** Hermes catalog is source of truth. Mirror into Claude Desktop and
+Codex (`config.toml`). Foreign servers stay visible and untouched. OpenCode
+MCP writing is deferred (see `QUESTIONS_FOR_HERMES.md` Q6).
+
+**Advanced.** Setup (create missing tool dirs, custom tools), watch mode,
+machine blueprint, backup browser, auto-link regexes. Not on the daily Tools
+surface.
+
+**Expert matrix.** Optional, wide containers only (`layout === 'wide'`).
+Columns are Hermes plus every present tool; no tool is silently omitted.
+Categories start collapsed; descriptions stay hidden until asked.
+
+Arrivals of new Hermes skills surface on **Tools**, not buried under Advanced.
 
 ## API (mounted at `/api/plugins/skills-toggle/`)
+
+Stable routes are additive. Existing `/import/scan`, `/import/apply`,
+`/bulk/plan`, `/bulk/apply`, `/import/plan`, and `/import/apply-plan` stay.
 
 | Route | Body/Query | Effect |
 |-------|------------|--------|
 | `GET /health` | — | liveness + resolved paths |
-| `GET /state` | — | every skill + per-tool state (lean: descriptions truncated; cached with mtime invalidation) |
+| `GET /state` | — | every skill + per-tool state (lean; cached with mtime invalidation) |
 | `GET /detail` | `?skill=category/name` | full SKILL.md text + states |
 | `GET /diff` | — | unlinked skills, broken/foreign/unmanaged links |
 | `POST /toggle` | `{skill, tool, enabled}` | add/remove one symlink or edit `skills.disabled` |
 | `POST /toggle-bulk` | `{skills: […], tool, enabled}` | bulk toggle with per-skill results |
+| `POST /bulk/plan` | `{tool, skill_ids, enabled}` | dry-run preview (changed / already / refused) |
+| `POST /bulk/apply` | exact planned entries | apply only the reviewed plan; receipt + undo token |
 | `POST /repair` | `{skill, tool}` | re-point a broken link |
 | `POST /repair-all` | — | repair every broken link that points into the skills tree |
 | `POST /ensure-tool-dir` | `{tool}` | create a missing tool skills dir |
+| `GET /import/scan` | — | classify tool dirs (managed / broken / foreign / adoptable / drift) |
+| `POST /import/apply` | selected copies | adopt copies into Hermes (legacy apply) |
+| `POST /import/plan` | `{tools?, extra_roots?}` | first-run / scan-wizard dry-run |
+| `POST /import/apply-plan` | exact planned entries | apply only the reviewed plan |
+| `GET /drift` | — | same-name skills whose SKILL.md hashes differ |
+| `POST /config/tools` | tool map | write `<hermes_home>/skills-toggle.json` |
+| `GET /mcp/state` | — | Hermes catalog + Claude/Codex mirror state |
+| `POST /mcp/toggle` | `{name, enabled}` | Hermes `enabled:` flag |
+| `POST /mcp/sync` `/mcp/remove` | `{name}` | Claude Desktop mirror |
+| `POST /mcp/codex/sync` `/mcp/codex/remove` | `{name}` | Codex `config.toml` mirror |
+| `GET /blueprint/export` | — | entire link map as JSON |
+| `POST /blueprint/apply` | blueprint | additive-only apply (creates missing links / Hermes-offs) |
+| `GET /backups` | — | backups the plugin created |
+| `POST /backups/restore` | `{path}` | restore one backup (backs up current first) |
+| `POST /conflict/*` `/drift/push` | — | Use Hermes / Use tool copy / Keep both + revert |
 
 Every route returns `{ok: true, …}` or `{ok: false, error, code}`. Skill ids are
-validated against an allowlist built from the real skills tree (path traversal,
-unknown ids, non-boolean `enabled` → rejected). All mutations are logged to
-`data/mutations.log` (JSONL) inside the plugin folder.
+validated against an allowlist built from the real skills tree. All mutations
+are logged to `data/mutations.log` (JSONL) inside the plugin folder. Secret
+values are redacted recursively before they reach UI state, receipts, or logs.
 
-## Tests — receipts
+## Tests
+
+From the repo root:
 
 ```
-python3 -m unittest discover -s tests -v         # complete Python discovery suite
-./.venv/bin/python -m unittest tests.test_routes_http -v # real FastAPI HTTP round-trips
-python3 tests/check_frontend.py                  # SDK-constraint static checks
-./tests/run_render_harness.sh                    # real React renderToString checks of the pane
+python3 -m unittest tests.test_core_api tests.test_mcp_backend tests.test_plugin_api tests.test_v2_backend tests.test_bulk_planning tests.test_scan_wizard
+.venv/bin/python3 -m unittest tests.test_routes_http
+python3 tests/check_frontend.py
+./tests/run_render_harness.sh
 ```
 
-Local baseline verified 2026-09-08: 121 Python tests discovered (110 passed and 11 HTTP
-tests skipped when FastAPI/httpx are absent from system Python); the same 11 HTTP
-tests pass in `.venv`; the render harness passes 49 checks. Treat these as a
-dated baseline, not a hardcoded expectation—new behavior should add coverage.
+Local baseline verified 2026-09-08 after item 12: 127 core backend tests on
+system Python, 13 HTTP tests in `.venv`, static SDK checks, and both render
+harness bodies (compact pane + Control Center) with zero React-key /
+`console.error` / `console.warn` output. Treat the counts as a dated baseline,
+not a hardcoded ceiling — new behavior should add coverage.
 
-Covered: link/unlink/repair/diff round-trips per tool · absent-dir creation ·
-broken-link repair (including links to moved/deleted skills, by name) ·
-foreign-link and unmanaged-dir refusal (never delete real data) · path-traversal
-and unknown-id rejection (unicode names, names with spaces, `..`, absolute
-paths) · hermes config editing across YAML shapes (block list, inline list,
-scalar, null, missing keys, comments preserved, CRLF preserved, timestamped
-backup) · cache invalidation · concurrent toggles · mutation logging · every
-HTTP route · ESM parse / zero JSX / only-allowed imports / all rendered
-identifiers imported / no hardcoded colors / no web-storage persistence ·
-pane renders loading skeleton, error banner, empty states, filters, bulk
-actions, unicode, badges.
+CI (`.github/workflows/tests.yml`): Ubuntu / macOS / Windows on Python 3.12 for
+backend + HTTP; a dedicated Ubuntu Python 3.9 job running all six core suites;
+Ubuntu Node 20 for the frontend static checks and render harness.
+
+Covered: link/unlink/repair/diff per tool · absent-dir creation · broken-link
+repair · foreign-link and unmanaged-dir refusal · path-traversal / unknown-id
+rejection · Hermes config editing across YAML shapes with timestamped backup ·
+bulk plan → apply → receipt → undo · scan-wizard plan → apply-plan · cache
+invalidation · concurrent toggles · mutation logging · HTTP routes · ESM parse /
+zero JSX / allowed imports / no hardcoded colors / no web-storage persistence ·
+compact pane, tool cards, single-tool view, first-run wizard, wide-only matrix,
+Problems repair UI, arrivals on Tools, reduced-motion CSS.
 
 ### Test matrix — verified per tool against /tmp fixtures
 
@@ -194,24 +231,25 @@ actions, unicode, badges.
 | Grok | ✅ | ✅ | ✅ | ✅ (create-dir-and-link) |
 | ZCode | ✅ | ✅ | ✅ | ✅ (create-dir-and-link) |
 
-Rows are verified through the core and HTTP suites; each link/unlink round-trip
-runs for every tool id, and
-`ensure-tool-dir` covers the absent-dir column for every link tool. Grok's
-real-dir / foreign-link refusal paths get dedicated tests. The desktop half's
-staging render harness verifies the pane against a fixture shaped like the Air
-(unicode categories, spaced names, all link states).
+Backend tests use temp fixtures under `/tmp`, never the real `~/.hermes` tree.
+The desktop half's staging render harness verifies the pane against a
+screenshot-shaped 105-skill fixture.
 
 ## Fresh-machine checklist
 
 1. `git clone https://github.com/qwertyuiop97/skills-toggle.git && cp -r skills-toggle ~/.hermes/plugins/`
-2. Gate 1: `hermes plugins enable skills-toggle` (adds to `plugins.enabled`); restart the gateway (backend routes mount at startup).
+2. Gate 1: `hermes plugins enable skills-toggle`; restart the gateway (backend routes mount at startup).
 3. Gate 2: Hermes desktop → **Settings → Plugins** → enable **Skills Toggle**.
 4. **⌘K → "Reload desktop plugins"**.
-5. Open the pane (right-pane tab or ⌘K "Skills: toggle…") — it should render your skills with a skeleton first, never a blank pane, and no error toast.
-6. Toggle a skill on for Claude → toast "Linked for Claude" → check `ls -la ~/.claude/skills/` shows the symlink.
-7. Toggle it off → toast "Unlinked for Claude" → symlink gone, `~/.hermes/skills/…` source still present.
-8. Toggle Hermes off for a skill → `grep -A3 '^skills:' ~/.hermes/config.yaml` shows it under `disabled:` (a `config.yaml.bak.skills-toggle.*` backup appears next to it).
-9. Restart the desktop app → pane, filters, and link states persist (links are real symlinks; filters live in plugin storage).
+5. Compact pane should render counts (never a blank pane). **Open Control Center**.
+6. If this is a first install, complete the scan wizard (detected tools are pre-selected; extra folders are optional).
+7. On Tools, **Manage** one disposable tool → preview Disable all → confirm → Undo.
+8. Restart the desktop app → pane, filters, and link states persist (links are real symlinks; filters live in plugin storage).
+
+For the cases the render harness cannot prove (live ResizeObserver, palette atom
+switching, gateway route mount, restart persistence), use
+[`docs/live-host-acceptance.md`](docs/live-host-acceptance.md). Recorded
+isolated-profile smoke: [`docs/dogfood-record.md`](docs/dogfood-record.md).
 
 ## Using the core from another app
 
@@ -223,7 +261,6 @@ guarded (without it, `router is None` and everything else works). Enforced by
 
 ```python
 import importlib.util
-from pathlib import Path
 
 spec = importlib.util.spec_from_file_location(
     "skills_toggle_core",
@@ -250,37 +287,22 @@ Stable surface: `SkillsToggleCore` (`.state .detail .diff .toggle .toggle_bulk
 `PLUGIN_ID`, `PLUGIN_VERSION`. The FastAPI `router` (when fastapi is present)
 mounts the same operations at `/api/plugins/skills-toggle/…`.
 
-## v3 — what's new
+## MCP switchboard
 
-- **Conflict resolution completed** — the Drift view now offers three actions per same-name conflict: **Use Hermes** (backup tool copy, link canonical), **Use tool copy** (Hermes source backed up dotted inside its category, tool copy becomes canonical, tool links to it), and **Keep both** (tool copy adopted as `imported/<name>.from-<tool>`). Every path preserves both originals; failures roll back.
-- **Undo symmetry** — the 30-second undo banner now also covers adoption, drift-push, pull, and keep-both via real backend reverts (`/conflict/revert-*`), not just "find the backup yourself".
-- **Machine blueprint** — export the entire link map (every skill→tool link + the `skills.disabled` set) as one JSON file and apply it on another machine. Additive-only by owner decision: it creates missing links and Hermes-offs, never removes. Dry-run preview (counts + refusals) before apply; idempotent (re-applying a satisfied blueprint plans nothing).
-- **Backup browser + restore** — the Setup panel lists every backup the plugin ever created (config, tools-json, tool-link, hermes-copy) with one-click **Restore**; restore always backs up the current state first and only accepts paths from its own live scan.
-- **Watch mode** — opt-in native notifications (only when the app is unfocused) for new skills, broken links, and drift, with per-class toggles.
-- **Per-category auto-link** — auto-link preferences take an optional category regex (e.g. `creative|note-taking`), not just all-or-nothing.
-- **MCP: Codex writer** — the MCP tab now also mirrors the catalog into `~/.codex/config.toml` (`[mcp_servers.<name>]` tables, comment-preserving block surgery, drift/foreign guards). OpenCode is pending one schema artifact (see QUESTIONS_FOR_HERMES.md Q6).
-- **Optional agent targets** — Cursor, Windsurf, Copilot, Gemini, and Kimi skills dirs are offered as opt-in tools in Setup (they appear in the rows/filters only once their dir exists).
-- **Windows** — backend CI runs on windows-latest; path identity survives `\?\` extended paths, 8.3 short names, and case differences via the `same_path`/`is_inside` canonicalizers (exported for sibling apps).
+The **MCP** section applies the same source-of-truth model to MCP servers:
+the `mcp_servers` map in Hermes' `config.yaml` is the catalog, mirrored into
+**Claude Desktop** (`claude_desktop_config.json`) and **Codex** (`~/.codex/config.toml`).
 
-## MCP switchboard (v2.2)
-
-The pane's **MCP** tab applies the same source-of-truth model to MCP servers:
-the `mcp_servers` map in Hermes' `config.yaml` is the catalog, and the tab
-mirrors entries into **Claude Desktop** (`claude_desktop_config.json`, resolved
-macOS → Linux → Windows `%APPDATA%`).
-
-- **Hermes switch** — flips the entry's `enabled:` flag (surgical edit, timestamped backup, re-parse self-check). This is Hermes' own on/off.
-- **Claude switch** — ON syncs the catalog entry (universal keys only: `command`, `args`, `env`, `url`, `headers`; hermes-only keys like `enabled` are stripped); OFF removes the entry. Configs that drifted from the catalog require an explicit confirm (the old copy is kept in a timestamped backup either way).
-- **Foreign servers** (present in Claude Desktop but not in the Hermes catalog) are listed and **never touched**.
-- Claude Desktop reloads its config on window focus/restart — flip, then focus Claude.
-
-## MCP core API (sibling-safe)
+- **Hermes switch** — flips the entry's `enabled:` flag (surgical edit, timestamped backup).
+- **Claude / Codex switches** — ON syncs universal keys only (`command`, `args`, `env`, `url`, `headers`); OFF removes the entry. Drifted copies require explicit confirm.
+- **Foreign servers** (present in the target but not in the Hermes catalog) are listed and **never touched**.
+- OpenCode MCP writing is deferred until a real populated `opencode.jsonc` sample exists (Q6).
 
 `McpCore` joins the stable surface: `new McpCore(home, claude_desktop_config?, log_path?)` with
 `.catalog() .mcp_state() .toggle_hermes(name, enabled) .sync_to_claude(name)
-.remove_from_claude(name, force?)`, plus the standalone helpers
-`parse_mcp_servers(text)` and `set_mcp_server_enabled(text, name, enabled)`.
-Same rules as the skills core: stdlib-only, explicit paths, `{ok}` envelopes.
+.remove_from_claude(name, force?)`, plus `parse_mcp_servers` /
+`set_mcp_server_enabled`. Same rules as the skills core: stdlib-only, explicit
+paths, `{ok}` envelopes.
 
 ## Troubleshooting
 
@@ -313,14 +335,19 @@ Then hit **Retry** in the pane (the pane detects this exact failure and shows th
 
 MIT — see [LICENSE](LICENSE).
 
-## v2 — what's new
+## What's new in the stabilization (items 6–12)
 
-- **Responsive pane** — the pane measures its own width (ResizeObserver): 2-column tool grid and scrollable filters under 360 px, 3-column above. Usable at the default 320 px dock width.
-- **Onboarding / Setup panel** — when no tool skills folders exist, the pane offers one-click folder creation, custom-tool addition (written to `skills-toggle.json` with backups), per-tool **auto-link** opt-in, and a "Find copies to adopt" scanner.
-- **New-skill prompt** — skills added under the Hermes tree since your last visit trigger one banner: pick tools, link, or ignore. Silent on first run (nothing is ever enabled unprompted). The ⚡ chip on any tool opts that tool into auto-linking future arrivals.
-- **Health chip + ⌘K report** — statusbar badge shows broken/unlinked counts; two palette commands ("Skills: toggle…", "Skills: health report").
-- **Bulk everywhere** — per-skill "all / none" (link into every tool at once), per-category bulk for the selected tool, built-in presets (Coding / Writing / Minimal), preset import (paste JSON) and copy-current-as-JSON export.
-- **Undo** — every bulk/preset/arrival action shows an in-pane Undo banner for 30 s that restores the previous states through the same safety-checked toggles.
-- **Adoption & drift** — `GET /import/scan` classifies every tool dir (managed / broken / foreign / adoptable copies / drifted hashes); `POST /import/apply` adopts a copy (into `imported/`, original preserved as a timestamped backup, symlink swapped in, same-name conflicts refused); `GET /drift` lists same-name skills whose SKILL.md hashes differ from the Hermes source.
+- Compact pane is a summary; Control Center is the management UI.
+- Tool-first overview with Manage / Enable all / Disable all.
+- Single-tool management with dry-run bulk plan, protected-entry report, receipt, and undo.
+- First-run scan wizard: detected tools, extra scan folders, classify, dry-run, apply.
+- Information architecture: Tools, Sets, Problems, MCP, Advanced. Expert matrix is wide-only.
+- 105-skill fixture stays responsive; reduced-motion CSS; keyboard names on switches;
+  Python 3.9 core gate; macOS/Linux/Windows CI; zero React-key warnings in the harness.
+- Installed-Hermes smoke on an isolated profile: plugin enables, `serve` mounts
+  `/api/plugins/skills-toggle/*` (401-not-404 after auth wrap).
 
-Preset file format (v1): `{"version": 1, "name": "…", "skills": ["category/name", …], "tools": ["claude", …]}` — applying is additive; unknown ids are skipped and reported.
+Do not tag a release until every gate in `IMPLEMENTATION_PLAN.md` §11 passes,
+including owner live-host dogfood of ResizeObserver, palette atom switching,
+and restart persistence. This README describes the shipped UI; it is not a
+release announcement.

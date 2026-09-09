@@ -22,13 +22,16 @@ item below is a case the static harness is known NOT to prove.
 
 ## Setup / install
 
-- [ ] Install from a clean plugin copy into a disposable `HERMES_HOME`:
+- [x] Install from a clean plugin copy into a disposable `HERMES_HOME`:
   `~/.hermes/plugins/skills-toggle/{plugin.yaml, dashboard/{manifest.json, plugin_api.py}, desktop/plugin.js}`.
+  (2026-09-08 isolated profile `skt-livetest`; local copy — private-repo CLI
+  install is not non-interactive. See `docs/dogfood-record.md`.)
 - [ ] Both halves enabled: agent half in `plugins.enabled`, desktop half in
   Settings → Plugins (ships `defaultEnabled: false`).
-- [ ] **Gateway restart** performed after first install (plugin API routes are
-  mounted at gateway startup only — see D19). Pane must no longer show the
-  headless-404 / "run `hermes gateway restart`" state.
+  Agent half: [x] `skt-livetest plugins enable skills-toggle`. Desktop half: still needs the owner's window.
+- [x] **Gateway restart** performed after first install (plugin API routes are
+  mounted at gateway startup only — see D19). Headless `serve` on loopback
+  returned 401 (not 404) on `/api/plugins/skills-toggle/state` and `/health`.
 - [ ] Desktop "Reload desktop plugins" (⌘K) applied so the desktop half is live.
 
 ## Entry points
@@ -56,7 +59,8 @@ item below is a case the static harness is known NOT to prove.
 ## Data flow / live truth
 
 - [ ] `/state`, `/diff`, `/drift`, `/mcp` REST round-trips succeed from the real
-  gateway (not the stub).
+  gateway (not the stub). Route *mount* proved on isolated `serve` (401-not-404);
+  authenticated round-trips still need a desktop session or a documented token.
 - [ ] A mutation performed in the pane reflects on a second surface or after
   refresh (React Query invalidation + server cache generation bump, D16).
 - [ ] Optimistic toggle rollback: force a mutation to fail and confirm the switch
