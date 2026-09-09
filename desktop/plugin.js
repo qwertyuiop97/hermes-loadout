@@ -197,6 +197,34 @@ function useDebounced(value, delay) {
   return debounced
 }
 
+function usePrefersReducedMotion() {
+  const [reduced, setReduced] = useState(false)
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return undefined
+    const query = window.matchMedia('(prefers-reduced-motion: reduce)')
+    const update = () => setReduced(query.matches)
+    update()
+    if (typeof query.addEventListener === 'function') {
+      query.addEventListener('change', update)
+      return () => query.removeEventListener('change', update)
+    }
+    if (typeof query.addListener === 'function') {
+      query.addListener(update)
+      return () => query.removeListener(update)
+    }
+    return undefined
+  }, [])
+  return reduced
+}
+
+function ReducedMotionGuard({ active }) {
+  if (!active) return null
+  return jsx('style', {
+    'data-reduced-motion-guard': 'true',
+    children: '[data-skills-toggle-root="true"] *,[data-skills-toggle-root="true"] *::before,[data-skills-toggle-root="true"] *::after{animation:none!important;transition:none!important}'
+  })
+}
+
 // Container-measured layout: viewport media queries are wrong for dockable
 // panes (a 320px pane on a 1600px screen still matches `sm:`). D24:
 // narrow <360 — 2-col tool grid, no descriptions, scrollable filter chips;
@@ -765,6 +793,7 @@ function CompactSummaryPane() {
   const t = usePluginI18n(ID)
   const rootRef = useRef(null)
   const layout = usePaneLayout(rootRef)
+  const reducedMotion = usePrefersReducedMotion()
   const stateQuery = useQuery({
     queryKey: STATE_KEY,
     queryFn: () => (pluginCtx ? pluginCtx.rest('/state') : Promise.reject(new Error('no backend'))),
@@ -910,8 +939,11 @@ function CompactSummaryPane() {
 
   return jsxs('div', {
     ref: rootRef,
+    'data-skills-toggle-root': 'true',
+    'data-reduced-motion': reducedMotion ? 'true' : 'false',
     className: 'flex h-full min-w-0 flex-col text-sm',
     children: [
+      jsx(ReducedMotionGuard, { active: reducedMotion }),
       jsx(BackgroundHost, {}),
       jsxs('div', {
         className: 'flex items-center gap-2 px-3 pb-1 pt-3',
@@ -2968,7 +3000,7 @@ function ExpertMatrix({ skills, tools, busy, onToggle }) {
                     className: 'flex items-center gap-2 font-medium',
                     children: [`${isCollapsed ? '▸' : '▾'} ${group.category}`, jsx(Badge, { variant: 'outline', size: 'xs', children: String(group.skills.length) }, 'count')]
                   })
-                }) }),
+                }) }, `${group.category}-heading`),
                 isCollapsed ? null : group.skills.map(skill => jsxs('tr', {
                   'data-matrix-skill': skill.id,
                   className: 'hover:bg-(--chrome-action-hover)',
@@ -3694,6 +3726,7 @@ function ControlCenter() {
   const t = usePluginI18n(ID)
   const rootRef = useRef(null)
   const layout = usePaneLayout(rootRef)
+  const reducedMotion = usePrefersReducedMotion()
   const active = useValue(ccSectionAtom)
   const sections = [
     { id: 'tools', label: t('ccTools') },
@@ -3714,8 +3747,11 @@ function ControlCenter() {
   return jsxs('div', {
     ref: rootRef,
     'data-layout': layout,
+    'data-skills-toggle-root': 'true',
+    'data-reduced-motion': reducedMotion ? 'true' : 'false',
     className: 'flex h-full min-w-0 flex-col text-sm',
     children: [
+      jsx(ReducedMotionGuard, { active: reducedMotion }),
       jsx(BackgroundHost, {}),
       jsxs('div', {
         className: 'flex items-center gap-2 border-b border-(--ui-stroke-secondary) px-3 py-2',

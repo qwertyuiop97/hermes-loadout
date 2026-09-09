@@ -3,6 +3,20 @@ import { renderToString } from 'react-dom/server'
 import TestRenderer, { act } from 'react-test-renderer'
 import { readFileSync } from 'fs'
 
+const originalConsoleError = console.error
+const originalConsoleWarn = console.warn
+const consoleErrors = []
+const consoleWarnings = []
+const formatConsole = args => args.map(value => value instanceof Error ? value.stack || value.message : String(value)).join(' ')
+console.error = (...args) => {
+  consoleErrors.push(formatConsole(args))
+  originalConsoleError(...args)
+}
+console.warn = (...args) => {
+  consoleWarnings.push(formatConsole(args))
+  originalConsoleWarn(...args)
+}
+
 const STAGING = process.env.STAGING_PLUGIN
 const failures = []
 const ok = (condition, message) => {
@@ -162,12 +176,21 @@ ok(html.includes('Add Tool'), 'Tools overview keeps absent optional targets reac
 ok(html.includes('data-onboarding-entry="true"') && html.includes('Start setup'), 'incomplete onboarding exposes a dedicated Tools entry point')
 
 const previousResizeObserver = globalThis.ResizeObserver
+const previousWindow = globalThis.window
 class FakeRO {
   constructor(cb) { this.cb = cb }
   observe(_element) { this.cb([{ contentRect: { width: 900 } }]) }
   disconnect() {}
 }
 globalThis.ResizeObserver = FakeRO
+globalThis.window = {
+  matchMedia: query => ({
+    media: query,
+    matches: query === '(prefers-reduced-motion: reduce)',
+    addEventListener: () => {},
+    removeEventListener: () => {}
+  })
+}
 let matrix
 await act(async () => {
   matrix = TestRenderer.create(workspace.render(), { createNodeMock: () => ({}) })
@@ -175,13 +198,19 @@ await act(async () => {
 })
 ok(matrix.root.findByProps({ 'data-layout': 'wide' }), 'ResizeObserver fixture drives the Control Center to wide layout')
 const matrixToggle = matrix.root.findAllByType('button').find(node => node.children.join('') === 'Matrix')
-ok(!!matrixToggle, 'wide Tools exposes the optional Matrix toggle')
+ok(!!matrixToggle && matrixToggle.type === 'button' && matrixToggle.children.join('') === 'Matrix', 'wide Tools exposes a keyboard-reachable button named Matrix')
+const reducedMotionCss = matrix.root.findByProps({ 'data-reduced-motion-guard': 'true' }).children.join('')
+ok(matrix.root.findByProps({ 'data-reduced-motion': 'true' }) && reducedMotionCss.includes('transition:none') && reducedMotionCss.includes('animation:none'), 'reduced-motion preference disables plugin transitions and animations')
 await act(async () => { matrixToggle.props.onClick() })
 ok(matrix.root.findByProps({ 'data-expert-matrix': 'true' }), 'Matrix toggle renders ExpertMatrix as a Tools sub-state')
 const matrixHeaders = matrix.root.findAll(node => node.props['data-matrix-tool'])
 ok(matrixHeaders.length === presentTools.length && presentTools.every(tool => matrixHeaders.some(node => node.props['data-matrix-tool'] === tool.id)), 'matrix has a column for every present tool including Hermes')
 ok(!matrixHeaders.some(node => node.props['data-matrix-tool'] === 'kimi'), 'absent optional Kimi is not a matrix column')
 ok(matrix.root.findAll(node => node.props['data-matrix-skill']).length === 0, '105-skill matrix categories start collapsed')
+const collapsedMatrixSwitches = matrix.root.findAll(node => node.props.role === 'switch')
+ok(collapsedMatrixSwitches.length < state.skills.length, 'collapsed 105-skill matrix keeps the rendered switch count far below the full catalog')
+const collapsedMatrixCategories = matrix.root.findAll(node => node.type === 'button' && node.props['aria-expanded'] === false)
+ok(collapsedMatrixCategories.length === 8 && collapsedMatrixCategories.every(node => node.children.join('').trim().length > 0), 'matrix category buttons expose aria-expanded and a visible name')
 const matrixSearch = matrix.root.findByProps({ placeholder: 'Search skills…' })
 await act(async () => {
   matrixSearch.props.onChange('test-driven-development')
@@ -202,10 +231,13 @@ ok(matrixSwitches.length === state.skills.length * presentTools.length && matrix
   const switches = row.findAll(node => node.props.role === 'switch')
   return switches.length === presentTools.length && switches.every((node, index) => node.props['aria-label'].includes(skill.name) && node.props['aria-label'].includes(presentTools[index].label))
 }), 'every matrix cell switch has a skill-and-tool accessible label')
+ok(matrixSwitches.every(node => node.type === 'button' && typeof node.props['aria-label'] === 'string' && node.props['aria-label'].length > 0), 'matrix switches are focusable buttons with accessible names')
 ok(!JSON.stringify(matrix.toJSON()).includes(state.skills[0].description), 'matrix descriptions are hidden by default')
 matrix.unmount()
 if (previousResizeObserver === undefined) delete globalThis.ResizeObserver
 else globalThis.ResizeObserver = previousResizeObserver
+if (previousWindow === undefined) delete globalThis.window
+else globalThis.window = previousWindow
 
 let interactive
 await act(async () => { interactive = TestRenderer.create(workspace.render()) })
@@ -216,6 +248,9 @@ let singleRows = interactive.root.findAll(node => node.props['data-single-tool-s
 let singleSwitches = interactive.root.findAll(node => node.props.role === 'switch')
 ok(interactive.root.findByProps({ 'data-single-tool': 'grok' }) && singleRows.length === state.skills.length, 'Manage opens the complete single-tool skill list')
 ok(singleSwitches.length === state.skills.length && singleSwitches.every((node, index) => node.props['aria-label'].includes(state.skills[index].name) && node.props['aria-label'].includes('Grok')), 'single-tool rows render one accessible skill-and-tool switch each')
+ok(singleSwitches.every(node => node.type === 'button' && typeof node.props['aria-label'] === 'string' && node.props['aria-label'].length > 0), 'single-tool switches are focusable buttons with accessible names')
+const singleCategoryButtons = interactive.root.findAll(node => node.type === 'button' && typeof node.props['aria-expanded'] === 'boolean')
+ok(singleCategoryButtons.length === 8 && singleCategoryButtons.every(node => node.children.join('').trim().length > 0), 'single-tool category buttons expose aria-expanded and a visible name')
 
 const search = interactive.root.findByProps({ placeholder: 'Search skills…' })
 await act(async () => {
@@ -377,6 +412,13 @@ sdk.host.openWorkspace = realOpenWorkspace
 
 ok((readFileSync(process.env.PLUGIN_SRC, 'utf8').match(/jsx\(BackgroundHost/g) || []).length === 2, 'both roots mount BackgroundHost')
 ok((readFileSync(process.env.PLUGIN_SRC, 'utf8').match(/function useBackgroundSync/g) || []).length === 1, 'background effects have one shared hook')
+
+const reactKeyWarnings = consoleErrors.concat(consoleWarnings).filter(message => /unique key|same key|key prop/i.test(message))
+ok(reactKeyWarnings.length === 0, `workspace paths emit zero React key warnings${reactKeyWarnings.length ? `: ${reactKeyWarnings.join(' | ')}` : ''}`)
+ok(consoleErrors.length === 0, `workspace paths emit zero console.error messages${consoleErrors.length ? `: ${consoleErrors.join(' | ')}` : ''}`)
+ok(consoleWarnings.length === 0, `workspace paths emit zero console.warn messages${consoleWarnings.length ? `: ${consoleWarnings.join(' | ')}` : ''}`)
+console.error = originalConsoleError
+console.warn = originalConsoleWarn
 
 console.log()
 if (failures.length) {
