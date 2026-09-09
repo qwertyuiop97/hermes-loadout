@@ -263,6 +263,30 @@ channel.state = { ok: true, skills_root_exists: false, counts: { skills: 0, unli
 html = render()
 ok(html.includes('No skills root found'), 'missing skills-root state renders')
 
+// ---- screenshot-shaped baseline (BACKLOG item 6) ------------------------------
+// Committed fixture mirroring the observed 105-skill, six-tool split-window
+// screenshot. Locks in CURRENT behavior as baseline evidence for the item 7
+// responsive refactor. 8 categories, 105 skills, 6 present tools => 630 switches.
+const fsMod = await import('fs')
+const fixturePath = new URL('./fixtures/screenshot-shaped-105-skills.json', import.meta.url).pathname
+const largeState = JSON.parse(fsMod.readFileSync(fixturePath, 'utf8'))
+channel.mode = 'ready'
+channel.state = largeState
+storage.delete('viewFilter')
+storage.delete('toolFilter')
+html = render()
+ok(largeState.skills.length === 105 && largeState.tools.length === 6, 'fixture: 105 skills, 6 tools')
+const largeSwitches = (html.match(/role="switch"/g) || []).length
+ok(largeSwitches === 630, `screenshot-shaped baseline renders 630 switches (105x6, got ${largeSwitches})`)
+ok((html.match(/grid-cols-3/g) || []).length > 0, 'six-tool rows use a 3-column grid at split width (D24 medium)')
+const catHeaders = ['software-development', 'autonomous-ai-agents', 'productivity', 'creative', 'research', 'devops', 'apple', 'media']
+ok(catHeaders.every(c => html.includes(`>${c}<`)), 'all 8 category headers render (sticky, uppercase)')
+ok(html.includes('Search skills') && html.includes('Set up your tools'), 'search + setup panel still lead the first viewport at split width (baseline defect evidence)')
+ok(html.includes('truncate') && html.includes('title="A comprehensive workflow skill'), 'long descriptions render as truncated divs with full-text title tooltips (CSS-clipped at split width)')
+// every skill name is present (search scope must cover all data)
+const missingSkills = largeState.skills.filter(s => !html.includes(s.name)).map(s => s.name)
+ok(missingSkills.length === 0, `all 105 skill names render (missing: ${missingSkills.length})`)
+
 console.log()
 if (failures.length) {
   console.log(`RENDER HARNESS FAILED — ${failures.length} problem(s)`)
