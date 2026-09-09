@@ -10,7 +10,7 @@ The authoritative implementation specification is `IMPLEMENTATION_PLAN.md`.
 Complete these items in order. Do not start new targets or configuration writers
 until items 6-12 pass their acceptance gates.
 
-6. [ ] Baseline, product reconciliation, and live-host reproduction — preserve
+6. [x] Baseline, product reconciliation, and live-host reproduction — preserve
    the current screenshot-shaped fixture, document current Hermes tile behavior,
    inventory reusable UX/test/MCP ideas from the parked `skills-dash` repository,
    and add a live-host acceptance checklist that catches failures the
