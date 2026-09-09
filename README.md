@@ -182,8 +182,8 @@ or OAuth setup are invented. Refresh or restart clients as needed.
 ## Install and first use
 
 Use a Hermes Desktop version supporting [unified desktop plugins](https://hermes-agent.nousresearch.com/docs/developer-guide/desktop-plugin-sdk).
-Review the revision first. This branch is not automatically installed by cloning
-the default branch, and no release has been published by this work.
+Review the revision first. No Loadout release has been published yet; cloning the
+default branch installs the latest reviewed source rather than a versioned release.
 
 Clone the repository you are reading into the active profile's plugin directory,
 using its **Code → clone URL**. The package directory and plugin ID must be
