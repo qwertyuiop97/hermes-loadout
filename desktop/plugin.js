@@ -396,7 +396,8 @@ function CompactSummaryPane() {
   const enabled = countEnabledByTool(state)
   const problems = summaryProblemTotals(diffQuery.data, driftQuery.data)
   const protectedProblems = problems.foreign + problems.unmanaged
-  const problemTotal = problems.broken + problems.drifted + protectedProblems + problems.bypasses
+  const issueTotal = problems.broken + problems.drifted + problems.bypasses
+  const reviewTotal = issueTotal + protectedProblems
   const skillList = state && state.ok && Array.isArray(state.skills) ? state.skills : []
   const rowProblems = toolId => skillList.reduce((count, skill) => {
     const entry = skill.tools && skill.tools[toolId]
@@ -459,7 +460,7 @@ function CompactSummaryPane() {
             }, tool.id)
           })
         }),
-        problemTotal > 0
+        reviewTotal > 0
           ? jsx('button', {
               type: 'button',
               className: 'flex items-center gap-2 py-1 text-left text-xs text-muted-foreground',
@@ -491,13 +492,13 @@ function CompactSummaryPane() {
               onClick: () => openControlCenter('onboarding'),
               children: t('scan')
             }),
-            problemTotal > 0
+            issueTotal > 0
               ? jsx(Button, {
                   variant: 'secondary',
                   size: 'sm',
                   className: 'w-full',
                   onClick: () => openControlCenter('problems'),
-                  children: t('problemsAction', problemTotal)
+                  children: t('problemsAction', issueTotal)
                 })
               : null
           ]
@@ -1588,7 +1589,7 @@ function ToolsOverview({ layout }) {
     : null
   const tools = [hermes || { id: 'hermes', label: 'Hermes', special: 'config' }, ...linkTools]
   const problemTotals = summaryProblemTotals(diffQuery.data, driftQuery.data)
-  const overviewProblems = problemTotals.broken + problemTotals.foreign + problemTotals.unmanaged + problemTotals.bypasses
+  const overviewIssues = problemTotals.broken + problemTotals.drifted + problemTotals.bypasses
 
   useEffect(() => {
     if (layout !== 'wide') setViewMode('cards')
@@ -1677,7 +1678,7 @@ function ToolsOverview({ layout }) {
         children: [
           jsx('h2', { className: 'font-medium', children: t('ccTools') }),
           jsx(Badge, { variant: 'outline', size: 'xs', children: t('skillsCount', skills.length) }),
-          overviewProblems ? jsx(Badge, { variant: 'warn', size: 'xs', children: t('overviewProblems', overviewProblems) }) : null,
+          overviewIssues ? jsx(Badge, { variant: 'warn', size: 'xs', children: t('overviewProblems', overviewIssues) }) : null,
           layout === 'wide'
             ? jsx(Button, {
                 variant: 'secondary', size: 'xs', className: 'ml-auto',
@@ -2200,7 +2201,7 @@ export default {
         problemLabel: 'problems',
         enableAll: 'Enable all',
         disableAll: 'Disable all',
-        overviewProblems: n => `${n} problems`,
+        overviewProblems: n => `${n} issue${n === 1 ? '' : 's'}`,
         addToolAction: 'Add Tool',
         libraryTitle: 'Client library',
         libraryBack: 'Back to Applications',
