@@ -1,14 +1,12 @@
-# hermes-switchboard — agent-plugin manifest (the agent half of a unified package).
-# The desktop half lives in desktop/plugin.js (loaded by the Hermes desktop app);
-# the backend routes live in dashboard/plugin_api.py (mounted at
-# /api/plugins/hermes-switchboard/ when this plugin is in `plugins.enabled`).
+# Unified Hermes plugin: agent metadata, desktop/plugin.js, and dashboard routes.
+# Backend namespace: /api/plugins/hermes-switchboard/.
 name: hermes-switchboard
 version: 3.0.0
 description: >-
-  Hermes Switchboard — a desktop plugin that manages ~/.hermes/skills
-  symlinks across Claude, Codex, OpenCode, Grok, ZCode, and Hermes itself
-  (skills.disabled), with repair, diff, and bulk actions. Hermes stays the
-  single source of truth.
+  Hermes Switchboard manages a canonical Hermes skill library across documented
+  global and project client paths, with reviewed changes, protected entries,
+  backups, and precise bulk undo. Includes MCP projections for Claude Desktop
+  and Codex. The desktop interface is opt-in.
 author: qwertyuiop97
 license: MIT
 homepage: https://github.com/qwertyuiop97/hermes-switchboard

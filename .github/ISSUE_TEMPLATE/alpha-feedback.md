@@ -5,46 +5,56 @@ title: "[alpha] "
 labels: ["alpha-feedback"]
 ---
 
-Hermes Switchboard is in alpha. Describe what you were trying to do and what
-happened. Please redact usernames, tokens, and MCP environment values.
+Describe the action and its result. Do not attach raw configuration files or
+backups: they may contain credentials. Redact tokens, command arguments, URLs,
+headers, environment values, personal paths, and sensitive server names from
+receipts, logs, and screenshots.
 
 ## What you were trying to do
 
+- [ ] Add Tool / client detection
+- [ ] Global / Project / Custom path setup
 - [ ] First-run scan / import
 - [ ] Manage one tool (enable / disable / category / selected)
-- [ ] Bulk preview → confirm → undo
+- [ ] Bulk preview / confirm / persisted undo
 - [ ] Problems (repair or drift)
-- [ ] MCP
+- [ ] MCP (Claude Desktop or Codex)
+- [ ] Configuration migration / backend version mismatch
 - [ ] Advanced (blueprint / backups / watch / auto-link)
-- [ ] Compact pane / Switchboard / matrix
+- [ ] Compact pane / workspace / matrix
 - [ ] Something else:
 
 ## What happened
 
+Include the exact error code or refusal reason, with sensitive details removed.
+
 ## What you expected
 
-## Size / surface
-
-- [ ] Compact pane (~320 px)
-- [ ] Split / medium
-- [ ] Wide (matrix available)
+## Setup and reproduction
 
 Hermes version / OS:
+Switchboard commit or version:
+Client and version:
+Scope (Global / Project / Custom):
+Local or remote Hermes backend:
+Reproduction steps in disposable directories:
+
+- [ ] Compact pane (about 320 px)
+- [ ] Split / medium workspace
+- [ ] Wide workspace / matrix
 
 ## Safety
 
-Did the plugin overwrite, delete, or move anything you did not preview?
+Did anything get overwritten, deleted, or moved that was not in the preview?
+Did a protected foreign link or real directory change?
+Was a project or target path moved or redirected after setup?
+Did the issue occur during Apply, Undo, or after a restart/interruption?
 
-- [ ] No
-- [ ] Yes — paths (redact home-directory usernames):
+## Receipt and recovery
 
-Did a protected entry (foreign link, real directory, extra-folder original)
-get mutated?
+Receipt ID, operation status, and redacted error:
+Were a backup or recovery record created?
+Did Retry or a full Hermes restart change the result?
 
-- [ ] No
-- [ ] Yes — details:
-
-## Receipt or logs
-
-Paste a receipt ID, relevant log line, or screenshot. Remove environment values,
-tokens, and home-directory usernames first.
+Preserve backups and recovery records locally. Do not delete them to reproduce
+a failure, and do not post their full contents here.
