@@ -85,6 +85,9 @@ __all__ = [
     "PLUGIN_ID",
     "PLUGIN_VERSION",
     "DEFAULT_TOOLS",
+    "CLIENT_CATALOG",
+    "CATALOG_VERSION",
+    "CONFIG_SCHEMA_VERSION",
     "SkillsToggleError",
     "SkillsToggleCore",
     "ConfigEditError",
@@ -107,26 +110,79 @@ __all__ = [
 ]
 
 # ---------------------------------------------------------------------------
-# Tool map: defaults (overridable via <hermes_home>/hermes-switchboard.json)
+# Client catalog. Paths describe local discovery, not exclusive client access.
+# Keep this data in the self-contained backend: Hermes loads it by file path.
+# No filesystem access or network calls happen while importing the module.
 # ---------------------------------------------------------------------------
 
-DEFAULT_TOOLS: dict = {
-    "hermes": {"label": "Hermes", "special": "config"},  # skills.disabled in config.yaml
-    "claude": {"label": "Claude", "dir": "~/.claude/skills"},
-    "codex": {"label": "Codex", "dir": "~/.codex/skills"},
-    "opencode": {"label": "OpenCode", "dir": "${OPENCODE_CONFIG_DIR:-~/.config/opencode}/skills"},
-    "grok": {"label": "Grok", "dir": "~/.grok/skills"},
-    # ZCode: user skills live in ~/.agents/skills when present (verified on the
-    # reference machine), else ~/.zcode/skills. Overridable via config JSON.
-    "zcode": {"label": "ZCode", "dir": "~/.agents/skills", "fallback_dir": "~/.zcode/skills"},
-    # v3 optional targets: surfaced in the Setup panel as opt-in; they only
-    # appear in the main rows/filter once their skills dir exists or is created.
-    "cursor": {"label": "Cursor", "dir": "~/.cursor/skills", "optional": True},
-    "windsurf": {"label": "Windsurf", "dir": "~/.codeium/windsurf/skills", "optional": True},
-    "copilot": {"label": "Copilot", "dir": "~/.copilot/skills", "optional": True},
-    "gemini": {"label": "Gemini", "dir": "~/.gemini/skills", "optional": True},
-    "kimi": {"label": "Kimi", "dir": "~/.kimi/skills", "optional": True},
+CATALOG_VERSION = 1
+CONFIG_SCHEMA_VERSION = 2
+
+
+def _client(label, global_dirs=(), project_dirs=(), sources=(), *,
+            mcp_writer=False, legacy_dirs=(), default_target=True, verified=True):
+    return {
+        "label": label, "global_dirs": list(global_dirs), "project_dirs": list(project_dirs),
+        "legacy_dirs": list(legacy_dirs), "sources": list(sources), "verified": verified,
+        "verified_on": "2026-09-09" if verified else None,
+        "format": "agent-skills" if verified else "unverified",
+        "platforms": ["linux", "darwin", "win32"],
+        "may_create": verified, "default_target": default_target,
+        "capabilities": {"skills": verified, "mcp_writer": mcp_writer},
+    }
+
+
+CLIENT_CATALOG = {
+    "hermes": _client("Hermes", sources=("https://hermes-agent.nousresearch.com/docs/user-guide/features/skills/",), default_target=False),
+    "claude": _client("Claude Code", ("~/.claude/skills",), (".claude/skills",),
+        ("https://code.claude.com/docs/en/skills",)),
+    "codex": _client("Codex", ("~/.agents/skills",), (".agents/skills",),
+        ("https://learn.chatgpt.com/docs/build-skills",), mcp_writer=True, legacy_dirs=("~/.codex/skills",)),
+    "opencode": _client("OpenCode", ("${OPENCODE_CONFIG_DIR:-~/.config/opencode}/skills",), (".opencode/skills",),
+        ("https://opencode.ai/docs/skills/",)),
+    "cursor": _client("Cursor", ("~/.cursor/skills",), (".cursor/skills",),
+        ("https://cursor.com/docs/skills",)),
+    "cline": _client("Cline", ("~/.cline/skills",), (".cline/skills",),
+        ("https://docs.cline.bot/customization/skills",)),
+    "copilot": _client("GitHub Copilot", ("~/.copilot/skills",), (".github/skills",),
+        ("https://code.visualstudio.com/docs/agent-customization/agent-skills",)),
+    "gemini": _client("Gemini CLI", ("~/.gemini/skills",), (".gemini/skills",),
+        ("https://geminicli.com/docs/cli/skills/",)),
+    "windsurf": _client("Windsurf / Devin Desktop", ("~/.codeium/windsurf/skills",), (".windsurf/skills",),
+        ("https://docs.devin.ai/desktop/cascade/skills",)),
+    "kiro": _client("Kiro", ("~/.kiro/skills",), (".kiro/skills",),
+        ("https://kiro.dev/docs/skills/",)),
+    "vibe": _client("Mistral Vibe", ("~/.vibe/skills",), (".vibe/skills",),
+        ("https://docs.mistral.ai/vibe/code/cli/skills",)),
+    "agents": _client("Shared Agent Skills", ("~/.agents/skills",), (".agents/skills",),
+        ("https://learn.chatgpt.com/docs/build-skills", "https://opencode.ai/docs/skills/"), default_target=False),
+    # Retain former IDs for configuration compatibility, not an endorsement of
+    # guessed discovery paths. Explicit existing custom mappings still work.
+    "grok": _client("Grok", legacy_dirs=("~/.grok/skills",), verified=False),
+    "zcode": _client("ZCode", legacy_dirs=("~/.agents/skills", "~/.zcode/skills"), verified=False),
+    "kimi": _client("Kimi", legacy_dirs=("~/.kimi/skills",), verified=False),
+    **{cid: _client(label, verified=False, default_target=False) for cid, label in (
+        ("amp", "Amp"), ("kilo", "Kilo"), ("openclaw", "OpenClaw"),
+        ("pi", "pi"), ("roo", "Roo Code"),
+    )},
 }
+
+
+def _catalog_defaults():
+    tools = {"hermes": {"label": "Hermes", "special": "config"}}
+    for cid, client in CLIENT_CATALOG.items():
+        paths = client["global_dirs"] or client["legacy_dirs"]
+        if client["default_target"] and paths:
+            tools[cid] = {
+                "label": client["label"], "dir": paths[0], "optional": True,
+                "client_id": cid, "verified": client["verified"], "catalog_managed": True,
+                "configured": False, "scope": "global", "may_create": client["may_create"],
+            }
+    return tools
+
+
+# Stable compatibility export, derived rather than maintained separately.
+DEFAULT_TOOLS: dict = _catalog_defaults()
 
 DESCRIPTION_TRUNC = 160
 CACHE_TTL_SECONDS = 2.0
@@ -704,15 +760,19 @@ class SkillsToggleCore:
             return set()
         return parse_disabled(text)
 
-    def tool_dir(self, tool_id: str) -> Path | None:
+    def _checked_tool_dir(self, tool_id: str) -> Path | None:
         tool = self.tools.get(tool_id)
-        if not tool or "dir" not in tool:
+        if not tool or tool_id == "hermes" or "dir" not in tool:
             return None
+        if _canonical(str(self.skills_root)) != os.path.normcase(os.path.normpath(str(self.skills_root_resolved))):
+            raise SkillsToggleError("Hermes skill root changed; restart before editing", "scope-changed")
+        return _target_guard(tool, self.skills_root_resolved)
+
+    def tool_dir(self, tool_id: str) -> Path | None:
         try:
-            expanded = expand_path(tool["dir"]) if isinstance(tool["dir"], str) else tool["dir"]
-        except ValueError:
-            return None  # empty expansion — treat as unconfigured, never CWD
-        return expanded
+            return self._checked_tool_dir(tool_id)
+        except (SkillsToggleError, ValueError, OSError, RuntimeError):
+            return None  # inaccessible targets are never replaced by process CWD
 
     def _tool_states(self, skill: dict, disabled: set[str]) -> dict:
         states: dict[str, dict] = {}
@@ -725,7 +785,7 @@ class SkillsToggleCore:
             return {"state": "disabled" if skill["name"] in disabled else "enabled"}
         tool_dir = self.tool_dir(tool_id)
         if tool_dir is None:
-            return {"state": "missing"}
+            return {"state": "unavailable"}
         link = tool_dir / skill["name"]
         if link.is_symlink():
             target = os.readlink(link)
@@ -788,6 +848,7 @@ class SkillsToggleCore:
     def _validate_tool(self, tool_id: object) -> str:
         if not isinstance(tool_id, str) or tool_id not in self.tools:
             raise SkillsToggleError(f"unknown tool {tool_id!r}", "unknown-tool")
+        self._checked_tool_dir(tool_id)
         return tool_id
 
     # -- routes: read ------------------------------------------------------
@@ -804,14 +865,25 @@ class SkillsToggleCore:
             tools_meta = []
             for tool_id, tool in self.tools.items():
                 d = self.tool_dir(tool_id)
+                problem = {}
+                try:
+                    self._checked_tool_dir(tool_id)
+                except (SkillsToggleError, ValueError, OSError, RuntimeError) as exc:
+                    problem = {"error": str(exc), "code": getattr(exc, "code", "invalid-dir")}
                 tools_meta.append(
                     {
                         "id": tool_id,
                         "label": tool.get("label", tool_id),
                         "dir": str(d) if d is not None else None,
-                        "present": True if d is None else d.is_dir(),  # hermes has no dir requirement
+                        "present": tool_id == "hermes" or bool(d and d.is_dir()),
                         "special": tool.get("special"),
                         "optional": bool(tool.get("optional")),
+                        "configured": bool(tool.get("configured", not tool.get("optional", False))),
+                        "client_id": tool.get("client_id", tool_id),
+                        "scope": tool.get("scope", "canonical" if tool_id == "hermes" else "custom"),
+                        "project_root": tool.get("project_root"),
+                        "verified": bool(tool.get("verified")),
+                        **problem,
                     }
                 )
             payload_skills = []
@@ -838,6 +910,7 @@ class SkillsToggleCore:
             payload = {
                 "ok": True,
                 "plugin_version": PLUGIN_VERSION,
+                "capabilities": {"client_catalog": CATALOG_VERSION, "scoped_targets": 1},
                 "hermes_home": str(self.home),
                 "skills_root": str(self.skills_root),
                 "skills_root_exists": self.skills_root.is_dir(),
@@ -963,6 +1036,21 @@ class SkillsToggleCore:
         self._log(action="config-edit", tool="hermes", skill=skill_name, enabled=enabled, backup=backup)
         return "config-updated"
 
+    def _skill_format_issue(self, skill: dict, tool_id: str) -> str | None:
+        tool = self.tools[tool_id]
+        if not tool.get("verified") or tool.get("legacy_path"):
+            return None
+        try:
+            raw = (skill["dir"] / "SKILL.md").read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            return "Cannot read SKILL.md; repair the source before linking"
+        name, description = parse_skill_markdown(raw)
+        if name != skill["name"] or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", name) or len(name) > 64:
+            return "Agent Skills requires a lowercase, hyphenated frontmatter name matching the folder"
+        if not description.strip() or len(description) > 1024:
+            return "Agent Skills requires a frontmatter description of 1 to 1024 characters"
+        return None
+
     def _link_tool(self, skill: dict, tool_id: str, enabled: bool) -> tuple[str, dict]:
         """Enable/disable one symlink. Returns (action, new_state)."""
         tool_dir = self.tool_dir(tool_id)
@@ -1000,6 +1088,9 @@ class SkillsToggleCore:
                     f"{link} is a real directory/file, not a symlink — refusing to overwrite (never delete real dirs)",
                     "unmanaged-dir",
                 )
+            issue = self._skill_format_issue(skill, tool_id)
+            if issue:
+                raise SkillsToggleError(issue, "skill-format")
             created_dir = False
             if not tool_dir.is_dir():
                 if tool_dir.exists():
@@ -1164,6 +1255,10 @@ class SkillsToggleCore:
                 "kind": "refused", "state": state, "next": state, "code": "not-a-dir",
                 "reason": f"{tool_dir} exists but is not a directory — refusing to replace it",
             }
+        if enabled and state != "enabled":
+            issue = self._skill_format_issue(skill, tool_id)
+            if issue:
+                return {"kind": "refused", "state": state, "next": state, "code": "skill-format", "reason": issue}
         return {"kind": "satisfied" if state == desired else "change", "state": state, "next": desired}
 
     def plan_bulk(self, skill_ids: object, tool_id: object, enabled: object) -> dict:
@@ -2450,35 +2545,126 @@ class SkillsToggleCore:
     # -- v2: custom tool config ------------------------------------------------
 
     def set_tool(self, tool_id: object, label: object, dir_str: object) -> dict:
-        """Add or override a tool target dir in <hermes_home>/hermes-switchboard.json
-        (timestamped backup first). Hermes itself is config-backed and locked."""
+        """Compatibility API for an explicitly supplied custom target."""
         with self._lock:
-            if (
-                not isinstance(tool_id, str)
-                or not re.match(r"^[a-z0-9-]{1,32}$", tool_id)
-                or tool_id == "hermes"
-            ):
-                raise SkillsToggleError(f"invalid tool id {tool_id!r}", "invalid-tool-id")
-            if not isinstance(label, str) or not label.strip() or len(label) > 40:
-                raise SkillsToggleError("'label' must be a 1-40 char string", "invalid-label")
-            if not isinstance(dir_str, str) or not dir_str.strip() or "\0" in dir_str:
-                raise SkillsToggleError("'dir' must be a non-empty path string", "invalid-dir")
-            try:
-                expand_path(dir_str)
-            except ValueError:
-                raise SkillsToggleError(f"'dir' expands to an empty path: {dir_str!r}", "invalid-dir")
-            cfg_path = user_config_path(self.home)
-            source = cfg_path if cfg_path.exists() or cfg_path.is_symlink() else legacy_user_config_path(self.home)
-            data, raw = _read_json_object(source, "tools")
-            backup = self._backup(source) if source.is_file() else None
-            tools = data.setdefault("tools", {})
-            tools[tool_id] = {"label": label.strip(), "dir": dir_str.strip()}
-            cfg_path.parent.mkdir(parents=True, exist_ok=True)
-            _atomic_write(cfg_path, json.dumps(data, indent=2, ensure_ascii=False) + "\n", raw if source == cfg_path else "")
-            self._log(action="config-tools", tool=tool_id, dir=str(dir_str), backup=backup)
-            self.invalidate()
-            reset_core()  # tool map is loaded at core build time — rebuild singleton
-            return {"ok": True, "tool": tool_id, "label": label.strip(), "dir": str(expand_path(dir_str)), "backup": backup}
+            selection = {"client_id": "custom", "scope": "custom", "id": tool_id,
+                         "label": label, "dir": dir_str}
+            preview = self.preview_target(selection)
+            return self.activate_target(selection, preview["preview_id"])
+
+    def client_catalog(self) -> dict:
+        """Bounded probes of catalog paths only. Never discovers project roots."""
+        entries = []
+        for cid, spec in CLIENT_CATALOG.items():
+            item = {"id": cid, **copy.deepcopy(spec)}
+            item["scopes"] = (["global"] if spec["global_dirs"] else []) + (["project"] if spec["project_dirs"] else [])
+            item["detected"] = False
+            item["paths"] = []
+            if spec["verified"]:
+                for value in spec["global_dirs"]:
+                    path = _absolute_target_path(value)
+                    present = path.is_dir() and is_inside(path, Path.home())
+                    item["paths"].append({"scope": "global", "dir": str(path), "present": present})
+                    item["detected"] = item["detected"] or present
+            item["configured"] = any(t.get("configured") and t.get("client_id", tid) == cid for tid, t in self.tools.items())
+            entries.append(item)
+        return {"ok": True, "catalog_version": CATALOG_VERSION, "config_schema_version": CONFIG_SCHEMA_VERSION,
+                "clients": entries, "unverified": [e["id"] for e in entries if not e["verified"]]}
+
+    def preview_target(self, selection: object) -> dict:
+        """Return the exact target/config change to approve, with no writes."""
+        if not isinstance(selection, dict):
+            raise SkillsToggleError("Choose a client and scope", "invalid-body")
+        cid = selection.get("client_id")
+        scope = selection.get("scope", "global")
+        if scope not in ("global", "project", "custom"):
+            raise SkillsToggleError("Choose Global, Project, or Custom", "invalid-scope")
+        custom = cid == "custom"
+        client = CLIENT_CATALOG.get(cid) if isinstance(cid, str) else None
+        if not custom and (not client or not client["verified"] or cid == "hermes"):
+            raise SkillsToggleError("No verified automatic setup for this client; use a reviewed Custom target", "unverified-client")
+        if scope == "custom" and not custom:
+            raise SkillsToggleError("Custom paths require a Custom target", "invalid-scope")
+        root = _absolute_target_path(selection.get("project_root")) if scope == "project" else Path.home()
+        if scope == "project" and not root.is_dir():
+            raise SkillsToggleError("Select an existing project folder", "project-missing")
+        label = selection.get("label", "Custom") if custom else client["label"]
+        if not isinstance(label, str) or not label.strip() or len(label) > 40:
+            raise SkillsToggleError("Use a label of 1 to 40 characters", "invalid-label")
+        legacy = False
+        if custom:
+            path = _absolute_target_path(selection.get("dir"))
+            tid = selection.get("id")
+            if not isinstance(tid, str) or not re.fullmatch(r"[a-z0-9-]{1,32}", tid) or tid == "hermes":
+                raise SkillsToggleError("Use a unique lowercase tool ID", "invalid-tool-id")
+            if scope == "custom":
+                root = path.parent
+        else:
+            candidates = client[scope + "_dirs"]
+            if not candidates:
+                raise SkillsToggleError("This client does not have a verified path for that scope", "scope-unsupported")
+            path = root / candidates[0] if scope == "project" else _absolute_target_path(candidates[0])
+            tid = cid if scope == "global" else cid[:16] + "-p-" + hashlib.sha256((_canonical(str(root)) + candidates[0]).encode()).hexdigest()[:10]
+            existing = self.tools.get(tid, {})
+            if scope == "global" and existing.get("legacy_path"):
+                path = _absolute_target_path(existing["dir"])
+                legacy = True
+        target = {"id": tid, "label": label.strip(), "client_id": cid, "scope": scope,
+                  "dir": str(path), "root_path": str(root), "scope_root": _canonical(str(root)),
+                  "resolved_dir": _canonical(str(path)), "configured": True,
+                  "verified": not custom, "may_create": True, "optional": True}
+        if scope == "project":
+            target["project_root"] = str(root)
+        if legacy:
+            target["legacy_path"] = True
+        _target_guard(target, self.skills_root_resolved)
+        if path.exists() and not path.is_dir():
+            raise SkillsToggleError("The target is a file, not a skill folder", "not-directory")
+        for other_id, other in self.tools.items():
+            other_dir = self.tool_dir(other_id)
+            if other_id != tid and other_dir and (other.get("configured") or other_dir.is_dir()) and same_path(other_dir, path):
+                raise SkillsToggleError("This folder is already controlled by " + other.get("label", other_id), "duplicate-target")
+        existing = self.tools.get(tid)
+        if not custom and existing and existing.get("configured") and not same_path(Path(existing["dir"]), path):
+            raise SkillsToggleError("This ID already controls another folder; use a new Custom ID", "target-exists")
+        source, _data, raw = _config_document(self.home)
+        fingerprint = hashlib.sha256(json.dumps({"target": target, "source": str(source), "config": raw}, sort_keys=True).encode()).hexdigest()
+        notice = "Other clients may also read this folder. A switch controls this path, not exclusive access by one agent."
+        if legacy:
+            notice += " Existing legacy path retained; no skills are moved."
+        return {"ok": True, "preview_id": fingerprint, "target": target, "present": path.is_dir(),
+                "notice": notice, "creates_skill_directory": False, "writes_config": str(user_config_path(self.home))}
+
+    def activate_target(self, selection: object, preview_id: object) -> dict:
+        with self._lock:
+            preview = self.preview_target(selection)
+            if not isinstance(preview_id, str) or preview_id != preview["preview_id"]:
+                raise SkillsToggleError("Selection or configuration changed; preview it again", "preview-stale")
+            target = dict(preview["target"])
+            tid = target.pop("id")
+            return self._save_target(tid, target)
+
+    def _save_target(self, tid: str, target: dict) -> dict:
+        source, data, raw = _config_document(self.home)
+        _target_guard(target, self.skills_root_resolved)
+        config = user_config_path(self.home)
+        previous = data.setdefault("tools", {}).get(tid, {})
+        if not isinstance(previous, dict):
+            previous = {"dir": previous}
+        # Retain unknown extension fields, but do not carry old scope pins into
+        # an explicitly reconfigured target.
+        previous = {key: value for key, value in previous.items() if key not in
+                    ("root_path", "scope_root", "resolved_dir", "project_root", "legacy_path")}
+        data["tools"][tid] = {**previous, **target}
+        data["schema_version"] = CONFIG_SCHEMA_VERSION
+        backup = self._backup(source) if source.is_file() else None
+        _atomic_write(config, json.dumps(data, indent=2, ensure_ascii=False) + "\n", raw if source == config else "")
+        self.tools[tid] = copy.deepcopy(data["tools"][tid])
+        self.invalidate()
+        self._log(action="config-target", tool=tid, scope=target.get("scope", "custom"), backup=backup)
+        reset_core()
+        return {"ok": True, "tool": tid, "dir": target["dir"], "label": target["label"],
+                "scope": target.get("scope", "custom"), "backup": backup}
 
     def health(self) -> dict:
         return {
@@ -2506,35 +2692,107 @@ def legacy_user_config_path(home: Path) -> Path:
     return home / f"{LEGACY_PLUGIN_ID}.json"
 
 
+def _absolute_target_path(value: object) -> Path:
+    """Expand explicit paths, never infer a project or target from process CWD."""
+    if not isinstance(value, str) or not value.strip() or "\0" in value:
+        raise SkillsToggleError("Choose an absolute folder path", "invalid-dir")
+    value = _VAR_DEFAULT_RE.sub(lambda m: os.environ.get(m.group(1)) or m.group(2) or "", value.strip())
+    value = _VAR_BARE_RE.sub(lambda m: os.environ.get(m.group(1), ""), value)
+    if value == "~" or value.startswith("~/") or value.startswith("~\\"):
+        value = str(Path.home()) + value[1:]
+    path = Path(value)
+    if not path.is_absolute() or ".." in path.parts:
+        raise SkillsToggleError("Use an absolute folder path without '..' segments", "invalid-dir")
+    return path
+
+
+def _config_document(home: Path) -> tuple[Path, dict, str]:
+    path = user_config_path(home)
+    if not path.exists() and not path.is_symlink():
+        legacy = legacy_user_config_path(home)
+        if legacy.exists() or legacy.is_symlink():
+            path = legacy
+    data, raw = _read_json_object(path, "tools")
+    version = data.get("schema_version", 1)
+    if type(version) is not int or version not in (1, CONFIG_SCHEMA_VERSION):
+        raise SkillsToggleError("Unsupported configuration version; update Switchboard before editing", "config-version")
+    for tid, spec in data.get("tools", {}).items():
+        if not isinstance(tid, str) or not re.fullmatch(r"[a-z0-9-]+", tid):
+            raise SkillsToggleError("Invalid tool ID in Switchboard configuration", "config-invalid")
+        if tid == "hermes" and isinstance(spec, dict):
+            continue
+        if not isinstance(spec, (str, dict)):
+            raise SkillsToggleError("Each configured tool needs a directory path", "config-invalid")
+        if isinstance(spec, dict):
+            default = CLIENT_CATALOG.get(tid, {}).get("global_dirs")
+            if not isinstance(spec.get("dir"), str) and not ("dir" not in spec and default):
+                raise SkillsToggleError("Each configured tool needs a directory path", "config-invalid")
+            for field in ("root_path", "scope_root", "resolved_dir", "project_root"):
+                if field in spec and (not isinstance(spec[field], str) or not spec[field]):
+                    raise SkillsToggleError("Invalid scope metadata; review the target configuration", "config-invalid")
+            if spec.get("scope", "custom") not in ("global", "project", "custom"):
+                raise SkillsToggleError("Invalid target scope in configuration", "config-invalid")
+    return path, data, raw
+
+
+def _target_guard(spec: dict, skills_root: Path) -> Path:
+    """Validate a stored target and its pinned canonical scope on every use."""
+    if spec.get("catalog_managed") and not spec.get("verified") and not spec.get("configured"):
+        raise SkillsToggleError("Unverified client; review its path as a Custom target first", "unverified-client")
+    path = _absolute_target_path(str(spec["dir"]))
+    resolved = _canonical(str(path))
+    if is_inside(path, skills_root) or is_inside(skills_root, path):
+        raise SkillsToggleError("A client folder cannot overlap the Hermes skill library", "canonical-overlap")
+    if spec.get("scope_root"):
+        root_path = _absolute_target_path(spec.get("root_path"))
+        # Compare against stored strings, not same_path(), which would resolve
+        # an already-retargeted symlink on both sides and miss the change.
+        root = os.path.normcase(os.path.normpath(spec["scope_root"]))
+        if spec.get("scope") == "project" and not root_path.is_dir():
+            raise SkillsToggleError("Selected project folder is missing; choose it again", "project-missing")
+        if _canonical(str(root_path)) != root:
+            raise SkillsToggleError("Selected folder changed; review this target again in Add Tool", "scope-changed")
+        if not is_inside(path, root_path) or resolved == root:
+            raise SkillsToggleError("Target escapes its selected scope", "scope-escape")
+        expected = spec.get("resolved_dir")
+        if expected and resolved != os.path.normcase(os.path.normpath(expected)):
+            raise SkillsToggleError("Target path changed; review it again in Add Tool", "scope-changed")
+    elif spec.get("scope") in ("global", "project") and spec.get("configured"):
+        raise SkillsToggleError("Scoped target has no pinned root; review it again in Add Tool", "scope-invalid")
+    return path
+
+
 def load_tools_config(home: Path) -> dict:
-    tools = copy.deepcopy(DEFAULT_TOOLS)
-
-    # ZCode default detection: prefer an existing ~/.agents/skills
-    zcode = tools.get("zcode", {})
-    primary = expand_path(zcode.get("dir", "~/.agents/skills"))
-    if not primary.is_dir() and zcode.get("fallback_dir"):
-        zcode["dir"] = zcode["fallback_dir"]
-
-    cfg_path = user_config_path(home)
-    if not cfg_path.is_file() and legacy_user_config_path(home).is_file():
-        cfg_path = legacy_user_config_path(home)
-    if cfg_path.is_file():
-        try:
-            user_cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            user_cfg = {}
-        for tool_id, spec in (user_cfg.get("tools") or {}).items():
-            if not isinstance(tool_id, str) or not re.match(r"^[a-z0-9-]+$", tool_id):
-                continue
-            if tool_id not in tools:
-                tools[tool_id] = {"label": tool_id.title()}
-            if isinstance(spec, str):
-                tools[tool_id]["dir"] = spec
-            elif isinstance(spec, dict):
-                if "label" in spec:
-                    tools[tool_id]["label"] = str(spec["label"])
-                if "dir" in spec:
-                    tools[tool_id]["dir"] = str(spec["dir"])
+    """Load old mappings without rewriting them; new scoped mappings are additive."""
+    tools = _catalog_defaults()
+    for cid, spec in tools.items():
+        if cid == "hermes":
+            continue
+        client = CLIENT_CATALOG[cid]
+        if client["verified"]:
+            existing_legacy = next((p for p in client["legacy_dirs"] if _absolute_target_path(p).is_dir()), None)
+            spec["dir"] = str(_absolute_target_path(existing_legacy or spec["dir"]))
+            spec["legacy_path"] = bool(existing_legacy)
+            spec["root_path"] = str(Path.home())
+            spec["scope_root"] = _canonical(str(Path.home()))
+            spec["resolved_dir"] = _canonical(spec["dir"])
+    _path, data, _raw = _config_document(home)
+    for tid, value in data.get("tools", {}).items():
+        if tid == "hermes":
+            if isinstance(value, dict) and isinstance(value.get("label"), str):
+                tools[tid]["label"] = value["label"]
+            continue  # never turn the canonical library into a link target
+        spec = {"dir": value} if isinstance(value, str) else copy.deepcopy(value)
+        base = {"label": tools.get(tid, {}).get("label", tid.title()), "optional": True}
+        if "dir" not in spec and tid in tools:
+            spec["dir"] = tools[tid]["dir"]
+        base.update(spec)
+        # Old string/object mappings remain explicit custom paths. Do not move
+        # them into home or silently treat them as verified catalog entries.
+        base.update(configured=True, scope=spec.get("scope", "custom"))
+        base.setdefault("client_id", tid if tid in CLIENT_CATALOG else "custom")
+        base.setdefault("verified", False)
+        tools[tid] = base
     return tools
 
 
@@ -3110,7 +3368,14 @@ _CORE_FROZEN = False
 
 def _core_signature() -> tuple:
     home = hermes_home()
-    return (str(home), str(user_config_path(home)))
+    signature = [str(home)]
+    for path in (user_config_path(home), legacy_user_config_path(home)):
+        try:
+            info = path.stat()
+            signature.append((str(path), info.st_mtime_ns, info.st_size))
+        except OSError:
+            signature.append((str(path), None))
+    return tuple(signature)
 
 
 def get_core() -> SkillsToggleCore:
@@ -3180,38 +3445,52 @@ if APIRouter is not None:
         except SkillsToggleError as exc:
             return {"ok": False, "error": str(exc), "code": exc.code}
 
+    def _core_call(method: str, *args, **kwargs) -> dict:
+        return _call(lambda: getattr(get_core(), method)(*args, **kwargs))
+
+    @router.get("/clients")
+    async def clients() -> dict:
+        return _core_call("client_catalog")
+
+    @router.post("/targets/preview")
+    async def target_preview(body: dict) -> dict:
+        return _core_call("preview_target", body.get("selection"))
+
+    @router.post("/targets/activate")
+    async def target_activate(body: dict) -> dict:
+        return _core_call("activate_target", body.get("selection"), body.get("preview_id"))
+
     @router.get("/health")
     async def health() -> dict:
-        return get_core().health()
+        return _core_call("health")
 
     @router.get("/state")
     async def state() -> dict:
-        return get_core().state()
+        return _core_call("state")
 
     @router.get("/detail")
     async def detail(skill: str) -> dict:
-        return _call(get_core().detail, skill)
+        return _core_call("detail", skill)
 
     @router.get("/diff")
     async def diff() -> dict:
-        return get_core().diff()
+        return _core_call("diff")
 
     @router.post("/toggle")
     async def toggle(body: dict) -> dict:
-        return _call(get_core().toggle, body.get("skill"), body.get("tool"), body.get("enabled"))
+        return _core_call("toggle", body.get("skill"), body.get("tool"), body.get("enabled"))
 
     @router.post("/toggle-bulk")
     async def toggle_bulk(body: dict) -> dict:
-        return _call(get_core().toggle_bulk, body.get("skills"), body.get("tool"), body.get("enabled"))
+        return _core_call("toggle_bulk", body.get("skills"), body.get("tool"), body.get("enabled"))
 
     @router.post("/bulk/plan")
     async def bulk_plan(body: dict) -> dict:
-        return _call(get_core().plan_bulk, body.get("skills"), body.get("tool"), body.get("enabled"))
+        return _core_call("plan_bulk", body.get("skills"), body.get("tool"), body.get("enabled"))
 
     @router.post("/bulk/apply")
     async def bulk_apply(body: dict) -> dict:
-        return _call(
-            get_core().execute_bulk,
+        return _core_call("execute_bulk",
             body.get("skills"),
             body.get("tool"),
             body.get("enabled"),
@@ -3220,28 +3499,27 @@ if APIRouter is not None:
 
     @router.post("/repair")
     async def repair(body: dict) -> dict:
-        return _call(get_core().repair, body.get("skill"), body.get("tool"))
+        return _core_call("repair", body.get("skill"), body.get("tool"))
 
     @router.post("/repair-all")
     async def repair_all() -> dict:
-        return get_core().repair_all()
+        return _core_call("repair_all")
 
     @router.post("/ensure-tool-dir")
     async def ensure_tool_dir(body: dict) -> dict:
-        return _call(get_core().ensure_tool_dir, body.get("tool"))
+        return _core_call("ensure_tool_dir", body.get("tool"))
 
     @router.get("/import/scan")
     async def import_scan() -> dict:
-        return _call(get_core().import_scan)
+        return _core_call("import_scan")
 
     @router.post("/import/apply")
     async def import_apply(body: dict) -> dict:
-        return _call(get_core().import_apply, body.get("tool"), body.get("names"), body.get("category", "imported"))
+        return _core_call("import_apply", body.get("tool"), body.get("names"), body.get("category", "imported"))
 
     @router.post("/import/plan")
     async def import_plan(body: dict) -> dict:
-        return _call(
-            get_core().import_plan,
+        return _core_call("import_plan",
             body.get("tools"),
             body.get("scan_roots", []),
             body.get("category", "imported"),
@@ -3249,19 +3527,18 @@ if APIRouter is not None:
 
     @router.post("/import/apply-plan")
     async def import_apply_plan(body: dict) -> dict:
-        return _call(
-            get_core().import_apply_plan,
+        return _core_call("import_apply_plan",
             body.get("entries"),
             body.get("category", "imported"),
         )
 
     @router.get("/drift")
     async def drift() -> dict:
-        return _call(get_core().drift)
+        return _core_call("drift")
 
     @router.post("/config/tools")
     async def config_tools(body: dict) -> dict:
-        return _call(get_core().set_tool, body.get("id"), body.get("label"), body.get("dir"))
+        return _core_call("set_tool", body.get("id"), body.get("label"), body.get("dir"))
 
     @router.get("/mcp/state")
     async def mcp_state() -> dict:
@@ -3289,53 +3566,50 @@ if APIRouter is not None:
 
     @router.get("/blueprint/export")
     async def blueprint_export() -> dict:
-        return get_core().blueprint_export()
+        return _core_call("blueprint_export")
 
     @router.post("/blueprint/apply")
     async def blueprint_apply(body: dict) -> dict:
-        return _call(
-            get_core().blueprint_apply,
+        return _core_call("blueprint_apply",
             body.get("blueprint"),
             bool(body.get("dry_run", False)),
         )
 
     @router.get("/backups")
     async def list_backups() -> dict:
-        return _call(get_core().list_backups)
+        return _core_call("list_backups")
 
     @router.post("/backups/restore")
     async def restore_backup(body: dict) -> dict:
-        return _call(get_core().restore_backup, body.get("path"))
+        return _core_call("restore_backup", body.get("path"))
 
     @router.post("/conflict/revert-push")
     async def revert_push(body: dict) -> dict:
-        return _call(get_core().revert_push, body.get("tool"), body.get("name"), body.get("tool_backup"))
+        return _core_call("revert_push", body.get("tool"), body.get("name"), body.get("tool_backup"))
 
     @router.post("/conflict/revert-pull")
     async def revert_pull(body: dict) -> dict:
-        return _call(
-            get_core().revert_pull,
+        return _core_call("revert_pull",
             body.get("tool"), body.get("name"), body.get("hermes_backup"), body.get("tool_backup"),
         )
 
     @router.post("/conflict/revert-adopt")
     async def revert_adopt(body: dict) -> dict:
-        return _call(
-            get_core().revert_adopt,
+        return _core_call("revert_adopt",
             body.get("tool"), body.get("name"), body.get("tool_backup"), body.get("skill"),
         )
 
     @router.post("/conflict/pull")
     async def conflict_pull(body: dict) -> dict:
-        return _call(get_core().conflict_pull, body.get("tool"), body.get("name"))
+        return _core_call("conflict_pull", body.get("tool"), body.get("name"))
 
     @router.post("/conflict/keep-both")
     async def conflict_keep_both(body: dict) -> dict:
-        return _call(get_core().conflict_keep_both, body.get("tool"), body.get("name"))
+        return _core_call("conflict_keep_both", body.get("tool"), body.get("name"))
 
     @router.post("/drift/push")
     async def drift_push(body: dict) -> dict:
-        return _call(get_core().drift_push, body.get("tool"), body.get("name"))
+        return _core_call("drift_push", body.get("tool"), body.get("name"))
 
 
 else:  # pragma: no cover — non-gateway import (tests); keep attribute defined

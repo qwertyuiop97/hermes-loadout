@@ -43,6 +43,39 @@ class RouteRoundTrip(unittest.TestCase):
         pa.set_core_for_testing(None)
         self.fx.cleanup()
 
+    def test_catalog_scoped_preview_and_activation_routes(self) -> None:
+        base = "/api/plugins/hermes-switchboard"
+        project = self.fx.tmp / "selected-project"
+        project.mkdir()
+        selection = {"client_id": "cursor", "scope": "project", "project_root": str(project)}
+        catalog = self.client.get(base + "/clients").json()
+        self.assertTrue(catalog["ok"])
+        self.assertTrue(any(item["id"] == "cursor" for item in catalog["clients"]))
+        preview = self.client.post(base + "/targets/preview", json={"selection": selection}).json()
+        self.assertTrue(preview["ok"])
+        self.assertFalse((project / ".cursor").exists())
+        bad = self.client.post(base + "/targets/activate", json={"selection": selection, "preview_id": "stale"}).json()
+        self.assertEqual(bad["code"], "preview-stale")
+        applied = self.client.post(base + "/targets/activate", json={"selection": selection, "preview_id": preview["preview_id"]}).json()
+        self.assertTrue(applied["ok"])
+        pa.set_core_for_testing(self.fx.core)
+        result = self.client.post(base + "/toggle", json={"tool": applied["tool"], "skill": "apple/apple-notes", "enabled": True}).json()
+        self.assertTrue(result["ok"], result)
+        self.assertTrue((project / ".cursor" / "skills" / "apple-notes").is_symlink())
+
+    def test_invalid_config_returns_recoverable_http_envelope(self) -> None:
+        from unittest.mock import patch
+        pa.set_core_for_testing(None)
+        config = self.fx.home / 'hermes-switchboard.json'
+        config.write_text('{"tools":')
+        with patch.object(pa, 'hermes_home', return_value=self.fx.home):
+            for path in ('/state', '/clients', '/diff', '/health'):
+                response = self.client.get('/api/plugins/hermes-switchboard' + path)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json()['code'], 'config-invalid')
+            config.write_text('{"tools":{}}')
+            self.assertTrue(self.client.get('/api/plugins/hermes-switchboard/state').json()['ok'])
+
     def test_health(self) -> None:
         r = self.client.get("/api/plugins/hermes-switchboard/health")
         self.assertEqual(r.status_code, 200)
