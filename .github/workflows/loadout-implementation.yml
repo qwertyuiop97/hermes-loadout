@@ -19,24 +19,20 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Apply the exact reviewed inventory patch
+      - name: Apply the exact reviewed loadout patch
         shell: python
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
         run: |
           import base64, hashlib, json, lzma, os, subprocess, urllib.request
-          parts = []
-          for sha in ['be1a6e472af0f58dbb6674d3d14af56fb94bfe95', 'd00b837090fa52c2622e894f9e0128030aca2564']:
-              url = 'https://api.github.com/repos/' + os.environ['REPOSITORY'] + '/git/blobs/' + sha
-              request = urllib.request.Request(url, headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'], 'Accept': 'application/vnd.github+json'})
-              with urllib.request.urlopen(request, timeout=30) as response:
-                  data = json.load(response)
-              part = base64.b64decode(data['content'])
-              assert hashlib.sha1(b'blob ' + str(len(part)).encode() + b'\0' + part).hexdigest() == sha
-              parts.append(part)
-          patch = lzma.decompress(base64.b64decode(b''.join(parts)))
-          assert hashlib.sha256(patch).hexdigest() == '298f8cf0a7732e8b15e492e3a3d88a5622990b4d5e9ab770dfb3489cb04ddbd7'
+          sha = '757103ab47ed3fc64bd768c3a1047324233d7cf3'
+          request = urllib.request.Request('https://api.github.com/repos/' + os.environ['REPOSITORY'] + '/git/blobs/' + sha, headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'], 'Accept': 'application/vnd.github+json'})
+          with urllib.request.urlopen(request, timeout=30) as response:
+              part = base64.b64decode(json.load(response)['content'])
+          assert hashlib.sha1(b'blob ' + str(len(part)).encode() + b'\0' + part).hexdigest() == sha
+          patch = lzma.decompress(base64.b64decode(part))
+          assert hashlib.sha256(patch).hexdigest() == 'eb4f67b64b24c6eefd5a30b1e264730e6469c77d2d52ef4c71666aac5fbcf91a'
           subprocess.run(['git', 'apply', '--unidiff-zero', '--check', '-'], input=patch, check=True)
           subprocess.run(['git', 'apply', '--unidiff-zero', '--index', '-'], input=patch, check=True)
       - name: Verify backend and interface contracts
@@ -53,7 +49,7 @@ jobs:
           test "$(git ls-remote origin refs/heads/astra/switchboard-alpha-hardening | cut -f1)" = "$EXPECTED_HEAD"
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git commit -m 'fix: import inventory without activation and bind changes to reviewed sources'
+          git commit -m 'feat: persist secret-free named loadouts and reviewed one-step undo'
           git push origin HEAD:refs/heads/astra/switchboard-alpha-hardening
       - name: Archive committed source
         run: |
@@ -61,7 +57,7 @@ jobs:
           git rev-parse HEAD > "$RUNNER_TEMP/source-commit.txt"
       - uses: actions/upload-artifact@v4
         with:
-          name: inventory-source
+          name: loadouts-source
           path: |
             ${{ runner.temp }}/source.tar
             ${{ runner.temp }}/source-commit.txt
