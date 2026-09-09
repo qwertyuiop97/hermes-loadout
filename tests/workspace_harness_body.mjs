@@ -69,7 +69,7 @@ globalThis.__SKT = channel
 const plugin = (await import(STAGING)).default
 const storage = new Map()
 plugin.register({
-  source: 'plugin:hermes-switchboard',
+  source: 'plugin:hermes-loadout',
   rest: async (path, options = {}) => {
     channel.restCalls.push({ path, body: options.body })
     if (path === '/state') return channel.state
@@ -85,12 +85,12 @@ plugin.register({
       const response = {
         ok: true,
         results: entries.map((entry, index) => index === 0
-          ? { ...entry, ok: true, code: 'adopted', skill: `imported/${entry.name}`, path: `/Users/demo/.hermes/skills/imported/${entry.name}`, backup: `${entry.source}/${entry.name}.hermes-switchboard-backup-fixture` }
+          ? { ...entry, ok: true, code: 'adopted', skill: `imported/${entry.name}`, path: `/Users/demo/.hermes/skills/imported/${entry.name}`, backup: `${entry.source}/${entry.name}.hermes-loadout-backup-fixture` }
           : { ...entry, ok: false, code: 'link-swap-failed', error: 'link swap failed; original state restored', changed_since_preview: false }),
         receipt: {
           receipt_id: 'import-receipt-001', adopted: 1, failed: entries.length - 1, refused: 0,
           items: [],
-          undo: [{ path: `${entries[0].source}/${entries[0].name}`, backup: `${entries[0].source}/${entries[0].name}.hermes-switchboard-backup-fixture`, kind: 'restore-tool-entry' }]
+          undo: [{ path: `${entries[0].source}/${entries[0].name}`, backup: `${entries[0].source}/${entries[0].name}.hermes-loadout-backup-fixture`, kind: 'restore-tool-entry' }]
         },
         adopted: 1, failed: entries.length - 1, refused: 0
       }
@@ -166,8 +166,8 @@ const page = channel.registry.find(c => c.id === 'page')
 open.data.run()
 ok(channel.workspaces.length === 1, 'palette opens one workspace')
 const workspace = channel.activeWorkspace
-ok(workspace.id === 'hermes-switchboard.control-center', 'workspace uses stable id')
-ok(workspace.minWidth === '680px' && workspace.title === 'Hermes Switchboard', 'workspace options set title and minimum width')
+ok(workspace.id === 'hermes-loadout.control-center', 'workspace uses stable id')
+ok(workspace.minWidth === '680px' && workspace.title === 'Loadout for Hermes', 'workspace options set title and minimum width')
 ok(workspace.dock === undefined && typeof workspace.render === 'function', 'workspace keeps default dock and supplies render')
 ok(channel.navigations.length === 0, 'workspace path does not navigate to fallback route')
 
@@ -448,9 +448,9 @@ const realOpenWorkspace = sdk.host.openWorkspace
 sdk.host.openWorkspace = undefined
 channel.navigations.length = 0
 open.data.run()
-ok(channel.navigations.includes('/hermes-switchboard'), 'older hosts navigate to the route fallback')
+ok(channel.navigations.includes('/hermes-loadout'), 'older hosts navigate to the route fallback')
 html = renderToString(page.render())
-ok(html.includes('Hermes Switchboard') && html.includes('aria-label="Tools"'), 'route fallback renders the same Control Center')
+ok(html.includes('Loadout for Hermes') && html.includes('aria-label="Tools"'), 'route fallback renders the same Control Center')
 sdk.host.openWorkspace = realOpenWorkspace
 
 ok((readFileSync(process.env.PLUGIN_SRC, 'utf8').match(/jsx\(BackgroundHost/g) || []).length === 2, 'both roots mount BackgroundHost')

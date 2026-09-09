@@ -22,7 +22,7 @@ class RestoreSafetyTests(unittest.TestCase):
         self.core.toggle('apple/apple-notes', 'codex', True)
 
     def backup(self):
-        path = self.fx.codex / (self.name + '.hermes-switchboard-backup-20260909-120000')
+        path = self.fx.codex / (self.name + '.hermes-loadout-backup-20260909-120000')
         path.mkdir()
         (path / 'SKILL.md').write_text('Original local skill', encoding='utf-8')
         return path
@@ -33,7 +33,7 @@ class RestoreSafetyTests(unittest.TestCase):
         (outside / 'important.txt').write_text('keep', encoding='utf-8')
         for name in (self.name, '../codex/apple-notes', '..\\codex\\apple-notes', '/absolute', '.'):
             with self.subTest(name=name):
-                with self.assertRaises(pa.SkillsToggleError):
+                with self.assertRaises(pa.LoadoutError):
                     self.core.revert_push('codex', name, str(outside))
                 self.assertTrue(self.link.is_symlink())
                 self.assertEqual((outside / 'important.txt').read_text(encoding='utf-8'), 'keep')
@@ -41,9 +41,9 @@ class RestoreSafetyTests(unittest.TestCase):
     def test_backup_symlink_is_not_treated_as_a_real_preserved_directory(self):
         outside = self.fx.tmp / 'unrelated'
         outside.mkdir()
-        backup = self.fx.codex / (self.name + '.hermes-switchboard-backup-20260909-120000')
+        backup = self.fx.codex / (self.name + '.hermes-loadout-backup-20260909-120000')
         backup.symlink_to(outside, target_is_directory=True)
-        with self.assertRaises(pa.SkillsToggleError):
+        with self.assertRaises(pa.LoadoutError):
             self.core.revert_push('codex', self.name, str(backup))
         self.assertTrue(backup.is_symlink())
         self.assertTrue(self.link.is_symlink())
@@ -57,7 +57,7 @@ class RestoreSafetyTests(unittest.TestCase):
                 raise OSError('fixture denial')
             return real_rename(source, destination)
         with patch.object(pa.os, 'rename', side_effect=deny_backup):
-            with self.assertRaises(pa.SkillsToggleError):
+            with self.assertRaises(pa.LoadoutError):
                 self.core.revert_push('codex', self.name, str(backup))
         self.assertEqual(os.readlink(self.link), original)
         self.assertTrue((backup / 'SKILL.md').is_file())
@@ -66,7 +66,7 @@ class RestoreSafetyTests(unittest.TestCase):
         backup = self.backup()
         for skill in ('../unrelated', 'apple/other-skill', 'apple/../apple-notes'):
             with self.subTest(skill=skill):
-                with self.assertRaises(pa.SkillsToggleError):
+                with self.assertRaises(pa.LoadoutError):
                     self.core.revert_adopt('codex', self.name, str(backup), skill)
                 self.assertTrue(self.link.is_symlink())
                 self.assertTrue(backup.is_dir())
@@ -75,7 +75,7 @@ class RestoreSafetyTests(unittest.TestCase):
         backup = self.backup()
         outside = self.fx.tmp / 'unrelated'
         outside.mkdir()
-        with self.assertRaises(pa.SkillsToggleError):
+        with self.assertRaises(pa.LoadoutError):
             self.core.revert_pull('codex', self.name, str(outside), str(backup))
         self.assertTrue(self.link.is_symlink())
         self.assertTrue(self.skill.is_dir())

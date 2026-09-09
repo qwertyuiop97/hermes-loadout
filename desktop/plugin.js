@@ -1,5 +1,5 @@
 /**
- * hermes-switchboard — desktop half of the unified Hermes plugin package.
+ * hermes-loadout — desktop half of the unified Hermes plugin package.
  *
  * MIT License — Copyright (c) 2026 qwertyuiop97. See LICENSE at the package root.
  *
@@ -10,9 +10,9 @@
  * actions — all through this plugin's own backend namespace
  * (`dashboard/plugin_api.py`, reached via ctx.rest('/…')).
  *
- * Install (unified package): ~/.hermes/plugins/hermes-switchboard/
+ * Install (unified package): ~/.hermes/plugins/hermes-loadout/
  *   ├── plugin.yaml            agent half (metadata)
- *   ├── dashboard/manifest.json  {"name":"hermes-switchboard","api":"plugin_api.py"}
+ *   ├── dashboard/manifest.json  {"name":"hermes-loadout","api":"plugin_api.py"}
  *   ├── dashboard/plugin_api.py  backend routes (gated by `plugins.enabled`)
  *   └── desktop/plugin.js      THIS FILE (enable in Settings → Plugins)
  * Then: ⌘K → "Reload desktop plugins".
@@ -58,7 +58,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
-const ID = 'hermes-switchboard'
+const ID = 'hermes-loadout'
 const STATE_KEY = [ID, 'state']
 const DIFF_KEY = [ID, 'diff']
 const DRIFT_KEY = [ID, 'drift']
@@ -68,7 +68,7 @@ const ONBOARDING_VERSION = 1
 const ccSectionAtom = atom('tools')
 const arrivalsAtom = atom([])
 const watchPrefsEpochAtom = atom(0)
-const WORKSPACE_ID = 'hermes-switchboard.control-center'
+const WORKSPACE_ID = 'hermes-loadout.control-center'
 let workspaceDispose = null
 let bgHosted = false
 const bgWaiters = new Set()
@@ -148,7 +148,7 @@ function openControlCenter(section = 'tools') {
   ccSectionAtom.set(section)
   if (typeof host.openWorkspace === 'function') {
     workspaceDispose = host.openWorkspace(WORKSPACE_ID, {
-      title: 'Hermes Switchboard',
+      title: 'Loadout for Hermes',
       minWidth: '680px',
       render: () => jsx(ControlCenter, {}),
       onClose: () => {
@@ -157,7 +157,7 @@ function openControlCenter(section = 'tools') {
     })
     return
   }
-  host.navigate('/hermes-switchboard')
+  host.navigate('/hermes-loadout')
 }
 
 function closeControlCenter() {
@@ -221,7 +221,7 @@ function ReducedMotionGuard({ active }) {
   if (!active) return null
   return jsx('style', {
     'data-reduced-motion-guard': 'true',
-    children: '[data-hermes-switchboard-root="true"] *,[data-hermes-switchboard-root="true"] *::before,[data-hermes-switchboard-root="true"] *::after{animation:none!important;transition:none!important}'
+    children: '[data-hermes-loadout-root="true"] *,[data-hermes-loadout-root="true"] *::before,[data-hermes-loadout-root="true"] *::after{animation:none!important;transition:none!important}'
   })
 }
 
@@ -939,7 +939,7 @@ function CompactSummaryPane() {
 
   return jsxs('div', {
     ref: rootRef,
-    'data-hermes-switchboard-root': 'true',
+    'data-hermes-loadout-root': 'true',
     'data-reduced-motion': reducedMotion ? 'true' : 'false',
     className: 'flex h-full min-w-0 flex-col text-sm',
     children: [
@@ -1786,7 +1786,7 @@ function SkillsPane({ section = 'tools' }) {
   })
 
   const downloadPresetFile = () => {
-    downloadText(JSON.stringify(buildPresetExport(), null, 2), 'hermes-switchboard-preset.json')
+    downloadText(JSON.stringify(buildPresetExport(), null, 2), 'hermes-loadout-preset.json')
     host.notify({ kind: 'success', message: t('downloaded') })
   }
 
@@ -2049,7 +2049,7 @@ function SkillsPane({ section = 'tools' }) {
       .rest('/blueprint/export')
       .then(res => {
         if (res && res.ok) {
-          downloadText(JSON.stringify(res.blueprint, null, 2), 'hermes-switchboard-blueprint.json')
+          downloadText(JSON.stringify(res.blueprint, null, 2), 'hermes-loadout-blueprint.json')
           host.notify({ kind: 'success', message: t('blueprintExported') })
         } else host.notify({ kind: 'error', message: t('blueprintFailed') })
       })
@@ -2526,7 +2526,7 @@ function SkillsPane({ section = 'tools' }) {
 }
 
 // ---------------------------------------------------------------------------
-// MCP switchboard pane — Hermes catalog + supported client writers
+// MCP loadout pane — Hermes catalog + supported client writers
 // ---------------------------------------------------------------------------
 
 function McpPane() {
@@ -3977,7 +3977,7 @@ function SectionPlaceholder({ title, hint }) {
 function PrimaryNav({ sections, active, onSelect, layout }) {
   const horizontal = layout === 'narrow'
   return jsx('nav', {
-    'aria-label': 'Switchboard sections',
+    'aria-label': 'Loadout sections',
     className: horizontal
       ? 'w-full shrink-0 overflow-x-auto border-b border-(--ui-stroke-secondary)'
       : 'w-[180px] shrink-0 border-r border-(--ui-stroke-secondary)',
@@ -4028,7 +4028,7 @@ function ControlCenter() {
   return jsxs('div', {
     ref: rootRef,
     'data-layout': layout,
-    'data-hermes-switchboard-root': 'true',
+    'data-hermes-loadout-root': 'true',
     'data-reduced-motion': reducedMotion ? 'true' : 'false',
     className: 'flex h-full min-w-0 flex-col text-sm',
     children: [
@@ -4058,7 +4058,7 @@ function ControlCenter() {
 
 export default {
   id: ID, // must match the folder name
-  name: 'Hermes Switchboard',
+  name: 'Loadout for Hermes',
   defaultEnabled: false, // unified-package desktop halves ship opt-in
   register(ctx) {
     pluginCtx = ctx
@@ -4073,7 +4073,7 @@ export default {
         searchPlaceholder: 'Search skills…',
         refresh: 'Refresh',
         retry: 'Retry',
-        ccTitle: 'Hermes Switchboard',
+        ccTitle: 'Loadout for Hermes',
         matrixToggle: 'Matrix',
         matrixTitle: 'Expert matrix',
         showDescriptions: 'Show descriptions',
@@ -4082,7 +4082,7 @@ export default {
         ccProblems: 'Problems',
         ccMcp: 'MCP',
         ccAdvanced: 'Advanced',
-        openControlCenter: 'Open Switchboard',
+        openControlCenter: 'Open Loadout',
         scan: 'Scan',
         problemsAction: n => `Problems (${n})`,
         enabledOn: n => `${n} on`,
@@ -4107,7 +4107,7 @@ export default {
         globalScope: 'Global',
         projectScope: 'Project',
         globalScopeDesc: 'Use the client location in your user account. Client-specific permissions and precedence still apply.',
-        projectScopeDesc: 'Choose one existing project folder. Switchboard checks only supported paths inside it, never searches your computer for projects.',
+        projectScopeDesc: 'Choose one existing project folder. Loadout checks only supported paths inside it, never searches your computer for projects.',
         projectFolder: 'Absolute project folder path',
         reviewProjectFolder: 'Review project folder',
         projectReviewChanged: 'Review the edited project folder before using a path.',
@@ -4124,7 +4124,7 @@ export default {
         libraryRecovery: 'Repair the reported path or settings, then retry. A missing route requires a full Hermes restart, not just Reload desktop plugins.',
         libraryNoMatches: 'No verified clients match this search and scope. Change the search or scope, or use an explicitly reviewed Custom path.',
         libraryCustomDesc: 'Use a Custom path only after checking the client reads compatible skill folders. This is an explicit exception to Global and Project boundaries, not a compatibility claim.',
-        libraryReviewCustom: 'This legacy client is unverified. Review and save its path as Custom in Add Tool before changing skills.',
+        libraryReviewCustom: 'This client is unverified. Review and save its path as Custom in Add Tool before changing skills.',
         customClientId: 'Custom client ID (lowercase letters, numbers, hyphens)',
         customClientLabel: 'Custom client display name',
         customClientPath: 'Custom skills directory (absolute path)',
@@ -4267,8 +4267,8 @@ export default {
         repairFailed: 'Repair failed',
         bulkFailed: 'Bulk toggle failed',
         errorTitle: 'Skills backend unavailable',
-        errorDesc: 'The plugin backend did not answer. Check that hermes-switchboard is in `plugins.enabled` in config.yaml, then retry.',
-        errorNeedsRestart: "The gateway mounts this plugin's backend only at startup — it looks like the gateway started before hermes-switchboard was enabled. Run `hermes gateway restart` (or restart from Settings), then Retry.",
+        errorDesc: 'The plugin backend did not answer. Check that hermes-loadout is in `plugins.enabled` in config.yaml, then retry.',
+        errorNeedsRestart: "The gateway mounts this plugin's backend only at startup — it looks like the gateway started before hermes-loadout was enabled. Run `hermes gateway restart` (or restart from Settings), then Retry.",
         noRootTitle: 'No skills root found',
         noRootDesc: 'The Hermes skills directory does not exist yet. Create skills and reload.',
         emptyTitle: 'No skills yet',
@@ -4293,7 +4293,7 @@ export default {
         setupNudge: 'No tool skills folders found yet — set up tools to start linking.',
         createDir: 'Create',
         present: 'ready',
-        addTool: 'Add a custom tool (writes hermes-switchboard.json)',
+        addTool: 'Add a custom tool (writes hermes-loadout.json)',
         toolLabel: 'Label',
         toolDir: '~/path/to/skills',
         add: 'Add',
@@ -4345,7 +4345,7 @@ export default {
         mcpKeptDisabled: 'Server definition synced. Its native disabled flag and client policy are unchanged.',
         mcpPartialFailure: 'A client configuration needs repair. Other clients remain available. Repair the file, then retry.',
         mcpUnavailable: 'Needs repair',
-        mcpUnavailableTip: 'The configuration could not be read safely. Repair it in the client, then refresh Switchboard.',
+        mcpUnavailableTip: 'The configuration could not be read safely. Repair it in the client, then refresh Loadout.',
         mcpUnsupported: 'Native setup',
         mcpUnsupportedTip: 'This transport is not supported by this file writer. Use the client’s native connector setup.',
         mcpNativeDisabled: 'Disabled in client',
@@ -4413,7 +4413,7 @@ export default {
         keepBothTitle: name => `Keep both copies of "${name}"?`,
         keepBothDesc: 'The tool copy is adopted into the skills tree under its own name and the tool links to it. Nothing is overwritten.',
         keepBothDone: name => `"${name}" kept as a separate skill`,
-        undoFailed: 'Part of the undo failed — check the Setup panel backups',
+        undoFailed: 'Part of the undo failed — check the Advanced backup list',
         useHermesTip: 'Back up the tool copy and link the Hermes version',
         useHermesTitle: name => 'Use the Hermes copy of "' + name + '"?',
         useHermesDesc: tool => 'The ' + tool + ' copy is moved aside to a timestamped backup and replaced with a symlink to the Hermes source.',
@@ -4435,14 +4435,14 @@ export default {
       {
         id: 'page',
         area: ROUTES_AREA,
-        data: { path: '/hermes-switchboard' },
+        data: { path: '/hermes-loadout' },
         render: () => jsx(ControlCenter, {})
       },
       {
         id: 'open',
         area: PALETTE_AREA,
         data: {
-          id: 'hermes-switchboard.open',
+          id: 'hermes-loadout.open',
           label: 'Skills: toggle…',
           keywords: ['skills', 'toggle', 'sync', 'claude', 'codex', 'opencode', 'grok', 'zcode'],
           detail: () => 'Enable or disable skills per tool',
@@ -4453,7 +4453,7 @@ export default {
         id: 'mcp',
         area: PALETTE_AREA,
         data: {
-          id: 'hermes-switchboard.mcp',
+          id: 'hermes-loadout.mcp',
           label: 'MCP: toggle…',
           keywords: ['mcp', 'servers', 'claude desktop', 'toggle'],
           detail: () => 'Enable or disable MCP servers per app',
@@ -4464,7 +4464,7 @@ export default {
         id: 'report',
         area: PALETTE_AREA,
         data: {
-          id: 'hermes-switchboard.report',
+          id: 'hermes-loadout.report',
           label: 'Skills: health report',
           keywords: ['skills', 'health', 'broken', 'diff', 'repair'],
           detail: () => 'Broken links, unlinked skills, drift',

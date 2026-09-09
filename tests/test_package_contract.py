@@ -23,8 +23,8 @@ class PackageContractTests(unittest.TestCase):
         self.assertEqual(dashboard["name"], pa.PLUGIN_ID)
         self.assertTrue((ROOT / "dashboard" / dashboard["api"]).is_file())
         self.assertIn("const ID = '" + pa.PLUGIN_ID + "'", desktop)
-        self.assertIn("name: 'Hermes Switchboard'", desktop)
-        self.assertTrue((ROOT / "README.md").read_text(encoding="utf-8").startswith("# Hermes Switchboard\n"))
+        self.assertIn("name: 'Loadout for Hermes'", desktop)
+        self.assertTrue((ROOT / "README.md").read_text(encoding="utf-8").startswith("# Loadout for Hermes\n"))
 
     def test_readme_lists_exact_documented_skill_candidates(self):
         def paths(value):

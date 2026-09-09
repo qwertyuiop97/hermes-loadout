@@ -15,7 +15,7 @@ from test_plugin_api import pa
 
 
 class CatalogContractTests(unittest.TestCase):
-    def test_catalog_contract_and_legacy_export_come_from_one_data_source(self):
+    def test_catalog_and_defaults_share_one_data_source(self):
         path = Path(pa.__file__).with_name("client_catalog.json")
         catalog = json.loads(path.read_text(encoding="utf-8"))
         self.assertEqual(catalog["schema_version"], pa.CATALOG_VERSION)
@@ -35,8 +35,8 @@ class CatalogContractTests(unittest.TestCase):
                 for path in row["project"]:
                     self.assertFalse(Path(path).is_absolute())
                     self.assertNotIn("..", Path(path).parts)
-                if "legacy_default" in row:
-                    self.assertEqual(pa.DEFAULT_TOOLS[row["id"]], row["legacy_default"])
+                if row["verification"] == "documented" and row["global"]:
+                    self.assertEqual(pa.DEFAULT_TOOLS[row["id"]]["dir"], row["global"][0])
         self.assertEqual(pa.catalog_client("codex")["global"], ["~/.agents/skills"])
         self.assertEqual(pa.catalog_client("amp")["global"], ["~/.config/agents/skills"])
         self.assertFalse(pa.catalog_client("openclaw")["project"])
@@ -45,7 +45,7 @@ class CatalogContractTests(unittest.TestCase):
 
 class ScopeTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(prefix="switchboard-scope-")
+        self.tmp = tempfile.TemporaryDirectory(prefix="loadout-scope-")
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name).resolve()
         self.user = self.root / "user"
@@ -65,7 +65,7 @@ class ScopeTests(unittest.TestCase):
         skill.mkdir(parents=True)
         (skill / "SKILL.md").write_text("---\nname: review-code\ndescription: Review source code.\n---\nUse deliberate checks.\n", encoding="utf-8")
         self.sid = "coding/review-code"
-        self.core = pa.SkillsToggleCore(self.home, pa.load_tools_config(self.home))
+        self.core = pa.HermesLoadoutCore(self.home, pa.load_tools_config(self.home))
 
     def activate(self, client="cursor", scope="project", project=None):
         root = (project or self.project) if scope == "project" else None
@@ -114,7 +114,7 @@ class ScopeTests(unittest.TestCase):
                 self.assertEqual(plan["would_change"], [self.sid])
                 applied = self.core.execute_bulk(plan["would_change"], row["tool"], True)
                 self.assertTrue((target / "review-code").is_symlink())
-                reloaded = pa.SkillsToggleCore(self.home, pa.load_tools_config(self.home))
+                reloaded = pa.HermesLoadoutCore(self.home, pa.load_tools_config(self.home))
                 undo = reloaded.undo_bulk(applied["receipt"]["receipt_id"])
                 self.assertEqual(undo["changed"], 1)
                 self.assertFalse((target / "review-code").is_symlink())
@@ -130,20 +130,6 @@ class ScopeTests(unittest.TestCase):
         self.assertEqual(result["results"][0]["code"], "skill-incompatible")
         self.assertFalse(Path(active["dir"]).exists())
 
-    def test_existing_custom_and_legacy_settings_are_preserved_on_activation(self):
-        old = self.home / "skills-toggle.json"
-        data = {"tools": {"special-client": str(self.root / "custom"), "cursor": {"label": "My cursor", "dir": str(self.root / "other")}}, "preferences": {"keep": True}}
-        old.write_text(json.dumps(data), encoding="utf-8")
-        self.core = pa.SkillsToggleCore(self.home, pa.load_tools_config(self.home))
-        result = self.activate(scope="global")
-        saved = json.loads(pa.user_config_path(self.home).read_text(encoding="utf-8"))
-        self.assertEqual(saved["schema_version"], 2)
-        self.assertEqual(saved["preferences"], data["preferences"])
-        self.assertEqual(saved["tools"]["special-client"], data["tools"]["special-client"])
-        self.assertEqual(saved["tools"]["cursor"], data["tools"]["cursor"])
-        self.assertNotEqual(result["tool"], "cursor")
-        self.assertTrue(Path(result["backup"]).is_file())
-        self.assertEqual(json.loads(old.read_text(encoding="utf-8")), data)
 
     def test_scope_changes_symlink_escape_and_moved_projects_fail_closed(self):
         active = self.activate()
@@ -159,7 +145,7 @@ class ScopeTests(unittest.TestCase):
                           lambda: self.core.plan_bulk([self.sid], tool, True),
                           lambda: self.core.ensure_tool_dir(tool),
                           lambda: self.core.undo_bulk("before-move")):
-            with self.assertRaises(pa.SkillsToggleError):
+            with self.assertRaises(pa.LoadoutError):
                 operation()
         self.assertEqual(list((outside / "skills").iterdir()), [])
         self.assertTrue((aside / "skills/review-code").is_symlink())
@@ -170,7 +156,7 @@ class ScopeTests(unittest.TestCase):
         native.unlink()
         aside.rename(native)
         self.project.rename(self.root / "moved-project")
-        with self.assertRaises(pa.SkillsToggleError):
+        with self.assertRaises(pa.LoadoutError):
             self.core.toggle(self.sid, tool, False)
 
     def test_preview_refuses_reserved_and_nonstandard_skills_before_any_write(self):
@@ -183,7 +169,7 @@ class ScopeTests(unittest.TestCase):
             plan = self.core.plan_bulk([sid], active["tool"], True)
             self.assertEqual(plan["would_change"], [])
             self.assertEqual(plan["refused"][0]["code"], "skill-incompatible")
-            with self.assertRaises(pa.SkillsToggleError):
+            with self.assertRaises(pa.LoadoutError):
                 self.core.toggle(sid, active["tool"], True)
         self.assertFalse(Path(active["dir"]).exists())
 
@@ -196,38 +182,31 @@ class ScopeTests(unittest.TestCase):
         (self.user / ".codex").mkdir()
         tools = pa.load_tools_config(self.home)
         self.assertEqual(tools["codex"]["dir"], str(shared))
-        self.core = pa.SkillsToggleCore(self.home, tools)
+        self.core = pa.HermesLoadoutCore(self.home, tools)
         candidates = next(row for row in self.core.clients()["clients"] if row["id"] == "codex")["candidates"]
         self.assertTrue(candidates[0]["shared"])
         self.assertIn("Shared Agent Skills", candidates[0]["shared_with"])
 
-    def test_old_codex_location_is_not_silently_retargeted(self):
-        old = self.user / ".codex/skills"
-        old.mkdir(parents=True)
-        (self.user / ".agents/skills").mkdir(parents=True)
-        tool = pa.load_tools_config(self.home)["codex"]
-        self.assertEqual(tool["dir"], str(old))
-        self.assertEqual(tool["scope"], "custom")
 
     def test_unverified_candidates_are_read_only_until_explicit_custom_configuration(self):
         grok = self.user / ".grok/skills"
         grok.mkdir(parents=True)
-        self.core = pa.SkillsToggleCore(self.home, pa.load_tools_config(self.home))
-        with self.assertRaises(pa.SkillsToggleError):
+        self.core = pa.HermesLoadoutCore(self.home, pa.load_tools_config(self.home))
+        with self.assertRaises(pa.LoadoutError):
             self.core.toggle(self.sid, "grok", True)
-        with self.assertRaises(pa.SkillsToggleError):
+        with self.assertRaises(pa.LoadoutError):
             self.core.enable_client("grok", "global", expected_dir=str(grok))
         self.core.set_tool("grok", "My verified custom client", str(grok))
-        reloaded = pa.SkillsToggleCore(self.home, pa.load_tools_config(self.home))
+        reloaded = pa.HermesLoadoutCore(self.home, pa.load_tools_config(self.home))
         self.assertTrue(reloaded.toggle(self.sid, "grok", True)["ok"])
 
     def test_invalid_selection_or_unreviewed_target_never_saves_a_mapping(self):
         good = pa.catalog_target("cursor", "project", self.project)["dir"]
         for root in (None, "relative/path", "", str(self.root / "missing")):
-            with self.subTest(root=root), self.assertRaises(pa.SkillsToggleError):
+            with self.subTest(root=root), self.assertRaises(pa.LoadoutError):
                 self.core.enable_client("cursor", "project", root, expected_dir=good)
         for args in (("cursor", "unknown", self.project, 0, good), ("cursor", "project", self.project, True, good), ("cursor", "project", self.project, 0, str(self.root / "other"))):
-            with self.assertRaises(pa.SkillsToggleError):
+            with self.assertRaises(pa.LoadoutError):
                 self.core.enable_client(*args)
         self.assertFalse(pa.user_config_path(self.home).exists())
         with patch.dict(os.environ, {"OPENCODE_CONFIG_DIR": str(self.root / "outside")}):
@@ -247,7 +226,7 @@ class ScopeTests(unittest.TestCase):
         path = pa.user_config_path(self.home)
         for content in ('{broken', '{"tools": []}', '{"schema_version": 999}', '{"schema_version": true}', '{"tools":{"x":{"dir":"/x","scope":"surprise"}}}'):
             path.write_text(content, encoding="utf-8")
-            with self.subTest(content=content), self.assertRaises(pa.SkillsToggleError):
+            with self.subTest(content=content), self.assertRaises(pa.LoadoutError):
                 pa.load_tools_config(self.home)
             self.assertEqual(path.read_text(encoding="utf-8"), content)
 

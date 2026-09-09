@@ -28,7 +28,7 @@ const storage = new Map([['setupDismissed', true], ['onboarding', { version: 1, 
 const receipt = { receipt_id: 'fixture-receipt', tool: 'codex', changed: 1, failed: 0, undo_available: true,
   items: [{ skill: 'software/safe-skill', ok: true, from: 'missing', to: 'enabled' }] }
 plugin.register({
-  source: 'plugin:hermes-switchboard',
+  source: 'plugin:hermes-loadout',
   rest: async (path, options = {}) => {
     channel.restCalls.push({ path, body: options.body })
     if (path === '/toggle') return new Promise((resolve, reject) => { resolveToggle = resolve; rejectToggle = reject })

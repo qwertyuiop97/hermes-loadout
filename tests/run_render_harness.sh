@@ -8,12 +8,12 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(dirname "$HERE")"
-FRONT="/tmp/skt-front"
+FRONT="/tmp/hermes-loadout-tests"
 
 mkdir -p "$FRONT/staging/node_modules/@hermes/plugin-sdk"
 if [ ! -d "$FRONT/node_modules/react" ] || [ ! -d "$FRONT/node_modules/react-test-renderer" ]; then
   cd "$FRONT"
-  [ -f package.json ] || echo '{"name":"hermes-switchboard-render-harness","private":true,"type":"module"}' > package.json
+  [ -f package.json ] || echo '{"name":"hermes-loadout-render-harness","private":true,"type":"module"}' > package.json
   npm install --no-fund --no-audit --silent react@18.3.1 react-dom@18.3.1 react-test-renderer@18.3.1
 fi
 

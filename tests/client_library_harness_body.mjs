@@ -33,7 +33,7 @@ const rest = async (path, options = {}) => {
     { id: 'grok', label: 'Grok', skills: false, may_create: false, verification: 'unverified', notes: 'Not yet verified.', candidates: [] }
   ] }
 }
-plugin.register({ source: 'plugin:hermes-switchboard', rest,
+plugin.register({ source: 'plugin:hermes-loadout', rest,
   storage: { get: (key, fallback) => key === 'onboarding' ? { version: 1, complete: true } : fallback, set: () => {} },
   i18n: { register: bundle => Object.assign(channel.bundle, bundle) }, registerMany: () => {}, os: {}, socket: () => () => {} })
 const buttons = tree => tree.root.findAllByType('button')

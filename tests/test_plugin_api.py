@@ -1,4 +1,4 @@
-"""Round-trip tests for hermes-switchboard's backend core.
+"""Round-trip tests for hermes-loadout's backend core.
 
 Everything runs against throwaway fixtures in a temp dir — the machine's real
 ~/.hermes and tool dirs are never touched.
@@ -23,8 +23,8 @@ _SPEC = importlib.util.spec_from_file_location("plugin_api", _REPO / "dashboard"
 pa = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(pa)
 
-SkillsToggleCore = pa.SkillsToggleCore
-SkillsToggleError = pa.SkillsToggleError
+HermesLoadoutCore = pa.HermesLoadoutCore
+LoadoutError = pa.LoadoutError
 
 
 LONG_DESCRIPTION = "A deliberately long description that exceeds the truncation window. " * 6
@@ -64,7 +64,7 @@ class Fixture:
     """Fake hermes home + five consumer tool dirs covering every state."""
 
     def __init__(self) -> None:
-        self.tmp = Path(tempfile.mkdtemp(prefix="hermes-switchboard-test-"))
+        self.tmp = Path(tempfile.mkdtemp(prefix="hermes-loadout-test-"))
         self.home = self.tmp / "hermes"
         (self.home / "skills").mkdir(parents=True)
         (self.home / "config.yaml").write_text(CONFIG_YAML, encoding="utf-8")
@@ -103,17 +103,17 @@ class Fixture:
             "grok": {"label": "Grok", "dir": self.grok},
             "zcode": {"label": "ZCode", "dir": self.zcode},
         }
-        self.core = SkillsToggleCore(self.home, self.tools, log_path=self.tmp / "data" / "mutations.log")
+        self.core = HermesLoadoutCore(self.home, self.tools, log_path=self.tmp / "data" / "mutations.log")
 
     def cleanup(self) -> None:
         shutil.rmtree(self.tmp, ignore_errors=True)
 
 
 def call(fn, *args, **kwargs):
-    """Run a core method, converting SkillsToggleError into {ok:False} like the route layer."""
+    """Run a core method, converting LoadoutError into {ok:False} like the route layer."""
     try:
         return fn(*args, **kwargs)
-    except SkillsToggleError as exc:
+    except LoadoutError as exc:
         return {"ok": False, "error": str(exc), "code": exc.code}
 
 
@@ -217,7 +217,7 @@ class FixtureTest(unittest.TestCase):
         self.assertIn("creation_nudge_interval: 15", text)
         self.assertIn("- airtable", text)  # pre-existing member untouched
         # backup created
-        backups = list(self.fx.home.glob("config.yaml.bak.hermes-switchboard.*"))
+        backups = list(self.fx.home.glob("config.yaml.bak.hermes-loadout.*"))
         self.assertEqual(len(backups), 1)
         self.assertNotIn("- \"apple-notes\"", backups[0].read_text(encoding="utf-8"))
         # idempotent
@@ -614,7 +614,7 @@ class FrontmatterTests(unittest.TestCase):
 
 class PathAndConfigTests(unittest.TestCase):
     def test_expand_path(self) -> None:
-        base = tempfile.mkdtemp(prefix="hermes-switchboard-expand-")
+        base = tempfile.mkdtemp(prefix="hermes-loadout-expand-")
         os.environ["SKT_TEST_VAR"] = base
         try:
             self.assertTrue(pa.same_path(pa.expand_path("${SKT_TEST_VAR}/skills"), Path(base) / "skills"))
@@ -628,11 +628,11 @@ class PathAndConfigTests(unittest.TestCase):
     def test_user_tool_overrides_and_custom_tool(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             home = Path(td)
-            (home / "hermes-switchboard.json").write_text(
+            (home / "hermes-loadout.json").write_text(
                 json.dumps(
                     {
                         "tools": {
-                            "claude": "/custom/claude",
+                            "claude": {"dir": "/custom/claude", "scope": "custom"},
                             "ghost": {"label": "Ghost", "dir": "~/ghost-skills"},
                             "hermes": {"label": "Hermes (renamed)"},
                         }
@@ -649,21 +649,11 @@ class PathAndConfigTests(unittest.TestCase):
     def test_user_config_garbage_refuses_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             home = Path(td)
-            (home / "hermes-switchboard.json").write_text("{not json", encoding="utf-8")
-            with self.assertRaises(pa.SkillsToggleError) as raised:
+            (home / "hermes-loadout.json").write_text("{not json", encoding="utf-8")
+            with self.assertRaises(pa.LoadoutError) as raised:
                 pa.load_tools_config(home)
             self.assertEqual(raised.exception.code, "config-invalid")
 
-    def test_pre_rename_user_config_still_loads(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            home = Path(td)
-            (home / "skills-toggle.json").write_text(
-                json.dumps({"tools": {"cursor": {"label": "Cursor", "dir": "~/cursor-skills"}}}),
-                encoding="utf-8",
-            )
-            tools = pa.load_tools_config(home)
-            self.assertEqual(tools["cursor"]["label"], "Cursor")
-            self.assertEqual(pa.user_config_path(home).name, "hermes-switchboard.json")
 
     def test_hermes_home_resolution(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -691,7 +681,7 @@ class PathAndConfigTests(unittest.TestCase):
 
     def test_missing_skills_root_reports_cleanly(self) -> None:
         with tempfile.TemporaryDirectory() as td:
-            core = SkillsToggleCore(Path(td) / "nothere", {"hermes": {"label": "Hermes", "special": "config"}})
+            core = HermesLoadoutCore(Path(td) / "nothere", {"hermes": {"label": "Hermes", "special": "config"}})
             st = core.state()
             self.assertTrue(st["ok"])
             self.assertEqual(st["skills"], [])

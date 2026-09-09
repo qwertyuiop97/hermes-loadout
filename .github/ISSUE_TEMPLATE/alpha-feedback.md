@@ -1,5 +1,5 @@
 ---
-name: Hermes Switchboard feedback
+name: Loadout for Hermes feedback
 about: Report a bug, confusing interface, or unexpected filesystem change
 title: "[alpha] "
 labels: ["alpha-feedback"]
@@ -33,7 +33,7 @@ Include the exact error code or refusal reason, with sensitive details removed.
 ## Setup and reproduction
 
 Hermes version / OS:
-Switchboard commit or version:
+Loadout commit or version:
 Client and version:
 Scope (Global / Project / Custom):
 Local or remote Hermes backend:

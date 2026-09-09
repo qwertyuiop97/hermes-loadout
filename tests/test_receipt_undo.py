@@ -27,7 +27,7 @@ class ReceiptUndoTests(unittest.TestCase):
         target = os.path.relpath(self.fx.home / "skills" / "old" / "apple-notes", self.fx.codex)
         os.symlink(target, self.link, target_is_directory=True)
         receipt = self.apply()
-        restarted = pa.SkillsToggleCore(self.fx.home, self.core.tools)
+        restarted = pa.HermesLoadoutCore(self.fx.home, self.core.tools)
         result = restarted.undo_bulk(receipt["receipt_id"])
         self.assertEqual(result["changed"], 1, result)
         self.assertEqual(os.readlink(self.link), target)
@@ -58,7 +58,7 @@ class ReceiptUndoTests(unittest.TestCase):
         replacement = self.fx.tmp / "replacement-codex"
         replacement.mkdir()
         self.core.tools["codex"]["dir"] = str(replacement)
-        with self.assertRaises(pa.SkillsToggleError) as error:
+        with self.assertRaises(pa.LoadoutError) as error:
             self.core.undo_bulk(receipt["receipt_id"])
         self.assertEqual(error.exception.code, "target-changed")
         self.assertTrue(self.link.is_symlink())
@@ -66,17 +66,17 @@ class ReceiptUndoTests(unittest.TestCase):
 
     def test_receipt_collision_and_invalid_ids_never_overwrite_evidence(self):
         receipt = self.apply(receipt_id="named-receipt")
-        with self.assertRaises(pa.SkillsToggleError):
+        with self.assertRaises(pa.LoadoutError):
             self.apply(False, receipt_id="named-receipt")
         self.assertTrue(self.link.is_symlink())
         for bad in ("../other", "", None, ["x"]):
-            with self.subTest(receipt_id=bad), self.assertRaises(pa.SkillsToggleError):
+            with self.subTest(receipt_id=bad), self.assertRaises(pa.LoadoutError):
                 self.core.undo_bulk(bad)
         self.assertEqual(self.core.get_bulk_receipt(receipt["receipt_id"])["receipt"]["changed"], 1)
 
     def test_unwritable_receipt_store_refuses_changes_before_mutation(self):
-        with patch.object(self.core, "_reserve_receipt", side_effect=pa.SkillsToggleError("fixture", "receipt-write")):
-            with self.assertRaises(pa.SkillsToggleError):
+        with patch.object(self.core, "_reserve_receipt", side_effect=pa.LoadoutError("fixture", "receipt-write")):
+            with self.assertRaises(pa.LoadoutError):
                 self.apply()
         self.assertFalse(self.link.is_symlink())
 
@@ -89,7 +89,7 @@ class ReceiptUndoTests(unittest.TestCase):
         self.assertIn("receipt_error", result)
         saved = self.core.get_bulk_receipt(result["receipt"]["receipt_id"])["receipt"]
         self.assertEqual(saved["status"], "applying")
-        with self.assertRaises(pa.SkillsToggleError) as error:
+        with self.assertRaises(pa.LoadoutError) as error:
             self.core.undo_bulk(saved["receipt_id"])
         self.assertEqual(error.exception.code, "incomplete-receipt")
 
@@ -125,7 +125,7 @@ class ReceiptUndoTests(unittest.TestCase):
         receipt = self.core.execute_bulk([self.skill, "productivity/two words"], "codex", True)["receipt"]
         receipt["items"][1]["before"] = {"kind": "symlink", "target": None}
         self.core._save_receipt(receipt)
-        with self.assertRaises(pa.SkillsToggleError) as error:
+        with self.assertRaises(pa.LoadoutError) as error:
             self.core.undo_bulk(receipt["receipt_id"])
         self.assertEqual(error.exception.code, "invalid-receipt")
         self.assertTrue(self.link.is_symlink())
@@ -138,7 +138,7 @@ class ReceiptUndoTests(unittest.TestCase):
         outside.write_text('{"keep":true}', encoding="utf-8")
         path.unlink()
         os.symlink(outside, path)
-        with self.assertRaises(pa.SkillsToggleError):
+        with self.assertRaises(pa.LoadoutError):
             self.core.undo_bulk("first")
         self.assertEqual(json.loads(outside.read_text(encoding="utf-8")), {"keep": True})
 

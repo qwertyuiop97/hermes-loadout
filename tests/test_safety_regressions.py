@@ -29,7 +29,7 @@ class LinkSafetyTests(unittest.TestCase):
         self.assertEqual(plan["refused"][0]["code"], "foreign-link")
         for operation in (lambda: core.toggle("apple/apple-notes", "codex", True),
                           lambda: core.repair("apple/apple-notes", "codex")):
-            with self.assertRaises(pa.SkillsToggleError) as error:
+            with self.assertRaises(pa.LoadoutError) as error:
                 operation()
             self.assertEqual(error.exception.code, "foreign-link")
             self.assertEqual(os.readlink(link), original)
@@ -40,7 +40,7 @@ class LinkSafetyTests(unittest.TestCase):
         os.symlink(target, link, target_is_directory=True)
         original = os.readlink(link)
         with patch.object(pa.os, "symlink", side_effect=OSError("fixture denial")):
-            with self.assertRaises(pa.SkillsToggleError):
+            with self.assertRaises(pa.LoadoutError):
                 self.fx.core.toggle("apple/apple-notes", "codex", True)
         self.assertTrue(link.is_symlink())
         self.assertEqual(os.readlink(link), original)
@@ -53,11 +53,11 @@ class LinkSafetyTests(unittest.TestCase):
         original = os.readlink(link)
         real_rename = pa.os.rename
         def fail_new_pointer(source, destination):
-            if Path(source).name.startswith(".hermes-switchboard-") and not Path(source).name.startswith(".hermes-switchboard-previous-"):
+            if Path(source).name.startswith(".hermes-loadout-") and not Path(source).name.startswith(".hermes-loadout-previous-"):
                 raise PermissionError("fixture replacement denied")
             return real_rename(source, destination)
         with patch.object(pa.sys, "platform", "win32"), patch.object(pa.os, "rename", side_effect=fail_new_pointer):
-            with self.assertRaises(pa.SkillsToggleError):
+            with self.assertRaises(pa.LoadoutError):
                 self.fx.core.toggle("apple/apple-notes", "codex", True)
         self.assertEqual(os.readlink(link), original)
         self.assertEqual([p.name for p in self.fx.codex.iterdir()], ["apple-notes"])
@@ -73,20 +73,10 @@ class ConfigSafetyTests(unittest.TestCase):
         for raw in ('{broken', '[]', '{"tools": []}', '{"tools":{},"tools":{}}'):
             with self.subTest(raw=raw):
                 path.write_text(raw, encoding="utf-8")
-                with self.assertRaises(pa.SkillsToggleError):
+                with self.assertRaises(pa.LoadoutError):
                     self.fx.core.set_tool("custom", "Custom", str(self.fx.tmp / "custom"))
                 self.assertEqual(path.read_text(encoding="utf-8"), raw)
 
-    def test_first_renamed_config_write_preserves_legacy_settings(self):
-        legacy = pa.legacy_user_config_path(self.fx.home)
-        data = {"tools": {"existing": {"label": "Existing", "dir": str(self.fx.tmp / "existing")}},
-                "preferences": {"keep": True}}
-        legacy.write_text(json.dumps(data), encoding="utf-8")
-        self.fx.core.set_tool("new", "New", str(self.fx.tmp / "new"))
-        new = json.loads(pa.user_config_path(self.fx.home).read_text(encoding="utf-8"))
-        self.assertEqual(new["tools"]["existing"], data["tools"]["existing"])
-        self.assertEqual(new["preferences"], data["preferences"])
-        self.assertEqual(json.loads(legacy.read_text(encoding="utf-8")), data)
 
 
 class McpSafetyTests(unittest.TestCase):
@@ -100,10 +90,10 @@ class McpSafetyTests(unittest.TestCase):
                     '{"mcpServers": {}, "mcpServers": {}}'):
             with self.subTest(raw=raw):
                 self.fx.claude.write_text(raw, encoding="utf-8")
-                with self.assertRaises(pa.SkillsToggleError):
+                with self.assertRaises(pa.LoadoutError):
                     self.mcp.sync_to_claude("weather")
                 self.assertEqual(self.fx.claude.read_text(encoding="utf-8"), raw)
-                self.assertFalse(list(self.fx.claude.parent.glob("*.bak.hermes-switchboard.*")))
+                self.assertFalse(list(self.fx.claude.parent.glob("*.bak.hermes-loadout.*")))
 
     def test_drifted_sync_requires_confirmation_for_both_writers(self):
         codex = self.fx.tmp / "codex.toml"
@@ -113,7 +103,7 @@ class McpSafetyTests(unittest.TestCase):
                              (self.mcp.sync_to_codex, codex)):
             with self.subTest(writer=method.__name__):
                 before = path.read_bytes()
-                with self.assertRaises(pa.SkillsToggleError) as error:
+                with self.assertRaises(pa.LoadoutError) as error:
                     method("docs")
                 self.assertEqual(error.exception.code, "drifted")
                 self.assertEqual(path.read_bytes(), before)
@@ -125,10 +115,10 @@ class McpSafetyTests(unittest.TestCase):
     def test_atomic_write_failure_leaves_previous_config_intact(self):
         before = self.fx.claude.read_bytes()
         with patch.object(pa.os, "replace", side_effect=OSError("fixture denial")):
-            with self.assertRaises((pa.SkillsToggleError, OSError)):
+            with self.assertRaises((pa.LoadoutError, OSError)):
                 self.mcp.sync_to_claude("weather")
         self.assertEqual(self.fx.claude.read_bytes(), before)
-        self.assertFalse(list(self.fx.claude.parent.glob(".hermes-switchboard-*")))
+        self.assertFalse(list(self.fx.claude.parent.glob(".hermes-loadout-*")))
 
     def test_state_and_logs_do_not_disclose_secret_bearing_fields(self):
         secret = "fixture-private-value-not-a-real-key"

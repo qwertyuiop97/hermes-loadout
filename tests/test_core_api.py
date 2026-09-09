@@ -123,7 +123,7 @@ spec.loader.exec_module(m)
 assert m.router is None, m.router
 for name in m.__all__:
     assert hasattr(m, name), name
-core = m.SkillsToggleCore(m.Path('/tmp/does-not-exist-hermes-switchboard'), {'hermes': {'label': 'H', 'special': 'config'}})
+core = m.HermesLoadoutCore(m.Path('/tmp/does-not-exist-hermes-loadout'), {'hermes': {'label': 'H', 'special': 'config'}})
 st = core.state()
 assert st['ok'] and st['skills'] == []
 print('PROBE_OK', m.PLUGIN_VERSION)
@@ -221,7 +221,7 @@ class StableSurfaceTests(unittest.TestCase):
         self.assertEqual(leaked, [], f"gateway leakage in module namespace: {leaked}")
 
     def test_sibling_roundtrip(self) -> None:
-        core = self.pa.SkillsToggleCore(self.fx.home, self.fx.tools, log_path=self.fx.tmp / "data" / "m.log")
+        core = self.pa.HermesLoadoutCore(self.fx.home, self.fx.tools, log_path=self.fx.tmp / "data" / "m.log")
         st = core.state()
         self.assertTrue(st["ok"])
         sid = "apple/apple-notes"
@@ -243,7 +243,7 @@ class StableSurfaceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.pa.expand_path("   ")
         # core treats un-expandable tool dirs as unconfigured, never CWD
-        core = self.pa.SkillsToggleCore(
+        core = self.pa.HermesLoadoutCore(
             self.fx.home, {"ghost": {"label": "Ghost", "dir": "${SKT_SIBLING_VAR:-}"}}
         )
         self.assertIsNone(core.tool_dir("ghost"))

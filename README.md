@@ -1,20 +1,16 @@
-# Hermes Switchboard
+# Loadout for Hermes
 
-[![tests](https://github.com/qwertyuiop97/hermes-switchboard/actions/workflows/tests.yml/badge.svg)](https://github.com/qwertyuiop97/hermes-switchboard/actions/workflows/tests.yml)
+[![tests](https://github.com/qwertyuiop97/hermes-loadout/actions/workflows/tests.yml/badge.svg)](https://github.com/qwertyuiop97/hermes-loadout/actions/workflows/tests.yml)
 
 Manage which skills your local coding tools can see, from inside Hermes Desktop.
 Keep one skill library in Hermes instead of maintaining a separate copy for
 every agent. Review changes before applying them, see what succeeded, and undo
-only the changes Switchboard actually made.
+only the changes Loadout actually made.
 
-Switchboard is useful when you use several coding agents or maintain a large
+Loadout is useful when you use several coding agents or maintain a large
 skill collection. One agent with a few skills probably does not need it. This
 is an alpha, not a claim that every listed client has been tested end to end.
 
-![Switchboard's compact pane and tool-first workspace](docs/images/hermes-switchboard.png)
-
-_Earlier alpha layout, using disposable test directories. The screenshot is not
-the current client support list or a verification of this revision._
 
 ## How it works
 
@@ -68,7 +64,7 @@ Claude Desktop has an MCP writer but no catalog skill-directory target; it is
 not the same client as Claude Code.
 
 **Global** uses the documented location in your user account. **Project** uses
-an existing project folder you explicitly select. Switchboard checks only the
+an existing project folder you explicitly select. Loadout checks only the
 supported relative paths inside that folder; it never searches your computer
 for repositories or infers a root from the process working directory. A saved
 project mapping is rechecked before use. Moved, missing, or redirected paths
@@ -81,24 +77,21 @@ requires an explicit **Custom** mapping instead of silently relaxing that scope.
 
 Important client differences:
 
-- Codex's documented path is now `.agents/skills`. Existing `.codex/skills`
-  mappings are preserved, never silently moved. A shared `.agents/skills`
+- Codex's documented path is now `.agents/skills`. A shared `.agents/skills`
   directory can be read by several clients. Changing it affects all readers;
-  Switchboard will not create independent controls for the same target path.
+  Loadout will not create independent controls for the same target path.
 - Native skill trust, precedence, validation, and permission rules still apply.
   For example, Gemini also reads `.agents/skills`, Vibe requires a trusted
   project, and Kiro CLI custom agents may need `skill://` resources. A switch
   controls a path, not every way an agent can discover or execute a skill.
-- OpenClaw is offered at its global path only. Switchboard does not change its
+- OpenClaw is offered at its global path only. Loadout does not change its
   external-link trust settings to make project links work. Local links into a
   Hermes home are not portable to cloud agents, teammates, or another machine.
 
 Grok, ZCode, Kimi, pi, and Roo Code are **unverified candidates**, not advertised
-built-in skill integrations. Explicit existing custom mappings are preserved.
-Legacy unverified directories may remain visible read-only; a label-only
-setting does not grant write access. Use **Custom** only after checking the
+built-in skill integrations. Unverified paths are not automatically configured. Use **Custom** only after checking the
 client's skill contract in disposable directories. New custom IDs use 1 to 32
-lowercase letters, digits, or hyphens; existing longer IDs remain loadable.
+lowercase letters, digits, or hyphens; generated project target IDs may be longer.
 
 ## Add a tool and import skills
 
@@ -119,7 +112,7 @@ import are kept as backups, with per-item restore information in the receipt.
 Documented Agent Skills targets require a matching, lowercase hyphenated skill
 name, valid frontmatter, and a nonempty description. Unsupported formats,
 reserved names, and ambiguous duplicate names are refused rather than rewritten.
-Legacy/custom mappings retain their existing compatibility behavior.
+Custom mappings require an explicitly reviewed client contract.
 
 ## Safety, receipts, and recovery
 
@@ -134,7 +127,7 @@ the original and use same-directory temporary writes before replacement.
 Malformed JSON/TOML and unsupported configuration shapes fail closed.
 
 Bulk receipts are persisted under
-`<hermes_home>/data/hermes-switchboard/receipts/`. They record successful changes
+`<hermes_home>/data/hermes-loadout/receipts/`. They record successful changes
 and exact before/after states. The latest receipt can be reloaded after reopening
 the workspace. **Undo** uses that saved evidence, not an inverse "toggle all":
 it skips external changes, preserves unrelated configuration edits, and refuses
@@ -148,13 +141,13 @@ assume a missing final receipt means nothing changed.
 
 Windows directory-link replacement uses a rename-aside and rollback sequence,
 not a single atomic replacement. An interrupted operation can leave a hidden
-`.hermes-switchboard-previous-*` recovery link. Do not delete it until its target
+`.hermes-loadout-previous-*` recovery link. Do not delete it until its target
 and the current entry have been inspected. Creating links on Windows may require
 Developer Mode or appropriate privileges.
 
 UI state and mutation logs redact secret-bearing MCP values, including arguments,
 URLs, environment values, and headers. **Original configuration backups can still
-contain credentials** and are not encrypted by Switchboard. Paths and server
+contain credentials** and are not encrypted by Loadout. Paths and server
 names can also be sensitive. Do not publish raw configurations, backups, receipts,
 or logs without reviewing them. Linking a skill does not audit any code it contains.
 
@@ -168,26 +161,26 @@ tagged by this change. Review a revision before installing it into a real profil
 For the default profile, clone into the plugins directory and enable the backend:
 
 ```bash
-git clone https://github.com/qwertyuiop97/hermes-switchboard.git \
-  ~/.hermes/plugins/hermes-switchboard
-hermes plugins enable hermes-switchboard
+git clone https://github.com/qwertyuiop97/hermes-loadout.git \
+  ~/.hermes/plugins/hermes-loadout
+hermes plugins enable hermes-loadout
 ```
 
-Alternatively, use `hermes plugins install qwertyuiop97/hermes-switchboard`, then
+Alternatively, use `hermes plugins install qwertyuiop97/hermes-loadout`, then
 enable the backend. The CLI can pin a full immutable commit with `--ref` as
 explained in the [Hermes plugin guide](https://hermes-agent.nousresearch.com/docs/user-guide/features/plugins).
 These commands install the default branch unless you explicitly select a revision;
 unmerged pull-request changes are not included automatically.
 
-In Hermes, enable **Hermes Switchboard** in **Settings -> Plugins**, fully quit
-and reopen the app, then open the Skills pane and choose **Open Switchboard**.
+In Hermes, enable **Loadout for Hermes** in **Settings -> Plugins**, fully quit
+and reopen the app, then open the Skills pane and choose **Open Loadout**.
 Both the backend and desktop interface are opt-in. Reloading desktop plugins
 alone does not reload Python routes or manifests.
 
 For a Git clone, update only after reviewing the changes:
 
 ```bash
-git -C ~/.hermes/plugins/hermes-switchboard pull --ff-only
+git -C ~/.hermes/plugins/hermes-loadout pull --ff-only
 ```
 
 Keep local edits and pinned revisions in mind; do not force an update over them.
@@ -195,50 +188,35 @@ Fully restart after backend/manifest changes. **Reload desktop plugins** suffice
 only for an isolated `desktop/plugin.js` update. There is no frontend build step.
 
 `$HERMES_HOME` takes precedence over `$HERMES_PROFILE`, then `~/.hermes` is the
-default. For a named profile, use that profile's `plugins/hermes-switchboard`
+default. For a named profile, use that profile's `plugins/hermes-loadout`
 directory and enable the plugin in the same profile. The paths shown in the UI
 belong to the active backend's filesystem, which may not be the desktop machine
 when a remote Hermes backend is in use.
 
-## Configuration and migration
+## Settings
 
-Settings live outside the plugin folder, at
-`<hermes_home>/hermes-switchboard.json`. If that file is absent, Switchboard reads
-the old `skills-toggle.json` filename. Merely reading settings never migrates
-or rewrites them. An explicit target save writes schema version 2, backs up the
-previous configuration, retains unrelated fields and mappings, and leaves the
-legacy original intact.
+Loadout reads only `<hermes_home>/hermes-loadout.json`. This is a clean pre-release
+identity reset. Development-era settings, receipts, and plugin registrations are
+not loaded or automatically migrated. Existing skill files and client links are
+not removed. Review them as filesystem inventory in the new installation.
 
-Existing string paths, dictionary mappings, label-only default overrides, and
-long existing client IDs remain compatible. Label-only overrides retain the old
-default path, including Codex's `.codex/skills`; new documented targets use the
-current catalog. Invalid or future-schema settings are not replaced with defaults.
-Correct the file or restore a known-good backup, then Retry or restart the backend.
-
-For a manually reviewed custom directory:
+An explicit target save backs up current settings with
+`.bak.hermes-loadout.<timestamp>` and preserves unrelated current-product fields.
+Use Add Tool for reviewed Global and Project paths. Custom targets use an explicit
+absolute or home-relative directory:
 
 ```json
-{
-  "schema_version": 2,
-  "tools": {
-    "my-client": {
-      "label": "My client",
-      "dir": "~/my-client-skills",
-      "scope": "custom"
-    }
-  }
-}
+{"schema_version": 1, "tools": {"my-client": {"label": "My client", "dir": "~/my-client-skills", "scope": "custom"}}}
 ```
 
-Paths support `~` and `${VAR:-default}` expansion. Custom paths still cannot
-overlap the canonical skill tree. Prefer Add Tool for Global/Project targets:
-it stores the client ID, scope root, canonical target, and candidate index needed
-for revalidation. Do not remove those fields to bypass a path error.
+Malformed settings are refused, not replaced with writable defaults. Correct the
+file or restore a current-product backup, then Retry. Personal development
+settings must be reviewed separately before using this pre-release reset.
 
 ## MCP connections
 
 Hermes `config.yaml`'s `mcp_servers` is the source. Skill support does not imply
-an MCP writer. Switchboard writes only:
+an MCP writer. Loadout writes only:
 
 | Client | Supported projection |
 |---|---|
@@ -291,7 +269,7 @@ python tests/check_frontend.py
 CI runs the full Python/HTTP suite on Ubuntu, macOS, and Windows, a Python 3.9
 core gate without third-party installations, and React render/interaction checks.
 Regressions cover protected entries, exact bulk/undo receipts, failed optimistic
-mutations, malformed settings, project redirection, legacy migration, native MCP
+mutations, malformed settings, project redirection, settings recovery, native MCP
 policy, secret redaction, and narrow/wide UI behavior. Package tests keep the
 README path table aligned with the catalog.
 
@@ -307,12 +285,12 @@ First use reviewed disable/remove actions for any skill links or MCP projections
 you no longer want. Then disable the backend:
 
 ```bash
-hermes plugins disable hermes-switchboard
+hermes plugins disable hermes-loadout
 ```
 
 Disable the desktop half in **Settings -> Plugins**, fully quit Hermes, and remove
 only this plugin's installation folder, or use `hermes plugins remove
-hermes-switchboard` for a CLI-managed installation. Confirm the active profile's
+hermes-loadout` for a CLI-managed installation. Confirm the active profile's
 path before deleting anything.
 
 Uninstalling does not undo earlier operations. The canonical skill library,

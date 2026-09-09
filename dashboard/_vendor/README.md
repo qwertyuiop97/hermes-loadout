@@ -4,7 +4,7 @@
 [Tomli 2.2.1](https://github.com/hukkin/tomli/tree/2.2.1/src/tomli), by Taneli
 Hukkinen. Its MIT license is included beside the source.
 
-Switchboard uses this pinned TOML 1.0 reader on every supported Python version,
+Loadout uses this pinned TOML 1.0 reader on every supported Python version,
 including Python 3.9, which has no standard-library `tomllib`. No dependency
 installation is needed. It replaces a partial parser that could lose quoted
 values and client-specific settings. The source is loaded lazily by file path,

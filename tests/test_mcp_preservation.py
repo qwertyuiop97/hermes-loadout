@@ -53,7 +53,7 @@ class McpPreservationTests(unittest.TestCase):
             with self.subTest(raw=raw):
                 self.codex.write_text(raw)
                 before = self.codex.read_bytes()
-                with self.assertRaises(pa.SkillsToggleError):
+                with self.assertRaises(pa.LoadoutError):
                     self.mcp.sync_to_codex('docs', force=True)
                 self.assertEqual(self.codex.read_bytes(), before)
 
@@ -94,7 +94,7 @@ command = "keep"
         source = self.fx.home / 'config.yaml'
         source.write_text('mcp_servers:\n  remote:\n    url: https://example.invalid/mcp\n')
         before = self.fx.claude.read_bytes()
-        with self.assertRaises(pa.SkillsToggleError) as error:
+        with self.assertRaises(pa.LoadoutError) as error:
             self.mcp.sync_to_claude('remote')
         self.assertEqual(error.exception.code, 'unsupported-transport')
         self.assertEqual(self.fx.claude.read_bytes(), before)

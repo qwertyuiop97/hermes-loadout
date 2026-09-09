@@ -23,10 +23,9 @@
       "reserved_names": [],
       "notes": "The active Hermes home remains the canonical library.",
       "special": "config",
-      "legacy_default": {
-        "label": "Hermes",
-        "special": "config"
-      }
+      "activation": "config-disabled-list",
+      "selective_activation": true,
+      "detection": "manual"
     },
     {
       "id": "agents",
@@ -53,7 +52,10 @@
       "mcp_writer": null,
       "reserved_names": [],
       "notes": "Shared directory, not a detected app. Codex, Amp, and other compatible clients may all read these links.",
-      "shared": true
+      "shared": true,
+      "activation": "symlink",
+      "selective_activation": true,
+      "detection": "known-directory"
     },
     {
       "id": "claude",
@@ -82,10 +84,9 @@
         "synced"
       ],
       "notes": "Client permissions, trust settings, and tool-specific skill extensions still apply.",
-      "legacy_default": {
-        "label": "Claude",
-        "dir": "~/.claude/skills"
-      }
+      "activation": "symlink",
+      "selective_activation": true,
+      "detection": "known-directory"
     },
     {
       "id": "codex",
@@ -111,13 +112,12 @@
       ],
       "mcp_writer": "codex",
       "reserved_names": [],
-      "notes": "Current documented skills use .agents/skills. Existing .codex/skills mappings are preserved, not silently moved. Shared-folder changes affect other readers.",
+      "notes": "Uses .agents/skills. This is a shared target: changes affect every client reading it, not only Codex.",
       "shared": true,
       "detect_marker": "~/.codex",
-      "legacy_default": {
-        "label": "Codex",
-        "dir": "~/.codex/skills"
-      }
+      "activation": "symlink",
+      "selective_activation": true,
+      "detection": "known-directory"
     },
     {
       "id": "opencode",
@@ -144,10 +144,9 @@
       "mcp_writer": null,
       "reserved_names": [],
       "notes": "Client permissions, trust settings, and tool-specific skill extensions still apply.",
-      "legacy_default": {
-        "label": "OpenCode",
-        "dir": "${OPENCODE_CONFIG_DIR:-~/.config/opencode}/skills"
-      }
+      "activation": "symlink",
+      "selective_activation": true,
+      "detection": "known-directory"
     },
     {
       "id": "cursor",
@@ -174,11 +173,9 @@
       "mcp_writer": null,
       "reserved_names": [],
       "notes": "Local skill links only. This does not synchronize skills into Cursor cloud agents.",
-      "legacy_default": {
-        "label": "Cursor",
-        "dir": "~/.cursor/skills",
-        "optional": true
-      }
+      "activation": "symlink",
+      "selective_activation": true,
+      "detection": "known-directory"
     },
     {
       "id": "cline",
@@ -204,7 +201,10 @@
       ],
       "mcp_writer": null,
       "reserved_names": [],
-      "notes": "Client permissions, trust settings, and tool-specific skill extensions still apply."
+      "notes": "Client permissions, trust settings, and tool-specific skill extensions still apply.",
+      "activation": "symlink",
+      "selective_activation": true,
+      "detection": "known-directory"
     },
     {
       "id": "gemini",
@@ -231,11 +231,9 @@
       "mcp_writer": null,
       "reserved_names": [],
       "notes": "Gemini also reads .agents/skills; those aliases can take precedence over its native directory.",
-      "legacy_default": {
-        "label": "Gemini",
-        "dir": "~/.gemini/skills",
-        "optional": true
-      }
+      "activation": "symlink",
+      "selective_activation": true,
+      "detection": "known-directory"
     },
     {
       "id": "copilot",
@@ -262,11 +260,9 @@
       "mcp_writer": null,
       "reserved_names": [],
       "notes": "Local clients only. Links into your Hermes home are not portable to Copilot cloud or other computers.",
-      "legacy_default": {
-        "label": "Copilot",
-        "dir": "~/.copilot/skills",
-        "optional": true
-      }
+      "activation": "symlink",
+      "selective_activation": true,
+      "detection": "known-directory"
     },
     {
       "id": "kilo",
@@ -292,7 +288,10 @@
       ],
       "mcp_writer": null,
       "reserved_names": [],
-      "notes": "Current Kilo CLI-backed platform. Older extension paths are not guessed or migrated."
+      "notes": "Current Kilo CLI-backed platform. Older extension paths are not guessed or migrated.",
+      "activation": "symlink",
+      "selective_activation": true,
+      "detection": "known-directory"
     },
     {
       "id": "kiro",
@@ -318,7 +317,10 @@
       ],
       "mcp_writer": null,
       "reserved_names": [],
-      "notes": "Kiro CLI custom agents may require skill:// resources in their agent configuration."
+      "notes": "Kiro CLI custom agents may require skill:// resources in their agent configuration.",
+      "activation": "symlink",
+      "selective_activation": true,
+      "detection": "known-directory"
     },
     {
       "id": "amp",
@@ -344,7 +346,10 @@
       ],
       "mcp_writer": null,
       "reserved_names": [],
-      "notes": "Project .agents/skills is shared. Other global compatibility locations may take precedence."
+      "notes": "Project .agents/skills is shared. Other global compatibility locations may take precedence.",
+      "activation": "symlink",
+      "selective_activation": true,
+      "detection": "known-directory"
     },
     {
       "id": "vibe",
@@ -370,7 +375,10 @@
       ],
       "mcp_writer": null,
       "reserved_names": [],
-      "notes": "Project skills require a trusted working directory in Vibe."
+      "notes": "Project skills require a trusted working directory in Vibe.",
+      "activation": "symlink",
+      "selective_activation": true,
+      "detection": "known-directory"
     },
     {
       "id": "windsurf",
@@ -397,11 +405,9 @@
       "mcp_writer": null,
       "reserved_names": [],
       "notes": "Cascade skills format, not Devin Local agent or Windsurf rules.",
-      "legacy_default": {
-        "label": "Windsurf",
-        "dir": "~/.codeium/windsurf/skills",
-        "optional": true
-      }
+      "activation": "symlink",
+      "selective_activation": true,
+      "detection": "known-directory"
     },
     {
       "id": "openclaw",
@@ -425,7 +431,10 @@
       "project": [],
       "mcp_writer": null,
       "reserved_names": [],
-      "notes": "Default OpenClaw state only. Project roots reject external links unless the owner changes OpenClaw trust settings, which Switchboard does not do."
+      "notes": "Default OpenClaw state only. Project roots reject external links unless the owner changes OpenClaw trust settings, which Loadout does not do.",
+      "activation": "symlink",
+      "selective_activation": true,
+      "detection": "known-directory"
     },
     {
       "id": "grok",
@@ -441,11 +450,10 @@
       "project": [],
       "mcp_writer": null,
       "reserved_names": [],
-      "notes": "No primary client path contract was established for this CLI. Existing explicit custom mappings are preserved.",
-      "legacy_default": {
-        "label": "Grok",
-        "dir": "~/.grok/skills"
-      }
+      "notes": "No primary client path contract was established for this CLI.",
+      "activation": null,
+      "selective_activation": false,
+      "detection": "manual"
     },
     {
       "id": "zcode",
@@ -461,12 +469,10 @@
       "project": [],
       "mcp_writer": null,
       "reserved_names": [],
-      "notes": "A shared .agents folder is not evidence that ZCode is installed or compatible. Existing explicit custom mappings are preserved.",
-      "legacy_default": {
-        "label": "ZCode",
-        "dir": "~/.agents/skills",
-        "fallback_dir": "~/.zcode/skills"
-      }
+      "notes": "The shared .agents directory is not evidence that this client is installed or compatible.",
+      "activation": null,
+      "selective_activation": false,
+      "detection": "manual"
     },
     {
       "id": "kimi",
@@ -482,12 +488,10 @@
       "project": [],
       "mcp_writer": null,
       "reserved_names": [],
-      "notes": "Legacy candidate path has not been verified against a current primary client contract. Existing explicit custom mappings are preserved.",
-      "legacy_default": {
-        "label": "Kimi",
-        "dir": "~/.kimi/skills",
-        "optional": true
-      }
+      "notes": "No current verified client contract is included. A reviewed Custom path is required.",
+      "activation": null,
+      "selective_activation": false,
+      "detection": "manual"
     },
     {
       "id": "pi",
@@ -503,7 +507,10 @@
       "project": [],
       "mcp_writer": null,
       "reserved_names": [],
-      "notes": "Not yet verified in this catalog. Existing explicit custom mappings are preserved."
+      "notes": "Not yet verified in this catalog.",
+      "activation": null,
+      "selective_activation": false,
+      "detection": "manual"
     },
     {
       "id": "roo",
@@ -519,7 +526,10 @@
       "project": [],
       "mcp_writer": null,
       "reserved_names": [],
-      "notes": "Not yet verified in this catalog. Existing explicit custom mappings are preserved."
+      "notes": "Not yet verified in this catalog.",
+      "activation": null,
+      "selective_activation": false,
+      "detection": "manual"
     },
     {
       "id": "claude-desktop",
@@ -540,7 +550,10 @@
       "project": [],
       "mcp_writer": "claude",
       "reserved_names": [],
-      "notes": "MCP writer only. Claude Code skill directories are a different client surface."
+      "notes": "MCP writer only. Claude Code skill directories are a different client surface.",
+      "activation": null,
+      "selective_activation": false,
+      "detection": "manual"
     }
   ]
 }

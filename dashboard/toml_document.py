@@ -25,12 +25,12 @@ def reader():
     with _LOCK:
         if _READER is None:
             path = Path(__file__).parent / '_vendor' / 'tomli' / '__init__.py'
-            name = '_switchboard_tomli_' + hashlib.sha256(str(path.resolve()).encode()).hexdigest()[:16]
+            name = '_loadout_tomli_' + hashlib.sha256(str(path.resolve()).encode()).hexdigest()[:16]
             module = sys.modules.get(name)
             if module is None:
                 spec = importlib.util.spec_from_file_location(name, path, submodule_search_locations=[str(path.parent)])
                 if spec is None or spec.loader is None:
-                    raise ValueError('bundled TOML reader is missing; reinstall Switchboard')
+                    raise ValueError('bundled TOML reader is missing; reinstall Loadout')
                 module = importlib.util.module_from_spec(spec)
                 sys.modules[name] = module
                 try:
