@@ -18,10 +18,11 @@ Compact pane (right, ~320px)          Control Center (workspace / /skills-toggle
 ┌──────────────────────────┐          ┌ Tools | Sets | Problems | MCP | Advanced ─┐
 │ Skills   105 · 5 tools   │          │ Claude     39 on / 105                    │
 │ 3 broken · 1 drift       │          │ [Manage]  [Enable all]  [Disable all]     │
-│ Claude    39 on  Manage  │          │ …                                         │
-│ Codex     62 on  Manage  │          │ Single-tool: one switch per skill         │
-│ Open Control Center      │          │ Preview → confirm → receipt → Undo        │
-└──────────────────────────┘          └───────────────────────────────────────────┘
+│ Claude    39 on          │          │ …                                         │
+│ Codex     62 on          │          │ Single-tool: one switch per skill         │
+│ [Open Control Center]    │          │ Preview → confirm → receipt → Undo        │
+│ [Scan]  [Problems (n)]   │          └───────────────────────────────────────────┘
+└──────────────────────────┘
 ```
 
 ## Package layout (unified: one folder, both SDKs)
@@ -149,7 +150,8 @@ surface.
 Columns are Hermes plus every present tool; no tool is silently omitted.
 Categories start collapsed; descriptions stay hidden until asked.
 
-Arrivals of new Hermes skills surface on **Tools**, not buried under Advanced.
+Arrivals of new Hermes skills surface prominently on **Tools**, and the same
+banner repeats in Setup/Advanced where auto-link preferences live.
 
 ## API (mounted at `/api/plugins/skills-toggle/`)
 
@@ -164,14 +166,14 @@ Stable routes are additive. Existing `/import/scan`, `/import/apply`,
 | `GET /diff` | — | unlinked skills, broken/foreign/unmanaged links |
 | `POST /toggle` | `{skill, tool, enabled}` | add/remove one symlink or edit `skills.disabled` |
 | `POST /toggle-bulk` | `{skills: […], tool, enabled}` | bulk toggle with per-skill results |
-| `POST /bulk/plan` | `{tool, skill_ids, enabled}` | dry-run preview (changed / already / refused) |
-| `POST /bulk/apply` | exact planned entries | apply only the reviewed plan; receipt + undo token |
+| `POST /bulk/plan` | `{skills: […], tool, enabled}` | dry-run preview (changed / already / refused) |
+| `POST /bulk/apply` | `{skills, tool, enabled, receipt_id}` | apply only the reviewed plan; receipt + undo token |
 | `POST /repair` | `{skill, tool}` | re-point a broken link |
 | `POST /repair-all` | — | repair every broken link that points into the skills tree |
 | `POST /ensure-tool-dir` | `{tool}` | create a missing tool skills dir |
 | `GET /import/scan` | — | classify tool dirs (managed / broken / foreign / adoptable / drift) |
 | `POST /import/apply` | selected copies | adopt copies into Hermes (legacy apply) |
-| `POST /import/plan` | `{tools?, extra_roots?}` | first-run / scan-wizard dry-run |
+| `POST /import/plan` | `{tools?, scan_roots?, category?}` | first-run / scan-wizard dry-run |
 | `POST /import/apply-plan` | exact planned entries | apply only the reviewed plan |
 | `GET /drift` | — | same-name skills whose SKILL.md hashes differ |
 | `POST /config/tools` | tool map | write `<hermes_home>/skills-toggle.json` |
