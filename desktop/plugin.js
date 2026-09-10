@@ -1336,6 +1336,23 @@ function OperationItems({ items, tools }) {
     ] }, `${item.kind || 'repair'}-${item.app || item.tool}-${item.id || item.name}-${index}`)) })
 }
 
+function operationPreviewDescription(preview, tools, actionable) {
+  const labelFor = app => app === 'library' ? 'Library' : app === 'claude-desktop' ? 'Claude Desktop' : ((tools || []).find(tool => tool.id === app)?.label || app)
+  const labels = { enable: 'Enable', disable: 'Disable', unchanged: 'Unchanged', unavailable: 'Unavailable',
+    conflict: 'Conflict', protected: 'Protected', completed: 'Completed', failed: 'Failed', replace: 'Replace reviewed copy', restore: 'Restore', pending: 'Needs recovery' }
+  const intro = preview.description || 'Only the listed selections will change. Other applications and unlisted capabilities remain unchanged.'
+  const items = (preview.items || []).map(item => {
+    const target = labelFor(item.app || item.tool) || 'Library'
+    const action = labels[item.status] || item.status || 'Remove broad link'
+    const detail = item.error || item.reason
+    return `${item.id || item.name} · ${target}: ${action}${detail ? ` — ${detail}` : ''}`
+  }).join('; ')
+  const ending = actionable
+    ? 'Refresh the affected application or start a new session afterward. Entries changed since this preview will be protected.'
+    : 'Nothing in this preview can change safely. Close it and resolve the listed issues.'
+  return [intro, items, ending].filter(Boolean).join(' ')
+}
+
 function OperationsPanel() {
   const qc = useQueryClient()
   const ui = useValue(operationUIAtom)
@@ -1367,11 +1384,7 @@ function OperationsPanel() {
     recovery ? jsx('p', { role: 'alert', className: 'mt-2 break-words text-(--ui-text-warning)', children: 'Stop changing these files. Preserve data/hermes-loadout/pending-operation.json and backups in the active Hermes profile. Inspect the affected entries before manual recovery, then refresh. Do not delete a pending record just to retry.' }) : null,
     expanded && receipt ? jsx(OperationItems, { items: receipt.items, tools: stateQuery.data && stateQuery.data.tools }) : null,
     jsx(ConfirmDialog, { open: !!preview, title: preview ? preview.label || 'Repair catalog bypass' : '',
-      description: preview ? jsxs('div', { className: 'flex min-w-0 flex-col gap-3', children: [
-        jsx('p', { className: 'text-sm', children: preview.description || 'Only the listed selections will change. Other applications and unlisted capabilities remain unchanged.' }),
-        jsx(OperationItems, { items: preview.items, tools: stateQuery.data && stateQuery.data.tools }),
-        jsx('p', { className: 'text-xs text-muted-foreground', children: actionable ? 'Refresh the affected application or start a new session afterward. Entries changed since this preview will be protected.' : 'Nothing in this preview can change safely. Close it and resolve the listed issues.' })
-      ] }) : null,
+      description: preview ? operationPreviewDescription(preview, stateQuery.data && stateQuery.data.tools, actionable) : null,
       onClose: cancelOperationReview,
       onConfirm: () => { if (!ui.busy) actionable ? applyOperation(qc) : cancelOperationReview() },
       confirmLabel: ui.busy ? 'Working…' : actionable ? 'Apply reviewed changes' : 'Close preview' })
@@ -1932,7 +1945,7 @@ function FirstRunWizard() {
   }
   const startApply = () => setConfirm({
     title: t('wizardConfirmTitle'),
-    description: jsx(ImportPlanPreview, { plan: plan, chosen: chosen }),
+    description: t('wizardConfirmDescription', chosen.length),
     confirmLabel: t('wizardConfirmApply'),
     action: () => {
       setConfirm(null)
@@ -2285,6 +2298,7 @@ export default {
         wizardApplySafety: 'Only the exact selected source, name, and tool entries shown here will be submitted. Changed or newly conflicting entries are refused by the backend.',
         wizardApply: 'Apply plan…',
         wizardConfirmTitle: 'Adopt these skills into Hermes?',
+        wizardConfirmDescription: count => `Apply the reviewed import for ${count} selected skill${count === 1 ? '' : 's'}? No other application or skill state will change.`,
         wizardConfirmApply: 'Confirm adoption',
         wizardApplyingTitle: 'Applying reviewed plan…',
         wizardApplyingDesc: 'Each entry is rolled back independently if its copy or link swap fails.',
