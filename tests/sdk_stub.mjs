@@ -51,7 +51,9 @@ export const Skeleton = (props) => el('div', { 'data-skeleton': 'true', classNam
 export const ScrollArea = (props) => el('div', { className: props.className }, props.children)
 export const Separator = () => el('hr', {}, null)
 export const Tip = (props) => el('span', { 'data-tip': String(props.label) }, props.children)
-export const ConfirmDialog = (props) => (props.open ? el('div', { role: 'dialog' }, el('div', {}, props.title), el('div', {}, props.description ?? ''), el('button', { onClick: props.onClose }, 'Cancel'), el('button', { onClick: props.onConfirm }, props.confirmLabel || 'Confirm')) : null)
+// Hermes renders ConfirmDialog descriptions inside a paragraph. Mirroring that
+// structure makes the harness catch invalid nested block markup.
+export const ConfirmDialog = (props) => (props.open ? el('div', { role: 'dialog' }, el('div', {}, props.title), el('p', {}, props.description ?? ''), el('button', { onClick: props.onClose }, 'Cancel'), el('button', { onClick: props.onConfirm }, props.confirmLabel || 'Confirm')) : null)
 export const SegmentedControl = (props) => el('div', { role: 'radiogroup' }, props.options.map(o => el('button', { role: 'radio', 'aria-checked': props.value === o.id, onClick: () => props.onChange(o.id), key: o.id }, o.label)))
 
 export function useQuery({ queryKey }) {
