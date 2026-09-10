@@ -1,8 +1,8 @@
-"""hermes-switchboard — agent half of a unified Hermes plugin package.
+"""hermes-loadout — agent half of a unified Hermes plugin package.
 
 The agent half is intentionally inert: the feature's surface is the desktop
 pane (desktop/plugin.js) and its backend routes (dashboard/plugin_api.py,
-mounted at /api/plugins/hermes-switchboard/ once the plugin is in
+mounted at /api/plugins/hermes-loadout/ once the plugin is in
 `plugins.enabled`). register() is a no-op — no tools, hooks, or commands are
 added to the agent loop; this plugin is a user-facing control pane, not an
 agent capability.

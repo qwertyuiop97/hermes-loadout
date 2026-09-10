@@ -1,4 +1,4 @@
-"""Round-trip tests for hermes-switchboard's backend core.
+"""Round-trip tests for hermes-loadout's backend core.
 
 Everything runs against throwaway fixtures in a temp dir — the machine's real
 ~/.hermes and tool dirs are never touched.
@@ -17,14 +17,20 @@ import unittest
 from pathlib import Path
 
 import importlib.util
+import sys
+from contextlib import ExitStack
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from isolation import disposable_root, guard_mcp_construction, isolated_user_home, run_isolated_python
 
 _REPO = Path(__file__).resolve().parent.parent
 _SPEC = importlib.util.spec_from_file_location("plugin_api", _REPO / "dashboard" / "plugin_api.py")
 pa = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(pa)
+guard_mcp_construction(pa)
 
-SkillsToggleCore = pa.SkillsToggleCore
-SkillsToggleError = pa.SkillsToggleError
+HermesLoadoutCore = pa.HermesLoadoutCore
+LoadoutError = pa.LoadoutError
 
 
 LONG_DESCRIPTION = "A deliberately long description that exceeds the truncation window. " * 6
@@ -64,7 +70,8 @@ class Fixture:
     """Fake hermes home + five consumer tool dirs covering every state."""
 
     def __init__(self) -> None:
-        self.tmp = Path(tempfile.mkdtemp(prefix="hermes-switchboard-test-"))
+        self._scope = ExitStack()
+        self.tmp = self._scope.enter_context(disposable_root())
         self.home = self.tmp / "hermes"
         (self.home / "skills").mkdir(parents=True)
         (self.home / "config.yaml").write_text(CONFIG_YAML, encoding="utf-8")
@@ -103,17 +110,17 @@ class Fixture:
             "grok": {"label": "Grok", "dir": self.grok},
             "zcode": {"label": "ZCode", "dir": self.zcode},
         }
-        self.core = SkillsToggleCore(self.home, self.tools, log_path=self.tmp / "data" / "mutations.log")
+        self.core = HermesLoadoutCore(self.home, self.tools, log_path=self.tmp / "data" / "mutations.log")
 
     def cleanup(self) -> None:
-        shutil.rmtree(self.tmp, ignore_errors=True)
+        self._scope.close()
 
 
 def call(fn, *args, **kwargs):
-    """Run a core method, converting SkillsToggleError into {ok:False} like the route layer."""
+    """Run a core method, converting LoadoutError into {ok:False} like the route layer."""
     try:
         return fn(*args, **kwargs)
-    except SkillsToggleError as exc:
+    except LoadoutError as exc:
         return {"ok": False, "error": str(exc), "code": exc.code}
 
 
@@ -217,7 +224,7 @@ class FixtureTest(unittest.TestCase):
         self.assertIn("creation_nudge_interval: 15", text)
         self.assertIn("- airtable", text)  # pre-existing member untouched
         # backup created
-        backups = list(self.fx.home.glob("config.yaml.bak.hermes-switchboard.*"))
+        backups = list(self.fx.home.glob("config.yaml.bak.hermes-loadout.*"))
         self.assertEqual(len(backups), 1)
         self.assertNotIn("- \"apple-notes\"", backups[0].read_text(encoding="utf-8"))
         # idempotent
@@ -613,8 +620,14 @@ class FrontmatterTests(unittest.TestCase):
 
 
 class PathAndConfigTests(unittest.TestCase):
+    def setUp(self):
+        scope = ExitStack()
+        self.addCleanup(scope.close)
+        self.root = scope.enter_context(disposable_root())
+        self.user = scope.enter_context(isolated_user_home(self.root / "user"))
+
     def test_expand_path(self) -> None:
-        base = tempfile.mkdtemp(prefix="hermes-switchboard-expand-")
+        base = tempfile.mkdtemp(prefix="hermes-loadout-expand-")
         os.environ["SKT_TEST_VAR"] = base
         try:
             self.assertTrue(pa.same_path(pa.expand_path("${SKT_TEST_VAR}/skills"), Path(base) / "skills"))
@@ -628,11 +641,11 @@ class PathAndConfigTests(unittest.TestCase):
     def test_user_tool_overrides_and_custom_tool(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             home = Path(td)
-            (home / "hermes-switchboard.json").write_text(
+            (home / "hermes-loadout.json").write_text(
                 json.dumps(
                     {
                         "tools": {
-                            "claude": "/custom/claude",
+                            "claude": {"dir": "/custom/claude", "scope": "custom"},
                             "ghost": {"label": "Ghost", "dir": "~/ghost-skills"},
                             "hermes": {"label": "Hermes (renamed)"},
                         }
@@ -646,51 +659,42 @@ class PathAndConfigTests(unittest.TestCase):
             self.assertEqual(tools["hermes"].get("special"), "config")  # hermes stays config-backed
             self.assertEqual(tools["hermes"]["label"], "Hermes (renamed)")
 
-    def test_user_config_garbage_ignored(self) -> None:
+    def test_user_config_garbage_refuses_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             home = Path(td)
-            (home / "hermes-switchboard.json").write_text("{not json", encoding="utf-8")
-            tools = pa.load_tools_config(home)
-            self.assertIn("claude", tools)
+            (home / "hermes-loadout.json").write_text("{not json", encoding="utf-8")
+            with self.assertRaises(pa.LoadoutError) as raised:
+                pa.load_tools_config(home)
+            self.assertEqual(raised.exception.code, "config-invalid")
 
-    def test_pre_rename_user_config_still_loads(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            home = Path(td)
-            (home / "skills-toggle.json").write_text(
-                json.dumps({"tools": {"cursor": {"label": "Cursor", "dir": "~/cursor-skills"}}}),
-                encoding="utf-8",
-            )
-            tools = pa.load_tools_config(home)
-            self.assertEqual(tools["cursor"]["label"], "Cursor")
-            self.assertEqual(pa.user_config_path(home).name, "hermes-switchboard.json")
 
     def test_hermes_home_resolution(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            prof = Path(td) / ".hermes" / "profiles" / "lab"
-            prof.mkdir(parents=True)
-            env = dict(os.environ)
-            env.pop("HERMES_HOME", None)
-            env["HERMES_PROFILE"] = "lab"
-            old_home = env.get("HOME")
-            env["HOME"] = td
-            old_home_cls = Path.home
-            Path.home = classmethod(lambda cls: Path(td))  # Windows ignores HOME
-            try:
-                os.environ.clear()
-                os.environ.update(env)
-                self.assertTrue(pa.same_path(pa.hermes_home(), prof))
-                explicit = Path(td) / "explicit"
-                os.environ["HERMES_HOME"] = str(explicit)
-                self.assertTrue(pa.same_path(pa.hermes_home(), explicit))
-            finally:
-                os.environ.clear()
-                os.environ.update({k: v for k, v in env.items()})
-                os.environ["HOME"] = old_home or os.environ.get("HOME", "")
-                Path.home = old_home_cls
+        probe = """
+import importlib.util
+import os
+from pathlib import Path
+spec = importlib.util.spec_from_file_location('default_home_probe', MODULE)
+api = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(api)
+user = Path.home()
+os.environ.pop('HERMES_HOME', None)
+assert api.same_path(api.hermes_home(), user / '.hermes')
+profile = user / '.hermes/profiles/lab'
+profile.mkdir(parents=True)
+os.environ['HERMES_PROFILE'] = 'lab'
+assert api.same_path(api.hermes_home(), profile)
+explicit = user / 'explicit'
+os.environ['HERMES_HOME'] = str(explicit)
+assert api.same_path(api.hermes_home(), explicit)
+print('HOME_RESOLUTION_OK')
+""".replace('MODULE', repr(str(_REPO / 'dashboard/plugin_api.py')))
+        result = run_isolated_python(probe, self.user)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('HOME_RESOLUTION_OK', result.stdout)
 
     def test_missing_skills_root_reports_cleanly(self) -> None:
         with tempfile.TemporaryDirectory() as td:
-            core = SkillsToggleCore(Path(td) / "nothere", {"hermes": {"label": "Hermes", "special": "config"}})
+            core = HermesLoadoutCore(Path(td) / "nothere", {"hermes": {"label": "Hermes", "special": "config"}})
             st = core.state()
             self.assertTrue(st["ok"])
             self.assertEqual(st["skills"], [])

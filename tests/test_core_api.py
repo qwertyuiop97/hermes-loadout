@@ -16,14 +16,14 @@ import ast
 import importlib.util
 import json
 import os
-import subprocess
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 MODULE = REPO / "dashboard" / "plugin_api.py"
+sys.path.insert(0, str(REPO / "tests"))
+from isolation import disposable_root, isolated_user_home, run_isolated_python
 
 # py3.10+ has sys.stdlib_module_names; older interpreters fall back to a
 # curated superset of the stdlib top-levels this test could plausibly see.
@@ -117,24 +117,26 @@ class Blocker:
 BLOCKED = {'fastapi', 'yaml'}
 sys.meta_path.insert(0, Blocker())
 import importlib.util
-spec = importlib.util.spec_from_file_location('sib_core', 'MODULE_PATH')
+spec = importlib.util.spec_from_file_location('sib_core', MODULE_PATH)
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
 assert m.router is None, m.router
 for name in m.__all__:
     assert hasattr(m, name), name
-core = m.SkillsToggleCore(m.Path('/tmp/does-not-exist-hermes-switchboard'), {'hermes': {'label': 'H', 'special': 'config'}})
+core = m.HermesLoadoutCore(m.Path.cwd() / 'absent-hermes', {'hermes': {'label': 'H', 'special': 'config'}})
 st = core.state()
 assert st['ok'] and st['skills'] == []
 print('PROBE_OK', m.PLUGIN_VERSION)
-""".replace('MODULE_PATH', str(MODULE))
-        r = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, timeout=60)
+""".replace('MODULE_PATH', repr(str(MODULE)))
+        with disposable_root() as root:
+            r = run_isolated_python(probe, root / "user")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("PROBE_OK", r.stdout)
 
     def test_no_io_at_import_time(self) -> None:
         """Importing the module must not create files or dirs anywhere."""
-        with tempfile.TemporaryDirectory() as td:
+        with disposable_root() as root:
+            td = str(root / "user")
             probe = (
                 "import sys, os\n"
                 "os.chdir(r'%s')\n"
@@ -147,7 +149,7 @@ print('PROBE_OK', m.PLUGIN_VERSION)
                 "assert before == after, after - before\n"
                 "print('NO_IO_OK')\n"
             ) % (td, MODULE)
-            r = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, timeout=60)
+            r = run_isolated_python(probe, Path(td))
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertIn("NO_IO_OK", r.stdout)
 
@@ -221,7 +223,7 @@ class StableSurfaceTests(unittest.TestCase):
         self.assertEqual(leaked, [], f"gateway leakage in module namespace: {leaked}")
 
     def test_sibling_roundtrip(self) -> None:
-        core = self.pa.SkillsToggleCore(self.fx.home, self.fx.tools, log_path=self.fx.tmp / "data" / "m.log")
+        core = self.pa.HermesLoadoutCore(self.fx.home, self.fx.tools, log_path=self.fx.tmp / "data" / "m.log")
         st = core.state()
         self.assertTrue(st["ok"])
         sid = "apple/apple-notes"
@@ -232,8 +234,9 @@ class StableSurfaceTests(unittest.TestCase):
         text = (self.fx.home / "config.yaml").read_text()
         out = self.pa.set_disabled_member(text, "some-skill", add=True)
         self.assertIn("some-skill", self.pa.parse_disabled(out))
-        # tool map loader is a pure function of home
-        tools = self.pa.load_tools_config(self.fx.home)
+        # Catalog candidates also depend on the user home and environment.
+        with isolated_user_home(self.fx.tmp / "user", self.fx.home):
+            tools = self.pa.load_tools_config(self.fx.home)
         self.assertIn("claude", tools)
 
     def test_expand_path_never_cwd(self) -> None:
@@ -243,7 +246,7 @@ class StableSurfaceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.pa.expand_path("   ")
         # core treats un-expandable tool dirs as unconfigured, never CWD
-        core = self.pa.SkillsToggleCore(
+        core = self.pa.HermesLoadoutCore(
             self.fx.home, {"ghost": {"label": "Ghost", "dir": "${SKT_SIBLING_VAR:-}"}}
         )
         self.assertIsNone(core.tool_dir("ghost"))

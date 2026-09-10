@@ -66,12 +66,12 @@ const channel = {
   drift: { ok: true, count: 1, drifted: [] },
   bundle: {}, registry: [], notifications: [], navigations: [], invalidated: [], workspaces: [], restCalls: []
 }
-globalThis.__SKT = channel
+globalThis.__LOADOUT_TEST = channel
 
 const plugin = (await import(STAGING)).default
 const storage = new Map()
 plugin.register({
-  source: 'plugin:hermes-switchboard',
+  source: 'plugin:hermes-loadout',
   rest: async path => {
     channel.restCalls.push({ path })
     if (path === '/state') return channel.state
@@ -90,14 +90,14 @@ plugin.register({
   registerMany: contributions => contributions.forEach(c => channel.registry.push(c))
 })
 
-ok(plugin.id === 'hermes-switchboard', 'plugin id matches')
+ok(plugin.id === 'hermes-loadout', 'plugin id matches')
 ok(plugin.defaultEnabled === false, 'desktop half remains opt-in')
 ok(channel.registry.length === 6, 'six contributions remain registered')
 const pane = channel.registry.find(c => c.area === 'panes')
 const page = channel.registry.find(c => c.area === 'routes')
 const chip = channel.registry.find(c => c.area === 'statusbar.right')
 ok(pane?.data?.placement === 'right' && pane?.data?.width === '320px', 'pane stays right at 320px')
-ok(page?.data?.path === '/hermes-switchboard', 'route fallback stays /hermes-switchboard')
+ok(page?.data?.path === '/hermes-loadout', 'route fallback stays /hermes-loadout')
 ok(renderToString(chip.render()).includes('1 broken'), 'status chip retains health summary')
 
 const source = (await import('fs')).readFileSync(PLUGIN_SRC, 'utf8')
@@ -107,12 +107,12 @@ ok(missingKeys.length === 0, `all static i18n keys exist (${missingKeys.join(', 
 
 const render = () => renderToString(pane.render())
 let html = render()
-ok(html.includes('>Skills<'), 'compact pane title renders')
+ok(html.includes('>Loadout<'), 'compact pane title renders')
 ok(html.includes('3 skills · 5 tools'), 'compact stat line renders')
 ok((html.match(/data-summary-tool=/g) || []).length === 6, 'five link tools plus Hermes render')
 ok(html.includes('2 on') && html.includes('1 on') && html.includes('0 on'), 'enabled counts render as labels')
 ok((html.match(/role="switch"/g) || []).length === 0, 'compact pane renders zero switches')
-ok(html.includes('Open Switchboard') && html.includes('Scan') && html.includes('Problems (5)'), 'three quick actions render for problems')
+ok(html.includes('Open Loadout') && html.includes('Scan') && html.includes('Issues (2)'), 'quick action counts actionable issues, not protected entries')
 ok(!html.includes('Search skills') && !html.includes('Set up your tools'), 'catalog controls are absent from the pane')
 
 const fs = await import('fs')
@@ -129,7 +129,7 @@ channel.state = makeState()
 channel.diff = mixed.diff
 channel.drift = mixed.drift
 html = render()
-ok(html.includes('2 broken · 5 drift · 4 foreign · 4 unlinked') && html.includes('Problems (15)'), 'mixed problem totals combine foreign and unmanaged')
+ok(html.includes('2 broken · 5 conflicts · 4 protected · 0 bypasses') && html.includes('Issues (7)'), 'protected entries remain visible without inflating the actionable issue count')
 
 channel.mode = 'loading'
 html = render()
