@@ -1,245 +1,252 @@
-this is astra pro
+# Loadout for Hermes
 
-# Hermes Switchboard
+Keep a skill library without making every skill available to every agent.
 
-[![tests](https://github.com/qwertyuiop97/hermes-switchboard/actions/workflows/tests.yml/badge.svg)](https://github.com/qwertyuiop97/hermes-switchboard/actions/workflows/tests.yml)
+Loadout runs inside Hermes Desktop. It shows the skills you already have, lets
+you choose what each application can discover, and saves those choices as named
+loadouts. It also manages supported MCP connections. Every capability change is
+reviewed before it is applied, with a receipt and a previewed undo.
 
-Hermes Switchboard manages the skills and MCP connections used by your AI
-coding tools. It runs inside the Hermes desktop app.
+This is for people who use several coding agents or maintain more skills than
+they want active at once. One application with a small skill collection may not
+need it. This is a pre-release alpha, not a certification of every client.
 
-If you use several coding agents, their skills usually end up scattered across
-different hidden folders. Copies fall out of date, new skills must be added to
-each tool, and it becomes difficult to tell what is enabled where. Switchboard
-keeps one canonical skill library in Hermes and gives you a single place to
-control which tools can use each skill.
+![Loadout for Hermes showing per-application skill controls](docs/images/loadout-for-hermes.png)
 
-![Hermes Switchboard running in the Hermes desktop app](docs/images/hermes-switchboard.png)
+_Applications view in Hermes Desktop, captured with a disposable profile and
+synthetic skills._
 
-_The compact Skills pane beside the full Switchboard workspace. This screenshot
-uses an isolated test profile._
+## Library, import, and activation
 
-## What it helps with
+The library lives in `<hermes_home>/skills/<category>/<name>/SKILL.md`. The default
+Hermes home is `~/.hermes`. A skill can be stored there and **off everywhere**.
 
-- See which skills are enabled for each coding tool.
-- Enable or disable every skill for one tool without working through a long
-  list of switches.
-- Find broken links, out-of-date copies, and skills that are not connected to
-  any tool.
-- Bring existing skill folders into Hermes through a reviewed import.
-- Keep selected MCP server definitions in sync with Claude Desktop and Codex.
-- Add another client by pointing Switchboard at its skills directory.
+**Scan** reads supported locations and folders you select. It does not install
+applications, create links, change settings, or activate anything.
 
-Switchboard is most useful for Hermes users who work with more than one coding
-agent or maintain a large skill collection. It is probably unnecessary if you
-use one agent with only a few skills.
+**Import** adds a reviewed copy to the library. A new skill from an ordinary
+folder starts off in Hermes and receives no application links. A skill already
+active in a source application keeps that application's access; other applications
+and existing Hermes selections are unchanged. The original application copy is
+preserved outside its discoverable skills folder. Import is not “enable all.”
 
-## How it works
+**On / Off** controls activation. For Hermes it changes `skills.disabled` using
+Hermes's supported configuration format. For other clients, On creates the
+reviewed individual skill link; Off removes that managed link without deleting
+the library copy. Refresh the client or start a new session to refresh its catalog.
+Loadout does not control a client's cached session or alternate discovery paths.
 
-Hermes remains the source of truth. Other tools receive symlinks to the skill
-directories in Hermes, so there is no second copy to maintain. Turning a skill
-off removes only that tool's symlink. It does not delete the skill.
+Applications that read the same folder share its activation state. Loadout shows
+that warning and deduplicates the path, rather than pretending two controls can
+independently govern the same directory.
 
-The small Skills pane is a status summary. Open the main Switchboard workspace
-for management:
+## Named loadouts
 
-- **Tools** shows one card per configured client, with enabled, disabled, and
-  problem counts. Each card has Manage, Enable all, and Disable all actions.
-- **Sets** applies reusable skill selections such as Coding, Writing, or
-  Minimal.
-- **Problems** lists broken links, drifted copies, unlinked skills, and
-  protected directories that Switchboard will not modify automatically.
-- **MCP** mirrors servers from the Hermes catalog into supported clients.
-- **Advanced** contains custom paths, imports, backups, watch preferences, and
-  machine blueprints.
+A loadout is a name plus explicit desired skill and MCP On/Off states for one or
+more applications. **Leave unchanged** means the capability is outside the
+loadout's scope. New skills and unrelated settings are not implicitly included.
 
-An optional matrix is available on wide layouts. Narrow panes use the tool-first
-views instead of squeezing dozens of switches into each row.
+Use **Loadouts** to create, rename, duplicate, or delete a selection. Choose the
+applications, search capabilities, or capture their current safe On/Off states.
+Saving or classifying a skill never applies a change. Unavailable or protected
+entries are reported rather than guessed. No starter preset enables anything.
 
-## Supported clients
+The compact selector opens an apply preview showing enables, disables, unchanged
+items, unavailable capabilities, conflicts, and protected entries. Confirming
+applies only that server-owned plan. A changed or expired plan requires review
+again. Partial failure stays visible, not a success toast that hides skipped work.
 
-Switchboard detects these skill locations by default:
+Loadouts contain identifiers and booleans, not credentials, environment values,
+server definitions, or copied skill contents.
 
-| Client | Default skills directory |
-|---|---|
-| Hermes | `~/.hermes/skills` |
-| Claude | `~/.claude/skills` |
-| Codex | `~/.codex/skills` |
-| OpenCode | `${OPENCODE_CONFIG_DIR:-~/.config/opencode}/skills` |
-| Grok | `~/.grok/skills` |
-| ZCode | `~/.agents/skills` with `~/.zcode/skills` as a fallback |
+## Finding your way around
 
-You can add another client from **Tools -> Add Tool** if it uses a normal skills
-directory. Switchboard does not claim automatic compatibility with every agent;
-custom clients should be tested against disposable folders first.
+The compact **Loadout** pane is a status summary and launcher. In the workspace,
+**Applications** shows only detected or configured targets, with Manage, Enable
+all, and Disable all. A single-application view keeps one switch per skill.
+**Issues** explains broken links, conflicting copies, protected entries, and
+catalog bypasses. **MCP** handles supported server connections. **Advanced** holds
+setup, imports, notification preferences, and backup recovery.
 
-## Safety
+Search and All / Enabled / Off / Issues are immediately available. One **Filters**
+control contains category, source, and “Designed for.” Classification defaults
+to Unclassified. Portable or application-specific labels are informational,
+user-reviewed labels, not compatibility certificates or activation rules.
 
-Switchboard treats filesystem changes as operations that need to be reviewed.
+Narrow workspaces use a section selector instead of an overflowing tab row.
+The expert matrix is optional and wide-only; its application columns scroll
+explicitly. Core controls wrap without needing a wide desktop window.
 
-- Bulk changes show a dry-run preview before anything is written.
-- Receipts list each changed, unchanged, and refused item.
-- The most recent receipt can be undone from the interface.
-- Real directories and foreign symlinks are protected rather than overwritten.
-- Configuration writes create timestamped backups first.
-- Skill sources are never deleted when a tool is disabled.
-- MCP environment values are redacted from UI state, receipts, and logs.
+## Clients and scopes
 
-The first-run scan is read-only until you review and confirm an adoption plan.
-Extra scan folders are treated as sources, not additional canonical stores.
+[The catalog](dashboard/client_catalog.json) is the maintained source for candidate
+paths, documentation, platform constraints, and separate skill/MCP capabilities.
+The following locations are documented candidates, not evidence that every
+client has been exercised end to end on each operating system.
 
-## Install
+<!-- client-catalog:start -->
+| Client | Global path | Project path |
+|---|---|---|
+| [Shared Agent Skills](https://developers.openai.com/codex/skills/) | `~/.agents/skills` | `.agents/skills` |
+| [Claude Code](https://code.claude.com/docs/en/skills) | `~/.claude/skills` | `.claude/skills` |
+| [Codex](https://developers.openai.com/codex/skills/) | `~/.agents/skills` | `.agents/skills` |
+| [OpenCode](https://opencode.ai/docs/skills/) | `${OPENCODE_CONFIG_DIR:-~/.config/opencode}/skills` | `.opencode/skills` |
+| [Cursor](https://cursor.com/docs/skills) | `~/.cursor/skills` | `.cursor/skills` |
+| [Cline](https://docs.cline.bot/customization/skills) | `~/.cline/skills` | `.cline/skills` |
+| [Gemini CLI](https://geminicli.com/docs/cli/skills/) | `~/.gemini/skills` | `.gemini/skills` |
+| [GitHub Copilot](https://docs.github.com/en/copilot/how-tos/copilot-on-github/customize-copilot/customize-cloud-agent/add-skills) | `~/.copilot/skills` | `.github/skills` |
+| [Kilo Code](https://kilo.ai/docs/customize/skills) | `~/.kilo/skills` | `.kilo/skills` |
+| [Kiro](https://kiro.dev/docs/skills/) | `~/.kiro/skills` | `.kiro/skills` |
+| [Amp](https://ampcode.com/docs/customize/skills) | `~/.config/agents/skills` | `.agents/skills` |
+| [Mistral Vibe](https://docs.mistral.ai/vibe/code/cli/skills) | `~/.vibe/skills` | `.vibe/skills` |
+| [Windsurf / Cascade](https://docs.devin.ai/desktop/cascade/skills) | `~/.codeium/windsurf/skills` | `.windsurf/skills` |
+| [OpenClaw](https://docs.openclaw.ai/tools/skills) | `~/.openclaw/skills` | Not offered |
+<!-- client-catalog:end -->
 
-Clone the plugin into the Hermes plugins directory:
+**Global** targets stay within your user home. **Project** checks the supported
+relative directory inside an existing project folder you explicitly select.
+Loadout does not search the whole computer for repositories. Saved roots and
+resolved targets are checked again before use. Missing or redirected projects
+remain read-only. **Custom** is an explicit reviewed path, not an endorsement of
+an unknown client's format.
 
-```bash
-git clone https://github.com/qwertyuiop97/hermes-switchboard.git \
-  ~/.hermes/plugins/hermes-switchboard
-hermes plugins enable hermes-switchboard
-```
+Open **Applications → Add Tool** for the searchable Detected / Available / Custom
+library. Review the scope and resolved path before Use this path. Adding an
+application saves a mapping only; a later explicit enable may create its skills
+folder. A folder's presence is not proof the client is installed or loaded it.
 
-Then:
+Grok, ZCode, Kimi, pi, and Roo Code remain unverified candidates. No guessed path
+is automatically promoted to a writable integration. Current Codex targets use
+`.agents/skills`. Explicit custom paths are not silently redirected.
 
-1. Open Hermes and go to **Settings -> Plugins**.
-2. Enable **Hermes Switchboard**.
-3. Fully quit and reopen Hermes.
-4. Open the Skills pane and choose **Open Switchboard**.
+Agent Skills targets require valid frontmatter, a matching supported skill name,
+and a description. Trust settings, native extensions, path precedence, and client
+refresh requirements still apply. OpenClaw's project path is not offered because
+Loadout does not relax its external-link trust settings. Local links into a
+Hermes home are not portable team or cloud-agent packages.
 
-Both halves are opt-in. The CLI command enables the Python backend; the desktop
-setting enables the interface. A full restart is required after installation
-because Hermes loads the backend routes at startup. Closing only the window is
-not enough.
+## Safety, receipts, and undo
 
-You can also install with the Hermes CLI:
+A real directory, foreign link, or user-managed file is protected. Conflicting
+skill copies have an explicit preview: keep the library version, or use the
+application's copy as the library version. Originals are preserved. Loadout does
+not automatically merge or rename conflicting content.
 
-```bash
-hermes plugins install qwertyuiop97/hermes-switchboard
-hermes plugins enable hermes-switchboard
-```
+A broad link such as `skills/shared` pointing at the whole library is a **Catalog
+bypass**. Individual Off switches cannot hide skills still reachable through it.
+Loadout reports the bypass and blocks misleading mutations. Its previewed repair
+removes only the exact verified broad link. Real directories, changed links, and
+ambiguous targets are refused; repair is never automatic.
 
-Or use the desktop deep link:
-[Install in Hermes](hermes://plugin/install?repo=qwertyuiop97/hermes-switchboard).
-Hermes asks for confirmation before installing a plugin from a deep link.
+Import previews are bound to the selected entries and their content fingerprints.
+Destination containment is checked during preview, apply, and cleanup. A changed
+source or a category redirected outside the library is refused before copying.
 
-### Updating
+The most recent successful operation is available in **Last change**. **Review
+undo** shows what can safely be restored before you confirm. It restores only
+managed state that still matches its receipt. External edits and changed backups
+are left alone. A new successful operation replaces the previous undo point;
+previews, refusals, and no-ops do not create a fake undo point. This is not
+unlimited history.
 
-```bash
-git -C ~/.hermes/plugins/hermes-switchboard pull --ff-only
-```
+An interrupted operation leaves a recovery record and blocks further mutations.
+Refresh to inspect the status; preserve the record and its referenced backups
+for manual recovery. Do not delete the journal merely to dismiss the warning.
+Windows directory-link replacement uses rename-aside and rollback, not an atomic
+multi-file transaction. Creating links may require Developer Mode or privileges.
 
-Fully quit and reopen Hermes when the backend or manifest changed. The command
-palette action **Reload desktop plugins** is enough only when
-`desktop/plugin.js` changed by itself.
+Configuration backups are exclusive private files named
+`<filename>.bak.hermes-loadout.<timestamp>`. Preserved skill copies live outside
+client discovery folders. Advanced lists recognized backups and previews a
+whole-file or copy restore, preserving the replaced version for undo. Full
+Hermes YAML-backup restore requires the backend's PyYAML parser and refuses
+malformed or duplicate-key documents; without that parser this one action is
+unavailable, rather than accepting an unvalidated configuration.
 
-### Profiles and custom Hermes homes
-
-Switchboard honors `$HERMES_HOME` and `$HERMES_PROFILE`. For a named profile,
-install it under that profile's `plugins/hermes-switchboard` directory and
-enable it in the same profile.
-
-## First run
-
-1. Select the detected skill folders to scan. You may add another folder.
-2. Review managed links, unique copies, duplicates, drift, and protected items.
-3. Choose the clients and safe copies you want Hermes to manage.
-4. Review the dry run, confirm it, and keep the receipt.
-5. Use **Tools** for day-to-day changes and **Problems** when the status count is
-   nonzero.
-
-If a scan finds nothing, no files are changed. You can choose different sources
-or return to Tools.
-
-## Custom client paths
-
-Use **Tools -> Add Tool**, or create
-`<hermes_home>/hermes-switchboard.json`:
-
-```json
-{
-  "tools": {
-    "claude": "~/.claude/skills",
-    "cursor": {
-      "label": "Cursor",
-      "dir": "~/.cursor/skills"
-    }
-  }
-}
-```
-
-`~` and `${VAR:-default}` are expanded in directory paths. The configuration
-file lives outside the plugin folder, so updating the plugin does not replace
-it.
+Receipts store hashes, identifiers, paths, and references, not secret configuration
+snapshots. **Original configuration backups can still contain credentials.** They
+are not encrypted. Paths and server names can also be sensitive. Review any
+report before sharing it. These checks protect ordinary desktop operations, not
+against an actively hostile process running with your own filesystem privileges.
 
 ## MCP connections
 
-The `mcp_servers` section of the Hermes `config.yaml` file is the catalog.
-Switchboard can mirror the universal server fields (`command`, `args`, `env`,
-`url`, and `headers`) into:
+Hermes `config.yaml` supplies the server inventory. Hermes has independent enabled
+state. Claude Desktop supports validated local stdio projections; Codex supports
+validated stdio and HTTP projections. Claude Code skill support does not imply a
+Claude Desktop skill directory, and catalog skill support does not imply an MCP
+writer for every application.
 
-- Claude Desktop's `claude_desktop_config.json`
-- Codex's `config.toml`
+MCP changes and loadout entries use the same preview and receipt flow. Native
+policies, timeouts, unrelated definitions, and client-only servers are preserved.
+A conflicting client definition requires separate manual resolution before an
+activation change; the UI does not force an overwrite. Unsupported transports,
+malformed configurations, and unavailable writers have diagnostics. No credentials
+or OAuth setup are invented. Refresh or restart clients as needed.
 
-Copies that differ from Hermes require explicit overwrite confirmation. Servers
-that exist only in a client remain visible and untouched. OpenCode MCP writing
-is not supported yet because arbitrary JSONC files cannot be rewritten safely
-without preserving user comments.
+## Install and first use
 
-## Troubleshooting
+Use a Hermes Desktop version supporting [unified desktop plugins](https://hermes-agent.nousresearch.com/docs/developer-guide/desktop-plugin-sdk).
+Review the revision first. No Loadout release has been published yet; cloning the
+default branch installs the latest reviewed source rather than a versioned release.
 
-**The pane says the backend is unavailable or returns 404.** Make sure the
-plugin is enabled, then fully quit and reopen Hermes:
+Clone the repository you are reading into the active profile's plugin directory,
+using its **Code → clone URL**. The package directory and plugin ID must be
+`hermes-loadout`.
 
 ```bash
-hermes plugins enable hermes-switchboard
+git clone <repository-clone-url> ~/.hermes/plugins/hermes-loadout
+# In that clone, select the reviewed revision before enabling it.
+hermes plugins enable hermes-loadout
 ```
 
-**The new interface appears, but bulk actions return `405 Method Not Allowed`.**
-The desktop bundle is newer than the backend still running in memory. Fully quit
-and reopen Hermes. Reloading desktop plugins does not reload Python routes.
+Enable **Loadout for Hermes** in **Settings → Plugins**, fully quit and reopen
+Hermes, then open Loadout. Both plugin halves are opt-in. Backend or manifest
+changes require a full restart; a desktop-only file edit can use Reload desktop
+plugins. There is no frontend build step.
 
-**The pane does not appear.** Confirm the folder is named
-`hermes-switchboard`, enable **Hermes Switchboard** in **Settings -> Plugins**,
-and restart the app.
+Start with Scan & import. Review the discovered copies, then explicitly enable
+only the capabilities you need. Nothing is activated just because it was found.
+For a Git checkout, review updates before `git pull --ff-only`; do not overwrite
+local changes or silently move a pinned revision.
+
+`HERMES_HOME` takes precedence over `HERMES_PROFILE`, then `~/.hermes` is the default.
+All displayed filesystem paths belong to the active backend, which can be a
+remote machine. Loadout does not give that backend access to desktop-local files.
+The desktop half must also be installed locally for Hermes Desktop to load it.
+
+Settings use `<hermes_home>/hermes-loadout.json`. This is an accepted clean
+pre-release identity reset: earlier development IDs and settings names are not
+loaded or migrated. Existing personal development settings require separate
+manual review. The plugin never rewrites them automatically.
+
+## Limitations and recovery
+
+A switch cannot override a client's trust rules, alternate skill directory, or
+old session catalog. A supported path is not an end-to-end client certification.
+Filesystem/HTTP tests and SDK-export checks are not native desktop verification.
+
+For a missing backend or version mismatch, enable the matching backend, fully
+restart Hermes, and Retry. For a moved project, review a corrected target rather
+than stripping its scope metadata. For a refusal, read the item reason instead
+of repeatedly applying the same plan. For interrupted recovery, keep the originals
+and receipt, and use disposable copies when diagnosing the failure.
+
+Uninstalling does not undo past operations. First review removal of unwanted
+links and MCP entries, then disable `hermes-loadout` in the CLI and desktop
+settings. Remove only this plugin's installation folder. The library, settings,
+loadouts, backups, and receipts remain until deliberately removed. Never delete
+the Hermes skill library just to uninstall Loadout.
 
 ## Development
 
-The backend is dependency-free Python and supports Python 3.9 or newer. The
-render harness requires Node.js 18 or newer.
-
-```bash
-python3 -m unittest tests.test_core_api tests.test_mcp_backend \
-  tests.test_plugin_api tests.test_v2_backend \
-  tests.test_bulk_planning tests.test_scan_wizard
-.venv/bin/python3 -m unittest tests.test_routes_http
-python3 tests/check_frontend.py
-./tests/run_render_harness.sh
-```
-
-The test suite covers path validation, linking and unlinking, protected-entry
-refusals, bulk previews, receipts, undo, imports, backups, MCP projections,
-Python 3.9 imports, accessibility labels, narrow and wide layouts, and a
-105-skill fixture.
-
-## Current limitations
-
-- The project is still an alpha. Test it with disposable client directories
-  before pointing it at an important setup.
-- Default skill-path detection covers the clients listed above. Other clients
-  require a custom path.
-- MCP writing currently supports Claude Desktop and Codex only.
-- Windows and Linux core behavior is covered in CI, while the installed desktop
-  workflow has been tested on macOS.
-
-## Uninstall
-
-```bash
-hermes plugins disable hermes-switchboard
-rm -rf ~/.hermes/plugins/hermes-switchboard
-```
-
-Uninstalling the plugin does not delete the Hermes skill library or the target
-directories it created. Symlinks that were enabled before uninstalling remain
-until you remove them or reinstall Switchboard and disable them.
+See [development and validation](docs/development.md), [contributing](CONTRIBUTING.md),
+and [security](SECURITY.md). The Python core runs on 3.9+ without installation of
+third-party packages; a pinned TOML reader is [bundled with its license](dashboard/_vendor/README.md).
+HTTP tests use pinned test dependencies. Full YAML-backup validation uses the
+host's optional PyYAML parser. No telemetry, provider switching, marketplace,
+cloud synchronization, or session management is included.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. The vendored TOML reader retains its own MIT attribution.

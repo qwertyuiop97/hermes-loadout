@@ -1,0 +1,559 @@
+{
+  "schema_version": 1,
+  "clients": [
+    {
+      "id": "hermes",
+      "label": "Hermes",
+      "verification": "documented",
+      "checked": "2026-09-09",
+      "sources": [
+        "https://hermes-agent.nousresearch.com/docs/user-guide/features/skills"
+      ],
+      "skills": true,
+      "format": "hermes-canonical",
+      "may_create": false,
+      "platforms": [
+        "darwin",
+        "linux",
+        "win32"
+      ],
+      "global": [],
+      "project": [],
+      "mcp_writer": null,
+      "reserved_names": [],
+      "notes": "The active Hermes home remains the canonical library.",
+      "special": "config",
+      "activation": "config-disabled-list",
+      "selective_activation": true,
+      "detection": "manual"
+    },
+    {
+      "id": "agents",
+      "label": "Shared Agent Skills",
+      "verification": "documented",
+      "checked": "2026-09-09",
+      "sources": [
+        "https://developers.openai.com/codex/skills/"
+      ],
+      "skills": true,
+      "format": "agent-skills",
+      "may_create": true,
+      "platforms": [
+        "darwin",
+        "linux",
+        "win32"
+      ],
+      "global": [
+        "~/.agents/skills"
+      ],
+      "project": [
+        ".agents/skills"
+      ],
+      "mcp_writer": null,
+      "reserved_names": [],
+      "notes": "Shared directory, not a detected app. Codex, Amp, and other compatible clients may all read these links.",
+      "shared": true,
+      "activation": "symlink",
+      "selective_activation": true,
+      "detection": "known-directory"
+    },
+    {
+      "id": "claude",
+      "label": "Claude Code",
+      "verification": "documented",
+      "checked": "2026-09-09",
+      "sources": [
+        "https://code.claude.com/docs/en/skills"
+      ],
+      "skills": true,
+      "format": "agent-skills",
+      "may_create": true,
+      "platforms": [
+        "darwin",
+        "linux",
+        "win32"
+      ],
+      "global": [
+        "~/.claude/skills"
+      ],
+      "project": [
+        ".claude/skills"
+      ],
+      "mcp_writer": null,
+      "reserved_names": [
+        "synced"
+      ],
+      "notes": "Client permissions, trust settings, and tool-specific skill extensions still apply.",
+      "activation": "symlink",
+      "selective_activation": true,
+      "detection": "known-directory"
+    },
+    {
+      "id": "codex",
+      "label": "Codex",
+      "verification": "documented",
+      "checked": "2026-09-09",
+      "sources": [
+        "https://developers.openai.com/codex/skills/"
+      ],
+      "skills": true,
+      "format": "agent-skills",
+      "may_create": true,
+      "platforms": [
+        "darwin",
+        "linux",
+        "win32"
+      ],
+      "global": [
+        "~/.agents/skills"
+      ],
+      "project": [
+        ".agents/skills"
+      ],
+      "mcp_writer": "codex",
+      "reserved_names": [],
+      "notes": "Uses .agents/skills. This is a shared target: changes affect every client reading it, not only Codex.",
+      "shared": true,
+      "detect_marker": "~/.codex",
+      "activation": "symlink",
+      "selective_activation": true,
+      "detection": "known-directory"
+    },
+    {
+      "id": "opencode",
+      "label": "OpenCode",
+      "verification": "documented",
+      "checked": "2026-09-09",
+      "sources": [
+        "https://opencode.ai/docs/skills/"
+      ],
+      "skills": true,
+      "format": "agent-skills",
+      "may_create": true,
+      "platforms": [
+        "darwin",
+        "linux",
+        "win32"
+      ],
+      "global": [
+        "${OPENCODE_CONFIG_DIR:-~/.config/opencode}/skills"
+      ],
+      "project": [
+        ".opencode/skills"
+      ],
+      "mcp_writer": null,
+      "reserved_names": [],
+      "notes": "Client permissions, trust settings, and tool-specific skill extensions still apply.",
+      "activation": "symlink",
+      "selective_activation": true,
+      "detection": "known-directory"
+    },
+    {
+      "id": "cursor",
+      "label": "Cursor",
+      "verification": "documented",
+      "checked": "2026-09-09",
+      "sources": [
+        "https://cursor.com/docs/skills"
+      ],
+      "skills": true,
+      "format": "agent-skills",
+      "may_create": true,
+      "platforms": [
+        "darwin",
+        "linux",
+        "win32"
+      ],
+      "global": [
+        "~/.cursor/skills"
+      ],
+      "project": [
+        ".cursor/skills"
+      ],
+      "mcp_writer": null,
+      "reserved_names": [],
+      "notes": "Local skill links only. This does not synchronize skills into Cursor cloud agents.",
+      "activation": "symlink",
+      "selective_activation": true,
+      "detection": "known-directory"
+    },
+    {
+      "id": "cline",
+      "label": "Cline",
+      "verification": "documented",
+      "checked": "2026-09-09",
+      "sources": [
+        "https://docs.cline.bot/customization/skills"
+      ],
+      "skills": true,
+      "format": "agent-skills",
+      "may_create": true,
+      "platforms": [
+        "darwin",
+        "linux",
+        "win32"
+      ],
+      "global": [
+        "~/.cline/skills"
+      ],
+      "project": [
+        ".cline/skills"
+      ],
+      "mcp_writer": null,
+      "reserved_names": [],
+      "notes": "Client permissions, trust settings, and tool-specific skill extensions still apply.",
+      "activation": "symlink",
+      "selective_activation": true,
+      "detection": "known-directory"
+    },
+    {
+      "id": "gemini",
+      "label": "Gemini CLI",
+      "verification": "documented",
+      "checked": "2026-09-09",
+      "sources": [
+        "https://geminicli.com/docs/cli/skills/"
+      ],
+      "skills": true,
+      "format": "agent-skills",
+      "may_create": true,
+      "platforms": [
+        "darwin",
+        "linux",
+        "win32"
+      ],
+      "global": [
+        "~/.gemini/skills"
+      ],
+      "project": [
+        ".gemini/skills"
+      ],
+      "mcp_writer": null,
+      "reserved_names": [],
+      "notes": "Gemini also reads .agents/skills; those aliases can take precedence over its native directory.",
+      "activation": "symlink",
+      "selective_activation": true,
+      "detection": "known-directory"
+    },
+    {
+      "id": "copilot",
+      "label": "GitHub Copilot",
+      "verification": "documented",
+      "checked": "2026-09-09",
+      "sources": [
+        "https://docs.github.com/en/copilot/how-tos/copilot-on-github/customize-copilot/customize-cloud-agent/add-skills"
+      ],
+      "skills": true,
+      "format": "agent-skills",
+      "may_create": true,
+      "platforms": [
+        "darwin",
+        "linux",
+        "win32"
+      ],
+      "global": [
+        "~/.copilot/skills"
+      ],
+      "project": [
+        ".github/skills"
+      ],
+      "mcp_writer": null,
+      "reserved_names": [],
+      "notes": "Local clients only. Links into your Hermes home are not portable to Copilot cloud or other computers.",
+      "activation": "symlink",
+      "selective_activation": true,
+      "detection": "known-directory"
+    },
+    {
+      "id": "kilo",
+      "label": "Kilo Code",
+      "verification": "documented",
+      "checked": "2026-09-09",
+      "sources": [
+        "https://kilo.ai/docs/customize/skills"
+      ],
+      "skills": true,
+      "format": "agent-skills",
+      "may_create": true,
+      "platforms": [
+        "darwin",
+        "linux",
+        "win32"
+      ],
+      "global": [
+        "~/.kilo/skills"
+      ],
+      "project": [
+        ".kilo/skills"
+      ],
+      "mcp_writer": null,
+      "reserved_names": [],
+      "notes": "Current Kilo CLI-backed platform. Older extension paths are not guessed or migrated.",
+      "activation": "symlink",
+      "selective_activation": true,
+      "detection": "known-directory"
+    },
+    {
+      "id": "kiro",
+      "label": "Kiro",
+      "verification": "documented",
+      "checked": "2026-09-09",
+      "sources": [
+        "https://kiro.dev/docs/skills/"
+      ],
+      "skills": true,
+      "format": "agent-skills",
+      "may_create": true,
+      "platforms": [
+        "darwin",
+        "linux",
+        "win32"
+      ],
+      "global": [
+        "~/.kiro/skills"
+      ],
+      "project": [
+        ".kiro/skills"
+      ],
+      "mcp_writer": null,
+      "reserved_names": [],
+      "notes": "Kiro CLI custom agents may require skill:// resources in their agent configuration.",
+      "activation": "symlink",
+      "selective_activation": true,
+      "detection": "known-directory"
+    },
+    {
+      "id": "amp",
+      "label": "Amp",
+      "verification": "documented",
+      "checked": "2026-09-09",
+      "sources": [
+        "https://ampcode.com/docs/customize/skills"
+      ],
+      "skills": true,
+      "format": "agent-skills",
+      "may_create": true,
+      "platforms": [
+        "darwin",
+        "linux",
+        "win32"
+      ],
+      "global": [
+        "~/.config/agents/skills"
+      ],
+      "project": [
+        ".agents/skills"
+      ],
+      "mcp_writer": null,
+      "reserved_names": [],
+      "notes": "Project .agents/skills is shared. Other global compatibility locations may take precedence.",
+      "activation": "symlink",
+      "selective_activation": true,
+      "detection": "known-directory"
+    },
+    {
+      "id": "vibe",
+      "label": "Mistral Vibe",
+      "verification": "documented",
+      "checked": "2026-09-09",
+      "sources": [
+        "https://docs.mistral.ai/vibe/code/cli/skills"
+      ],
+      "skills": true,
+      "format": "agent-skills",
+      "may_create": true,
+      "platforms": [
+        "darwin",
+        "linux",
+        "win32"
+      ],
+      "global": [
+        "~/.vibe/skills"
+      ],
+      "project": [
+        ".vibe/skills"
+      ],
+      "mcp_writer": null,
+      "reserved_names": [],
+      "notes": "Project skills require a trusted working directory in Vibe.",
+      "activation": "symlink",
+      "selective_activation": true,
+      "detection": "known-directory"
+    },
+    {
+      "id": "windsurf",
+      "label": "Windsurf / Cascade",
+      "verification": "documented",
+      "checked": "2026-09-09",
+      "sources": [
+        "https://docs.devin.ai/desktop/cascade/skills"
+      ],
+      "skills": true,
+      "format": "agent-skills",
+      "may_create": true,
+      "platforms": [
+        "darwin",
+        "linux",
+        "win32"
+      ],
+      "global": [
+        "~/.codeium/windsurf/skills"
+      ],
+      "project": [
+        ".windsurf/skills"
+      ],
+      "mcp_writer": null,
+      "reserved_names": [],
+      "notes": "Cascade skills format, not Devin Local agent or Windsurf rules.",
+      "activation": "symlink",
+      "selective_activation": true,
+      "detection": "known-directory"
+    },
+    {
+      "id": "openclaw",
+      "label": "OpenClaw",
+      "verification": "documented",
+      "checked": "2026-09-09",
+      "sources": [
+        "https://docs.openclaw.ai/tools/skills"
+      ],
+      "skills": true,
+      "format": "agent-skills",
+      "may_create": true,
+      "platforms": [
+        "darwin",
+        "linux",
+        "win32"
+      ],
+      "global": [
+        "~/.openclaw/skills"
+      ],
+      "project": [],
+      "mcp_writer": null,
+      "reserved_names": [],
+      "notes": "Default OpenClaw state only. Project roots reject external links unless the owner changes OpenClaw trust settings, which Loadout does not do.",
+      "activation": "symlink",
+      "selective_activation": true,
+      "detection": "known-directory"
+    },
+    {
+      "id": "grok",
+      "label": "Grok",
+      "verification": "unverified",
+      "checked": null,
+      "sources": [],
+      "skills": false,
+      "format": null,
+      "may_create": false,
+      "platforms": [],
+      "global": [],
+      "project": [],
+      "mcp_writer": null,
+      "reserved_names": [],
+      "notes": "No primary client path contract was established for this CLI.",
+      "activation": null,
+      "selective_activation": false,
+      "detection": "manual"
+    },
+    {
+      "id": "zcode",
+      "label": "ZCode",
+      "verification": "unverified",
+      "checked": null,
+      "sources": [],
+      "skills": false,
+      "format": null,
+      "may_create": false,
+      "platforms": [],
+      "global": [],
+      "project": [],
+      "mcp_writer": null,
+      "reserved_names": [],
+      "notes": "The shared .agents directory is not evidence that this client is installed or compatible.",
+      "activation": null,
+      "selective_activation": false,
+      "detection": "manual"
+    },
+    {
+      "id": "kimi",
+      "label": "Kimi",
+      "verification": "unverified",
+      "checked": null,
+      "sources": [],
+      "skills": false,
+      "format": null,
+      "may_create": false,
+      "platforms": [],
+      "global": [],
+      "project": [],
+      "mcp_writer": null,
+      "reserved_names": [],
+      "notes": "No current verified client contract is included. A reviewed Custom path is required.",
+      "activation": null,
+      "selective_activation": false,
+      "detection": "manual"
+    },
+    {
+      "id": "pi",
+      "label": "pi",
+      "verification": "unverified",
+      "checked": null,
+      "sources": [],
+      "skills": false,
+      "format": null,
+      "may_create": false,
+      "platforms": [],
+      "global": [],
+      "project": [],
+      "mcp_writer": null,
+      "reserved_names": [],
+      "notes": "Not yet verified in this catalog.",
+      "activation": null,
+      "selective_activation": false,
+      "detection": "manual"
+    },
+    {
+      "id": "roo",
+      "label": "Roo Code",
+      "verification": "unverified",
+      "checked": null,
+      "sources": [],
+      "skills": false,
+      "format": null,
+      "may_create": false,
+      "platforms": [],
+      "global": [],
+      "project": [],
+      "mcp_writer": null,
+      "reserved_names": [],
+      "notes": "Not yet verified in this catalog.",
+      "activation": null,
+      "selective_activation": false,
+      "detection": "manual"
+    },
+    {
+      "id": "claude-desktop",
+      "label": "Claude Desktop",
+      "verification": "documented",
+      "checked": "2026-09-09",
+      "sources": [
+        "https://modelcontextprotocol.io/docs/develop/connect-local-servers"
+      ],
+      "skills": false,
+      "format": null,
+      "may_create": false,
+      "platforms": [
+        "darwin",
+        "win32"
+      ],
+      "global": [],
+      "project": [],
+      "mcp_writer": "claude",
+      "reserved_names": [],
+      "notes": "MCP writer only. Claude Code skill directories are a different client surface.",
+      "activation": null,
+      "selective_activation": false,
+      "detection": "manual"
+    }
+  ]
+}

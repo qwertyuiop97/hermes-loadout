@@ -1,51 +1,15 @@
-"""hermes-switchboard — backend routes for the Hermes desktop pane.
+"""Loadout for Hermes backend and filesystem adapters.
 
-# MIT License — Copyright (c) 2026 qwertyuiop97
-# See LICENSE at the package root.
+The unified plugin mounts ``router`` under /api/plugins/hermes-loadout.
+Read routes return filesystem truth; public mutations require a server-owned
+review token through LoadoutService. Native adapters preserve unrelated settings
+and user-owned entries. Imports copy into the inventory without enabling skills.
 
-Unified Hermes plugin package (see the Desktop Plugin SDK doc, "One package,
-both SDKs")::
+The core imports without FastAPI or PyYAML. The bundled, attributed TOML reader
+loads lazily. Full YAML-backup restore requires the host's PyYAML parser and
+fails closed without it. No import-time operation writes user data.
 
-    ~/.hermes/plugins/hermes-switchboard/
-    ├── plugin.yaml               # agent half (metadata only)
-    ├── dashboard/
-    │   ├── manifest.json         # {"name": "hermes-switchboard", "api": "plugin_api.py"}
-    │   └── plugin_api.py         # THIS FILE — exports `router` (FastAPI APIRouter)
-    └── desktop/
-        └── plugin.js             # desktop half — pane UI, calls ctx.rest('/...')
-
-Routes mount under ``/api/plugins/hermes-switchboard/``:
-
-    GET  /health          → liveness + resolved paths (for the pane's error banner)
-    GET  /state           → every skill + per-tool state (lean payload, cached)
-    GET  /detail?skill=   → full SKILL.md text for one skill
-    POST /toggle          → {skill, tool, enabled} link/unlink (or config edit for hermes)
-    POST /toggle-bulk     → {skills: [...], tool, enabled}
-    POST /bulk/plan       → immutable explicit-id bulk preview
-    POST /bulk/apply      → exact-id execution + durable undo receipt
-    POST /repair          → {skill, tool} fix a broken link
-    POST /repair-all      → fix every broken link that points into the skills tree
-    POST /ensure-tool-dir → {tool} create a missing tool skills dir
-    GET  /diff            → skills unlinked everywhere + dangling/foreign/unmanaged links
-    POST /import/plan     → read-only multi-source adoption preview
-    POST /import/apply-plan → exact-entry adoption + durable restore receipt
-
-Design rules:
-  * Hermes (~/.hermes/skills/<category>/<name>/SKILL.md) is the source of truth.
-  * Consumer tools get SYMLINKS (never copies); link name == skill name.
-  * Never delete a skill source dir, a real (non-symlink) dir, or a foreign
-    symlink — only symlinks that resolve inside the managed skills tree.
-  * The hermes tool toggles membership in ``skills.disabled`` (bare names) in
-    ``config.yaml`` via a surgical line edit with a timestamped backup.
-  * Zero hardcoded paths: home resolves via ``~``/``$HOME``, the Hermes root via
-    ``$HERMES_HOME`` or ``$HERMES_PROFILE`` (→ ~/.hermes/profiles/<name>) or
-    ``~/.hermes``; tool target dirs are overridable via
-    ``<hermes_home>/hermes-switchboard.json`` with ``~`` and ``${VAR:-default}``
-    expansion.
-
-The core is deliberately dependency-free (stdlib only) so it can be imported
-and tested without fastapi/pyyaml; the router layer is guarded so this same
-file exports ``router`` inside the gateway process.
+MIT License. See LICENSE at the package root.
 """
 
 from __future__ import annotations
@@ -53,18 +17,21 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import itertools
 import os
 import re
 import shutil
+import stat
+import sys
 import threading
+import tempfile
 import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-PLUGIN_ID = "hermes-switchboard"
-PLUGIN_VERSION = "3.0.0"
-LEGACY_PLUGIN_ID = "skills-toggle"
+PLUGIN_ID = "hermes-loadout"
+PLUGIN_VERSION = "0.1.0"
 
 # ---------------------------------------------------------------------------
 # Stable core API (v2) — consumed by the desktop pane's backend mount AND by
@@ -72,7 +39,7 @@ LEGACY_PLUGIN_ID = "skills-toggle"
 #   * module-level imports are STDLIB ONLY (fastapi is imported inside a
 #     try/except ImportError guard; if absent, `router` is None and everything
 #     else works identically) — no gateway/hermes imports anywhere
-#   * constructing SkillsToggleCore(home, tools, log_path) directly performs
+#   * constructing HermesLoadoutCore(home, tools, log_path) directly performs
 #     no I/O beyond the paths you hand it; all mutations are explicit calls
 #   * skill ids are "category/name" strings; tools are plain dicts; every
 #     route returns a JSON-able dict: {ok: true, ...} or {ok: false, error, code}
@@ -83,8 +50,8 @@ __all__ = [
     "PLUGIN_ID",
     "PLUGIN_VERSION",
     "DEFAULT_TOOLS",
-    "SkillsToggleError",
-    "SkillsToggleCore",
+    "LoadoutError",
+    "HermesLoadoutCore",
     "ConfigEditError",
     "hermes_home",
     "expand_path",
@@ -105,26 +72,18 @@ __all__ = [
 ]
 
 # ---------------------------------------------------------------------------
-# Tool map: defaults (overridable via <hermes_home>/hermes-switchboard.json)
+# Tool map: defaults (overridable via <hermes_home>/hermes-loadout.json)
 # ---------------------------------------------------------------------------
 
-DEFAULT_TOOLS: dict = {
-    "hermes": {"label": "Hermes", "special": "config"},  # skills.disabled in config.yaml
-    "claude": {"label": "Claude", "dir": "~/.claude/skills"},
-    "codex": {"label": "Codex", "dir": "~/.codex/skills"},
-    "opencode": {"label": "OpenCode", "dir": "${OPENCODE_CONFIG_DIR:-~/.config/opencode}/skills"},
-    "grok": {"label": "Grok", "dir": "~/.grok/skills"},
-    # ZCode: user skills live in ~/.agents/skills when present (verified on the
-    # reference machine), else ~/.zcode/skills. Overridable via config JSON.
-    "zcode": {"label": "ZCode", "dir": "~/.agents/skills", "fallback_dir": "~/.zcode/skills"},
-    # v3 optional targets: surfaced in the Setup panel as opt-in; they only
-    # appear in the main rows/filter once their skills dir exists or is created.
-    "cursor": {"label": "Cursor", "dir": "~/.cursor/skills", "optional": True},
-    "windsurf": {"label": "Windsurf", "dir": "~/.codeium/windsurf/skills", "optional": True},
-    "copilot": {"label": "Copilot", "dir": "~/.copilot/skills", "optional": True},
-    "gemini": {"label": "Gemini", "dir": "~/.gemini/skills", "optional": True},
-    "kimi": {"label": "Kimi", "dir": "~/.kimi/skills", "optional": True},
-}
+# This package-local, read-only catalog is the only built-in client data source.
+# Defaults and discovery derive from the same evidenced directory candidates.
+CLIENT_CATALOG = json.loads(Path(__file__).with_name("client_catalog.json").read_text(encoding="utf-8"))["clients"]
+DEFAULT_TOOLS: dict = {"hermes": {"label": "Hermes", "special": "config"}, **{
+    row["id"]: {"label": row["label"], "dir": row["global"][0], "optional": True}
+    for row in CLIENT_CATALOG if row["verification"] == "documented" and row.get("global")
+}}
+CATALOG_VERSION = 1
+CONFIG_SCHEMA_VERSION = 1
 
 DESCRIPTION_TRUNC = 160
 CACHE_TTL_SECONDS = 2.0
@@ -545,14 +504,114 @@ def _finish(new_text: str, name: str, add: bool) -> str:
 # ---------------------------------------------------------------------------
 
 
-class SkillsToggleError(Exception):
+class LoadoutError(Exception):
     def __init__(self, message: str, code: str = "error"):
         super().__init__(message)
         self.code = code
 
 
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Replace a complete file, preserving an existing symlink and permissions.
+
+    A failed write/replace leaves the previous file intact. Temporary files are
+    private, live on the same filesystem, and are removed on every failure path.
+    """
+    if path.is_symlink() and not path.is_file():
+        raise LoadoutError("configuration symlink has no regular-file target", "config-invalid")
+    destination = path.resolve()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    mode = destination.stat().st_mode & 0o777 if destination.exists() else 0o600
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="", delete=False,
+                                         prefix=".hermes-loadout-", dir=str(destination.parent)) as stream:
+            temporary = Path(stream.name)
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.chmod(mode)
+        os.replace(temporary, destination)
+    finally:
+        if temporary is not None and temporary.exists():
+            temporary.unlink()
+
+
+def _backup_file(path: Path) -> str | None:
+    """Create a private, exclusive sibling snapshot, never through a link.
+
+    No copy2-then-chmod window, and dangling destination links count as occupied.
+    A failed copy removes only the inode this call created.
+    """
+    if path.is_symlink():
+        raise LoadoutError('The configuration is a link; review it before backing up.', 'config-protected')
+    if not path.exists():
+        return None
+    if not path.is_file():
+        raise LoadoutError('The configuration is not a regular file.', 'config-protected')
+    descriptor = os.open(str(path), os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
+    with os.fdopen(descriptor, 'rb') as source:
+        if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+            raise LoadoutError('The configuration is not a regular file.', 'config-protected')
+        stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+        for number in range(10000):
+            suffix = '' if number == 0 else '-' + str(number)
+            backup = path.with_name(f'{path.name}.bak.hermes-loadout.{stamp}{suffix}')
+            # Windows may follow an existing dangling reparse point even with
+            # O_EXCL. Check the entry itself, not whether its target exists.
+            if os.path.lexists(backup):
+                continue
+            try:
+                descriptor = os.open(str(backup), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            except FileExistsError:
+                continue
+            identity = os.fstat(descriptor)
+            try:
+                with os.fdopen(descriptor, 'wb') as output:
+                    shutil.copyfileobj(source, output)
+                    output.flush()
+                    os.fsync(output.fileno())
+                return str(backup)
+            except BaseException:
+                try:
+                    current = backup.lstat()
+                    if (current.st_dev, current.st_ino) == (identity.st_dev, identity.st_ino):
+                        backup.unlink()
+                except OSError:
+                    pass
+                raise
+        raise LoadoutError('Too many colliding backup names. Review the backup directory.', 'backup-collision')
+
+
+def _read_json_mapping(path: Path, mapping_key: str) -> tuple[dict, str]:
+    """Read settings without interpreting corrupt/unreadable data as empty."""
+    if not path.exists() and not path.is_symlink():
+        return {}, ""
+    if not path.is_file():
+        raise LoadoutError("configuration is not a regular file", "config-invalid")
+
+    def unique_keys(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate configuration key")
+            result[key] = value
+        return result
+
+    try:
+        text = path.read_text(encoding="utf-8")
+        data = json.loads(text, object_pairs_hook=unique_keys)
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise LoadoutError("configuration cannot be read as valid JSON; repair it before making changes",
+                                "config-invalid") from exc
+    if not isinstance(data, dict) or (mapping_key in data and not isinstance(data[mapping_key], dict)):
+        raise LoadoutError("configuration must be an object containing a mapping for " + mapping_key,
+                                "config-invalid")
+    return data, text
+
+
 _SECRET_LOG_KEY_RE = re.compile(
-    r"(?:api[_-]?key|apikey|secret|token|password|credential|authorization|private[_-]?key|access[_-]?key|env)",
+    r"(?:api[_-]?key|apikey|secret|token|password|credential|authorization|private[_-]?key|access[_-]?key|env|headers|args|url)",
     re.I,
 )
 
@@ -572,7 +631,7 @@ def _redact_log_record(value: object, key: str = "") -> object:
     return value
 
 
-class SkillsToggleCore:
+class HermesLoadoutCore:
     """All state/mutation logic. Hermes root + tools config injected for tests."""
 
     def __init__(self, home: Path, tools: dict, log_path: Path | None = None):
@@ -589,15 +648,15 @@ class SkillsToggleCore:
         self._cache_sig: tuple | None = None
         self._cache_at = 0.0
         self._generation = 0
+        self._reviews: dict[str, dict] = {}
 
     # -- construction ------------------------------------------------------
 
     @classmethod
-    def build_default(cls) -> "SkillsToggleCore":
+    def build_default(cls) -> "HermesLoadoutCore":
         home = hermes_home()
         tools = load_tools_config(home)
-        plugin_root = Path(__file__).resolve().parent.parent
-        return cls(home, tools, log_path=plugin_root / "data" / "mutations.log")
+        return cls(home, tools, log_path=home / "data" / PLUGIN_ID / "mutations.log")
 
     # -- logging -----------------------------------------------------------
 
@@ -622,23 +681,24 @@ class SkillsToggleCore:
         if not self.skills_root.is_dir():
             return skills
         for cat_dir in sorted(self.skills_root.iterdir()):
-            if not cat_dir.is_dir() or cat_dir.name.startswith("."):
+            if not cat_dir.is_dir() or cat_dir.name.startswith(".") or not is_inside(cat_dir, self.skills_root_resolved):
                 continue
             for skill_dir in sorted(cat_dir.iterdir()):
-                if not skill_dir.is_dir() or skill_dir.name.startswith("."):
+                if not skill_dir.is_dir() or skill_dir.name.startswith(".") or not is_inside(skill_dir, self.skills_root_resolved):
                     continue
                 skill_md = skill_dir / "SKILL.md"
-                if not skill_md.is_file():
+                if not skill_md.is_file() or not is_inside(skill_md, skill_dir.resolve()):
                     continue
                 try:
-                    raw = skill_md.read_text(encoding="utf-8", errors="replace")[:8192]
+                    with skill_md.open(encoding="utf-8", errors="replace") as stream:
+                        raw = stream.read(8192)
                 except OSError:
                     raw = ""
                 name, description = parse_skill_markdown(raw)
                 skills[f"{cat_dir.name}/{skill_dir.name}"] = {
                     "name": skill_dir.name,
                     "category": cat_dir.name,
-                    "front_name": name or skill_dir.name,
+                    "front_name": name,
                     "dir": skill_dir,
                     "description": description.strip(),
                 }
@@ -659,12 +719,23 @@ class SkillsToggleCore:
             expanded = expand_path(tool["dir"]) if isinstance(tool["dir"], str) else tool["dir"]
         except ValueError:
             return None  # empty expansion — treat as unconfigured, never CWD
+        if tool.get("scope") in ("global", "project"):
+            return validate_scoped_target(tool)
         return expanded
+
+    def _inventory_dir(self, tool_id: str) -> Path | None:
+        try:
+            return self.tool_dir(tool_id)
+        except (LoadoutError, OSError, ValueError):
+            return None  # state() supplies a visible path_error and recovery action
 
     def _tool_states(self, skill: dict, disabled: set[str]) -> dict:
         states: dict[str, dict] = {}
         for tool_id in self.tools:
-            states[tool_id] = self._one_state(skill, tool_id, disabled)
+            try:
+                states[tool_id] = self._one_state(skill, tool_id, disabled)
+            except (LoadoutError, OSError, ValueError):
+                states[tool_id] = {"state": "scope-error"}
         return states
 
     def _one_state(self, skill: dict, tool_id: str, disabled: set[str]) -> dict:
@@ -699,12 +770,14 @@ class SkillsToggleCore:
             self.skills_root,
             self.config_path,
             user_config_path(self.home),
-            legacy_user_config_path(self.home),
         ] + cat_dirs
         for tool_id in self.tools:
-            d = self.tool_dir(tool_id)
-            if d is not None:
-                probes.append(d)
+            try:
+                d = self.tool_dir(tool_id)
+                if d is not None:
+                    probes.append(d)
+            except (LoadoutError, OSError, ValueError):
+                parts.append((tool_id, "scope-error"))
         for p in probes:
             try:
                 parts.append((str(p), p.stat().st_mtime_ns))
@@ -721,20 +794,31 @@ class SkillsToggleCore:
 
     def _validate_skill(self, skill_id: object) -> str:
         if not isinstance(skill_id, str) or not _SKILL_ID_RE.match(skill_id):
-            raise SkillsToggleError(
+            raise LoadoutError(
                 f"invalid skill id {skill_id!r} — expected 'category/name' from the skills index", "invalid-skill"
             )
         if any(seg in (".", "..") for seg in skill_id.split("/")):
-            raise SkillsToggleError(f"invalid skill id {skill_id!r} — path segments may not be '.' or '..'", "invalid-skill")
-        if skill_id not in self._scan_skills():
-            raise SkillsToggleError(
+            raise LoadoutError(f"invalid skill id {skill_id!r} — path segments may not be '.' or '..'", "invalid-skill")
+        indexed = self._scan_skills()
+        if skill_id not in indexed:
+            raise LoadoutError(
                 f"unknown skill {skill_id!r} — not present under {self.skills_root}", "unknown-skill"
             )
+        name = indexed[skill_id]["name"]
+        if sum(1 for item in indexed.values() if os.path.normcase(item["name"]) == os.path.normcase(name)) > 1:
+            raise LoadoutError("multiple canonical skills share this target folder name; rename the duplicate first",
+                                    "ambiguous-skill")
         return skill_id
 
     def _validate_tool(self, tool_id: object) -> str:
         if not isinstance(tool_id, str) or tool_id not in self.tools:
-            raise SkillsToggleError(f"unknown tool {tool_id!r}", "unknown-tool")
+            raise LoadoutError(f"unknown tool {tool_id!r}", "unknown-tool")
+        tool = self.tools[tool_id]
+        if tool.get("read_only"):
+            raise LoadoutError("unverified client; review and save an explicit Custom path first", "client-unverified")
+        d = self.tool_dir(tool_id)
+        if d is not None and (is_inside(d, self.skills_root_resolved) or is_inside(self.skills_root_resolved, d)):
+            raise LoadoutError("target overlaps the canonical Hermes library", "scope-escape")
         return tool_id
 
     # -- routes: read ------------------------------------------------------
@@ -750,17 +834,38 @@ class SkillsToggleCore:
             disabled = self._disabled_set()
             tools_meta = []
             for tool_id, tool in self.tools.items():
-                d = self.tool_dir(tool_id)
+                path_error = None
+                try:
+                    d = self.tool_dir(tool_id)
+                except (LoadoutError, OSError, ValueError):
+                    d = None
+                    path_error = "Target no longer matches its selected scope. Review the client path."
+                bypasses = self.catalog_bypasses(tool_id) if tool_id != "hermes" else []
                 tools_meta.append(
                     {
                         "id": tool_id,
                         "label": tool.get("label", tool_id),
                         "dir": str(d) if d is not None else None,
-                        "present": True if d is None else d.is_dir(),  # hermes has no dir requirement
+                        "present": False if path_error else (True if d is None else d.is_dir()),
                         "special": tool.get("special"),
                         "optional": bool(tool.get("optional")),
+                        "configured": bool(tool.get("configured")),
+                        "client_id": tool.get("client_id"),
+                        "scope": tool.get("scope", "custom" if d else "global"),
+                        "project_root": tool.get("project_root"),
+                        "read_only": bool(tool.get("read_only")) or bool(path_error) or bool(bypasses),
+                        "catalog_bypasses": bypasses,
+                        "path_error": path_error,
+                        "verification": tool.get("verification", "custom"),
+                        "notes": tool.get("notes", ""),
+                        "shared_with": [],
                     }
                 )
+            for meta in tools_meta:
+                if meta["dir"]:
+                    meta["shared_with"] = [other["label"] for other in tools_meta
+                                           if other["id"] != meta["id"] and other["dir"]
+                                           and same_path(Path(other["dir"]), Path(meta["dir"]))]
             payload_skills = []
             unlinked = 0
             for sid, skill in sorted(skills.items()):
@@ -785,6 +890,7 @@ class SkillsToggleCore:
             payload = {
                 "ok": True,
                 "plugin_version": PLUGIN_VERSION,
+                "capabilities": {"client_catalog": CATALOG_VERSION, "scopes": ["global", "project", "custom"], "receipt_undo": True, "reviewed_operations": 1, "named_loadouts": 1},
                 "hermes_home": str(self.home),
                 "skills_root": str(self.skills_root),
                 "skills_root_exists": self.skills_root.is_dir(),
@@ -833,7 +939,7 @@ class SkillsToggleCore:
         foreign: list[dict] = []
         unmanaged: list[dict] = []
         for tool_id in self.tools:
-            tool_dir = self.tool_dir(tool_id)
+            tool_dir = self._inventory_dir(tool_id)
             if tool_dir is None or not tool_dir.is_dir():
                 continue
             try:
@@ -863,33 +969,18 @@ class SkillsToggleCore:
                 "foreign": len(foreign),
                 "unmanaged": len(unmanaged),
             },
+            "catalog_bypasses": self.catalog_bypasses(),
+            "path_errors": [{"tool": tool["id"], "error": tool["path_error"]}
+                            for tool in payload["tools"] if tool.get("path_error")],
         }
 
     # -- routes: mutate ----------------------------------------------------
 
     def _backup(self, path: Path) -> str | None:
-        if not path.is_file():
-            return None
-        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        backup = path.with_name(f"{path.name}.bak.hermes-switchboard.{stamp}")
-        n = 1
-        while backup.exists():
-            backup = path.with_name(f"{path.name}.bak.hermes-switchboard.{stamp}-{n}")
-            n += 1
-        shutil.copy2(path, backup)
-        return str(backup)
+        return _backup_file(path)
 
     def _backup_config(self) -> str | None:
-        if not self.config_path.is_file():
-            return None
-        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        backup = self.config_path.with_name(f"config.yaml.bak.hermes-switchboard.{stamp}")
-        n = 1
-        while backup.exists():
-            backup = self.config_path.with_name(f"config.yaml.bak.hermes-switchboard.{stamp}-{n}")
-            n += 1
-        shutil.copy2(self.config_path, backup)
-        return str(backup)
+        return _backup_file(self.config_path)
 
     def _hermes_toggle(self, skill_name: str, enabled: bool) -> str:
         text = ""
@@ -897,24 +988,41 @@ class SkillsToggleCore:
             try:
                 text = self.config_path.read_text(encoding="utf-8")
             except OSError as exc:
-                raise SkillsToggleError(f"cannot read {self.config_path}: {exc}", "config-unreadable") from exc
+                raise LoadoutError(f"cannot read {self.config_path}: {exc}", "config-unreadable") from exc
         try:
             new_text = set_disabled_member(text, skill_name, add=not enabled)
         except ConfigEditError as exc:
-            raise SkillsToggleError(f"config.yaml edit refused: {exc}", "config-edit") from exc
+            raise LoadoutError(f"config.yaml edit refused: {exc}", "config-edit") from exc
         if new_text == text:
             return "noop"
         backup = self._backup_config()
         self.config_path.parent.mkdir(parents=True, exist_ok=True)
-        self.config_path.write_text(new_text, encoding="utf-8")
+        _atomic_write_text(self.config_path, new_text)
         self._log(action="config-edit", tool="hermes", skill=skill_name, enabled=enabled, backup=backup)
         return "config-updated"
 
+    def _validate_client_skill(self, skill: dict, tool_id: str) -> None:
+        tool = self.tools[tool_id]
+        if tool_id == "hermes" or tool.get("scope") not in ("global", "project"):
+            return
+        client = catalog_client(tool.get("client_id"))
+        name = skill["name"]
+        if name.casefold() in {value.casefold() for value in client.get("reserved_names", [])}:
+            raise LoadoutError("this skill folder name is reserved by the selected client", "skill-incompatible")
+        if (not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", name) or len(name) > 64
+                or skill.get("front_name") != name or not skill.get("description")):
+            raise LoadoutError("this client needs an Agent Skills name matching its folder and a description; fix SKILL.md first",
+                                    "skill-incompatible")
+
     def _link_tool(self, skill: dict, tool_id: str, enabled: bool) -> tuple[str, dict]:
         """Enable/disable one symlink. Returns (action, new_state)."""
+        if self.catalog_bypasses(tool_id):
+            raise LoadoutError("Catalog bypass: review the broad library link before using individual switches", "catalog-bypass")
         tool_dir = self.tool_dir(tool_id)
         if tool_dir is None:
-            raise SkillsToggleError(f"tool {tool_id} has no target dir configured", "no-dir")
+            raise LoadoutError(f"tool {tool_id} has no target dir configured", "no-dir")
+        if enabled:
+            self._validate_client_skill(skill, tool_id)
         link = tool_dir / skill["name"]
         skill_dir_resolved = skill["dir"].resolve()  # compared via same_path
 
@@ -933,42 +1041,57 @@ class SkillsToggleCore:
             return "missing", None
 
         state, target = link_state()
+        if state == "broken-link":
+            base = Path(target) if os.path.isabs(target) else link.parent / target
+            if not is_inside(base, self.skills_root_resolved):
+                raise LoadoutError("broken symlink points outside the Hermes skills tree; left untouched",
+                                        "foreign-link")
 
         if enabled:
             if state == "enabled":
                 return "noop", {"state": "enabled", "target": target}
             if state == "foreign-link":
-                raise SkillsToggleError(
+                raise LoadoutError(
                     f"{link} is a symlink to {target} (outside this skill) — resolve it manually before enabling",
                     "foreign-link",
                 )
             if state == "unmanaged-dir":
-                raise SkillsToggleError(
+                raise LoadoutError(
                     f"{link} is a real directory/file, not a symlink — refusing to overwrite (never delete real dirs)",
                     "unmanaged-dir",
                 )
             created_dir = False
             if not tool_dir.is_dir():
                 if tool_dir.exists():
-                    raise SkillsToggleError(
+                    raise LoadoutError(
                         f"{tool_dir} exists but is not a directory — refusing to replace it", "not-a-dir"
                     )
                 try:
                     tool_dir.mkdir(parents=True, exist_ok=True)
                 except OSError as exc:
-                    raise SkillsToggleError(f"cannot create {tool_dir}: {exc}", "mkdir-failed") from exc
+                    raise LoadoutError(f"cannot create {tool_dir}: {exc}", "mkdir-failed") from exc
                 created_dir = True
                 self._log(action="create-tool-dir", tool=tool_id, dir=str(tool_dir))
-            if state == "broken-link":
-                link.unlink()
+            temporary = None
             try:
-                os.symlink(str(skill_dir_resolved), str(link))
+                if state == "broken-link":
+                    temporary = link.with_name(".hermes-loadout-" + uuid.uuid4().hex)
+                    os.symlink(str(skill_dir_resolved), str(temporary), target_is_directory=True)
+                    if not link.is_symlink() or os.readlink(link) != target:
+                        raise LoadoutError("target changed during repair; refresh and review it again",
+                                                "changed-since-preview")
+                    self._replace_managed_link(temporary, link)
+                else:
+                    os.symlink(str(skill_dir_resolved), str(link), target_is_directory=True)
             except (OSError, NotImplementedError) as exc:
-                raise SkillsToggleError(
+                raise LoadoutError(
                     f"could not create symlink at {link}: {exc} "
                     "(on Windows, enable Developer Mode or run elevated)",
                     "symlink-unsupported",
                 ) from exc
+            finally:
+                if temporary is not None and temporary.is_symlink():
+                    temporary.unlink()
             if created_dir:
                 action = "created-dir+linked"
             elif state == "broken-link":
@@ -985,21 +1108,21 @@ class SkillsToggleCore:
             if state == "broken-link":
                 base = Path(target) if os.path.isabs(target) else (link.parent / target)
                 if not is_inside(base.resolve(), self.skills_root_resolved):
-                    raise SkillsToggleError(
+                    raise LoadoutError(
                         f"{link} points at {target} which is outside the skills tree — refusing", "foreign-link"
                     )
             link.unlink()
             return "unlinked", {"state": "missing"}
         if state == "foreign-link":
-            raise SkillsToggleError(f"{link} is a foreign symlink ({target}) — refusing to remove", "foreign-link")
-        raise SkillsToggleError(f"{link} is a real directory/file — refusing to remove", "unmanaged-dir")
+            raise LoadoutError(f"{link} is a foreign symlink ({target}) — refusing to remove", "foreign-link")
+        raise LoadoutError(f"{link} is a real directory/file — refusing to remove", "unmanaged-dir")
 
     def toggle(self, skill_id: object, tool_id: object, enabled: object) -> dict:
         with self._lock:
             skill_id = self._validate_skill(skill_id)
             tool_id = self._validate_tool(tool_id)
             if not isinstance(enabled, bool):
-                raise SkillsToggleError("'enabled' must be a boolean", "invalid-body")
+                raise LoadoutError("'enabled' must be a boolean", "invalid-body")
             skills = self._scan_skills()
             skill = skills[skill_id]
             before = self._one_state(skill, tool_id, self._disabled_set())["state"]
@@ -1041,16 +1164,18 @@ class SkillsToggleCore:
             # no-ops; retain that contract for the item-8 frontend.
             "changed": sum(1 for item in results if item["ok"]),
             "failed": sum(1 for item in results if not item["ok"]),
+            "receipt": applied["receipt"],
+            **({"receipt_error": applied["receipt_error"]} if "receipt_error" in applied else {}),
         }
 
     def _bulk_inputs(
         self, skill_ids: object, tool_id: object, enabled: object, allow_empty: bool = False
     ) -> tuple[list, str, bool]:
         if not isinstance(skill_ids, list) or (not skill_ids and not allow_empty):
-            raise SkillsToggleError("'skills' must be a non-empty list of skill ids", "invalid-body")
+            raise LoadoutError("'skills' must be a non-empty list of skill ids", "invalid-body")
         tool = self._validate_tool(tool_id)
         if not isinstance(enabled, bool):
-            raise SkillsToggleError("'enabled' must be a boolean", "invalid-body")
+            raise LoadoutError("'enabled' must be a boolean", "invalid-body")
         ordered = []
         for sid in skill_ids:
             if sid not in ordered:
@@ -1064,6 +1189,9 @@ class SkillsToggleCore:
         desired = "enabled" if enabled else ("disabled" if tool_id == "hermes" else "missing")
         if tool_id == "hermes":
             return {"kind": "satisfied" if state == desired else "change", "state": state, "next": desired}
+        if self.catalog_bypasses(tool_id):
+            return {"kind": "refused", "state": state, "next": state, "code": "catalog-bypass",
+                    "reason": "A broad link bypasses individual switches. Review its repair first."}
 
         tool_dir = self.tool_dir(tool_id)
         if tool_dir is None:
@@ -1085,7 +1213,7 @@ class SkillsToggleCore:
             else:
                 reason = f"{link} is a real directory/file — refusing to remove"
             return {"kind": "refused", "state": state, "next": state, "code": "unmanaged-dir", "reason": reason}
-        if not enabled and state == "broken-link":
+        if state == "broken-link":
             target = state_info.get("target")
             base = Path(target) if os.path.isabs(target) else (link.parent / target)
             if not is_inside(base.resolve(), self.skills_root_resolved):
@@ -1113,7 +1241,7 @@ class SkillsToggleCore:
                     hermes_text = self.config_path.read_text(encoding="utf-8")
                     disabled = parse_disabled(hermes_text)
                 except OSError as exc:
-                    hermes_read_error = SkillsToggleError(
+                    hermes_read_error = LoadoutError(
                         f"cannot read {self.config_path}: {exc}", "config-unreadable"
                     )
             would_change = []
@@ -1123,10 +1251,16 @@ class SkillsToggleCore:
             for sid in ordered:
                 try:
                     valid_sid = self._validate_skill(sid)
-                except SkillsToggleError as exc:
+                except LoadoutError as exc:
                     refused.append({"skill": sid, "code": exc.code, "reason": str(exc)})
                     continue
                 skill = skills[valid_sid]
+                if enabled and tool_id != "hermes":
+                    try:
+                        self._validate_client_skill(skill, tool_id)
+                    except LoadoutError as exc:
+                        refused.append({"skill": valid_sid, "code": exc.code, "reason": str(exc)})
+                        continue
                 disposition = self._bulk_disposition(skill, tool_id, enabled, disabled)
                 if tool_id == "hermes":
                     if hermes_read_error is not None:
@@ -1175,6 +1309,229 @@ class SkillsToggleCore:
                 },
             }
 
+    def _receipt_path(self, receipt_id: object) -> Path:
+        if not isinstance(receipt_id, str) or not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", receipt_id):
+            raise LoadoutError("invalid receipt identifier", "invalid-receipt")
+        root = self.home / "data" / PLUGIN_ID / "receipts"
+        if not is_inside(root, self.home):
+            raise LoadoutError("receipt storage resolves outside the Hermes home", "unsafe-receipt")
+        path = root / (hashlib.sha256(receipt_id.encode("utf-8")).hexdigest() + ".json")
+        if path.is_symlink():
+            raise LoadoutError("receipt files must not be symlinks", "unsafe-receipt")
+        return path
+
+    def _reserve_receipt(self, receipt: dict) -> None:
+        """Write before-images before changing anything; never reuse an id."""
+        path = self._receipt_path(receipt["receipt_id"])
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            descriptor = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError as exc:
+            raise LoadoutError("a receipt with this identifier already exists", "receipt-exists") from exc
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                stream.write(json.dumps(receipt, indent=2, ensure_ascii=False) + "\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+        except OSError:
+            path.unlink(missing_ok=True)
+            raise
+
+    def _save_receipt(self, receipt: dict) -> None:
+        _atomic_write_text(self._receipt_path(receipt["receipt_id"]),
+                           json.dumps(receipt, indent=2, ensure_ascii=False) + "\n")
+
+    def get_bulk_receipt(self, receipt_id: object) -> dict:
+        path = self._receipt_path(receipt_id)
+        if not path.is_file():
+            raise LoadoutError("receipt not found", "unknown-receipt")
+        data, _ = _read_json_mapping(path, "context")
+        if data.get("format") != "loadout-bulk-v1" or data.get("receipt_id") != receipt_id:
+            raise LoadoutError("receipt format does not match this operation", "invalid-receipt")
+        # Validate the whole document before undo touches its first entry.
+        # A truncated or hand-edited receipt is evidence to inspect, not a plan.
+        context = data.get("context")
+        items = data.get("items")
+        if (not isinstance(context, dict) or not isinstance(items, list)
+                or not isinstance(data.get("tool"), str)
+                or data.get("status") not in ("applying", "complete", "undone")
+                or any(not isinstance(context.get(key), str) or not Path(context[key]).is_absolute()
+                       for key in ("target_dir", "skills_root"))):
+            raise LoadoutError("receipt structure is incomplete", "invalid-receipt")
+        seen = set()
+        for item in items:
+            if not isinstance(item, dict):
+                raise LoadoutError("receipt contains an invalid entry", "invalid-receipt")
+            if not item.get("ok"):
+                continue
+            sid = item.get("skill")
+            if (not isinstance(sid, str) or not _SKILL_ID_RE.fullmatch(sid)
+                    or any(part in (".", "..") or "\\" in part for part in sid.split("/"))
+                    or sid in seen or not isinstance(item.get("from"), str)
+                    or not isinstance(item.get("to"), str)):
+                raise LoadoutError("receipt contains an invalid skill", "invalid-receipt")
+            seen.add(sid)
+            for key in ("before", "after"):
+                image = item.get(key)
+                kind = image.get("kind") if isinstance(image, dict) else None
+                valid = (kind == "config" and isinstance(image.get("disabled"), bool)) if data["tool"] == "hermes" else (
+                    kind == "missing" or (kind == "symlink" and isinstance(image.get("target"), str)
+                    and "\0" not in image["target"] and isinstance(image.get("identity"), list)
+                    and len(image["identity"]) == 4 and all(isinstance(n, int) for n in image["identity"])
+                    and isinstance(image.get("directory", True), bool)))
+                if not valid:
+                    raise LoadoutError("receipt contains an invalid before/after image", "invalid-receipt")
+                if kind == "symlink":
+                    image.setdefault("directory", True)  # old receipts describe skill directories
+        if data.get("undo_result") is not None and (data.get("status") != "undone"
+                or not isinstance(data["undo_result"], dict) or data["undo_result"].get("ok") is not True):
+            raise LoadoutError("receipt contains an invalid undo result", "invalid-receipt")
+        return {"ok": True, "receipt": data}
+
+    @staticmethod
+    def _entry_snapshot(path: Path) -> dict:
+        """Record link identity as well as its destination to detect replacement."""
+        try:
+            stat = path.lstat()
+            if path.is_symlink():
+                return {"kind": "symlink", "target": os.readlink(path),
+                        "directory": bool(getattr(stat, "st_file_attributes", 16) & 16),
+                        "identity": [stat.st_dev, stat.st_ino, stat.st_mtime_ns, stat.st_ctime_ns]}
+            return {"kind": "protected"}
+        except FileNotFoundError:
+            return {"kind": "missing"}
+        except OSError:
+            return {"kind": "unreadable"}
+
+    @staticmethod
+    def _replace_managed_link(temporary: Path, destination: Path) -> None:
+        """Replace a checked link without discarding its before-image on error.
+
+        NTFS refuses replacement of directory symlinks with os.replace. Move
+        the old link aside there, then rename exclusively and roll back on
+        failure. A process interruption leaves that recoverable link beside
+        the destination, not a deleted skill directory.
+        """
+        if sys.platform != "win32":
+            os.replace(temporary, destination)
+            return
+        if not destination.is_symlink() or not temporary.is_symlink():
+            raise LoadoutError("link changed before replacement", "changed-since-preview")
+        parked = destination.with_name(".hermes-loadout-previous-" + uuid.uuid4().hex)
+        os.rename(destination, parked)
+        try:
+            # Unlike replace, Windows rename refuses a newly occupied path.
+            os.rename(temporary, destination)
+        except OSError:
+            if not destination.exists() and not destination.is_symlink():
+                os.rename(parked, destination)
+            raise
+        parked.unlink()
+
+    def undo_bulk(self, receipt_id: object) -> dict:
+        """Restore only recorded changes whose post-apply state still matches.
+
+        Before-images survive a restart. An interrupted or unpersisted operation
+        requires review, never a guessed inverse. Completed undo is idempotent.
+        """
+        with self._lock:
+            receipt = self.get_bulk_receipt(receipt_id)["receipt"]
+            if receipt.get("undo_result") is not None:
+                return receipt["undo_result"]
+            if receipt.get("status") != "complete":
+                raise LoadoutError("this operation has incomplete evidence; inspect the saved receipt and backups",
+                                        "incomplete-receipt")
+            context = receipt.get("context", {})
+            tool_id = self._validate_tool(receipt.get("tool"))
+            expected_dir = context.get("target_dir")
+            current_dir = self.config_path.resolve() if tool_id == "hermes" else self.tool_dir(tool_id)
+            if (current_dir is None or not isinstance(expected_dir, str)
+                    or not same_path(current_dir, Path(expected_dir))
+                    or not same_path(self.skills_root, Path(context.get("skills_root", "")))):
+                raise LoadoutError("the target changed since this receipt; no files were modified", "target-changed")
+            results = []
+            config_ready = []
+            for item in receipt["items"]:
+                if not item.get("ok") or item.get("from") == item.get("to"):
+                    continue
+                sid = item["skill"]
+                before, after = item.get("before", {}), item.get("after", {})
+                name = sid.split("/")[-1]
+                try:
+                    if not _SKILL_ID_RE.fullmatch(sid) or name in (".", "..") or "\\" in name:
+                        raise LoadoutError("receipt contains an invalid skill name", "invalid-receipt")
+                    if tool_id == "hermes":
+                        now = {"kind": "config", "disabled": name in self._disabled_set()}
+                    else:
+                        link = current_dir / name
+                        now = self._entry_snapshot(link)
+                    if now != after or now.get("kind") in ("protected", "unreadable"):
+                        raise LoadoutError("entry changed after this operation; left untouched", "changed-since-apply")
+                    if tool_id == "hermes":
+                        config_ready.append((sid, name, before["disabled"]))
+                        continue
+                    if before.get("kind") == "missing" and now.get("kind") == "symlink":
+                        target = Path(now["target"])
+                        resolved = target if target.is_absolute() else link.parent / target
+                        if not is_inside(resolved, self.skills_root):
+                            raise LoadoutError("managed target changed; left untouched", "changed-since-apply")
+                        link.unlink()
+                    elif before.get("kind") == "symlink":
+                        raw = before.get("target")
+                        if not isinstance(raw, str):
+                            raise LoadoutError("receipt has no original link target", "invalid-receipt")
+                        target = Path(raw)
+                        resolved = target if target.is_absolute() else link.parent / target
+                        if not is_inside(resolved, self.skills_root):
+                            raise LoadoutError("original target is no longer inside the skill library", "changed-since-apply")
+                        if now.get("kind") == "missing":
+                            # Exclusive symlink creation refuses a concurrently created entry.
+                            os.symlink(raw, link, target_is_directory=before["directory"])
+                        else:
+                            temporary = link.with_name(".hermes-loadout-" + uuid.uuid4().hex)
+                            try:
+                                os.symlink(raw, temporary, target_is_directory=before["directory"])
+                                if self._entry_snapshot(link) != after:
+                                    raise LoadoutError("entry changed during undo; left untouched", "changed-since-apply")
+                                self._replace_managed_link(temporary, link)
+                            finally:
+                                if temporary.is_symlink():
+                                    temporary.unlink()
+                    else:
+                        raise LoadoutError("receipt has no safe before-image", "invalid-receipt")
+                    results.append({"skill": sid, "ok": True, "state": item["from"]})
+                except (LoadoutError, OSError) as exc:
+                    results.append({"skill": sid, "ok": False, "error": str(exc),
+                                    "code": exc.code if isinstance(exc, LoadoutError) else "filesystem-error"})
+            if config_ready:
+                try:
+                    text = self.config_path.read_text(encoding="utf-8") if self.config_path.is_file() else ""
+                    new_text = text
+                    for _, name, disabled in config_ready:
+                        new_text = set_disabled_member(new_text, name, add=disabled)
+                    if new_text != text:
+                        self._backup_config()
+                        _atomic_write_text(self.config_path, new_text)
+                    results.extend({"skill": sid, "ok": True, "state": "disabled" if disabled else "enabled"}
+                                   for sid, _, disabled in config_ready)
+                except (ConfigEditError, LoadoutError, OSError) as exc:
+                    results.extend({"skill": sid, "ok": False, "error": str(exc), "code": "config-write"}
+                                   for sid, _, _ in config_ready)
+            changed = sum(bool(row["ok"]) for row in results)
+            failed = len(results) - changed
+            summary = {"receipt_id": receipt_id, "tool": tool_id, "changed": changed,
+                       "failed": failed, "refused": failed, "undo_available": False, "status": "undone"}
+            result = {"ok": True, "changed": changed, "failed": failed, "results": results, "receipt": summary}
+            receipt.update(status="undone", undo_available=False, undo_result=result)
+            try:
+                self._save_receipt(receipt)
+            except (LoadoutError, OSError) as exc:
+                result["receipt_error"] = "Undo completed but its final receipt could not be saved; inspect the changed entries."
+            self._log(action="bulk-undo", receipt_id=receipt_id, tool=tool_id, changed=changed, failed=failed)
+            if changed:
+                self.invalidate()
+            return result
+
     def execute_bulk(
         self, planned_ids: object, tool_id: object, enabled: object, receipt_id: object = None
     ) -> dict:
@@ -1184,7 +1541,7 @@ class SkillsToggleCore:
             if receipt_id is None:
                 receipt_id = uuid.uuid4().hex[:12]
             if not isinstance(receipt_id, str) or not re.match(r"^[A-Za-z0-9._:-]{1,128}$", receipt_id):
-                raise SkillsToggleError("'receipt_id' must be a short identifier", "invalid-body")
+                raise LoadoutError("'receipt_id' must be a short identifier", "invalid-body")
 
             skills = self._scan_skills()
             disabled = self._disabled_set()
@@ -1194,7 +1551,7 @@ class SkillsToggleCore:
             for sid in ordered:
                 try:
                     valid_sid = self._validate_skill(sid)
-                except SkillsToggleError as exc:
+                except LoadoutError as exc:
                     results.append({
                         "skill": sid, "ok": False, "state": "unknown", "error": str(exc),
                         "code": exc.code, "changed_since_preview": True,
@@ -1202,6 +1559,14 @@ class SkillsToggleCore:
                     receipt_items.append({"skill": sid, "ok": False, "from": "unknown", "to": "unknown"})
                     continue
                 skill = skills[valid_sid]
+                if enabled and tool_id != "hermes":
+                    try:
+                        self._validate_client_skill(skill, tool_id)
+                    except LoadoutError as exc:
+                        results.append({"skill": valid_sid, "ok": False, "state": "refused",
+                                        "code": exc.code, "error": str(exc), "changed_since_preview": True})
+                        receipt_items.append({"skill": valid_sid, "ok": False, "from": "refused", "to": "refused"})
+                        continue
                 disposition = self._bulk_disposition(skill, tool_id, enabled, disabled)
                 if disposition["kind"] != "change":
                     if disposition["kind"] == "refused":
@@ -1220,7 +1585,25 @@ class SkillsToggleCore:
                     continue
                 ready.append((valid_sid, skill, disposition))
 
+            context_dir = self.config_path.resolve() if tool_id == "hermes" else self.tool_dir(tool_id)
+            before_images = {
+                sid: ({"kind": "config", "disabled": skill["name"] in disabled} if tool_id == "hermes"
+                      else self._entry_snapshot(context_dir / skill["name"]))
+                for sid, skill, _ in ready
+            }
+            durable = {"format": "loadout-bulk-v1", "receipt_id": receipt_id, "tool": tool_id,
+                       "enabled": enabled, "status": "applying", "undo_available": False,
+                       "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                       "context": {"target_dir": str(context_dir.resolve()) if context_dir else None,
+                                   "skills_root": str(self.skills_root.resolve())},
+                       "items": [{"skill": sid, "before": before_images[sid]} for sid, _, _ in ready]}
+            try:
+                self._reserve_receipt(durable)
+            except OSError as exc:
+                raise LoadoutError("receipt storage is not writable; no target changes were made", "receipt-write") from exc
+
             changed_ids = set()
+            after_images = {}
             if tool_id == "hermes" and ready:
                 try:
                     text = self.config_path.read_text(encoding="utf-8") if self.config_path.is_file() else ""
@@ -1230,7 +1613,7 @@ class SkillsToggleCore:
                     backup = self._backup_config() if new_text != text else None
                     if new_text != text:
                         self.config_path.parent.mkdir(parents=True, exist_ok=True)
-                        self.config_path.write_text(new_text, encoding="utf-8")
+                        _atomic_write_text(self.config_path, new_text)
                         self._log(
                             action="config-edit", tool="hermes", skills=[sid for sid, _, _ in ready],
                             enabled=enabled, backup=backup,
@@ -1245,13 +1628,15 @@ class SkillsToggleCore:
                 for sid, skill, disposition in ready:
                     try:
                         _, new_state = self._link_tool(skill, tool_id, enabled)
+                        # Capture each mutation before moving to the next skill.
+                        after_images[sid] = self._entry_snapshot(context_dir / skill["name"])
                         changed_ids.add(sid)
                         state = new_state["state"]
                         results.append({"skill": sid, "ok": True, "state": state})
                         receipt_items.append({"skill": sid, "ok": True, "from": disposition["state"], "to": state})
                         self._log(action="toggle", skill=sid, tool=tool_id, enabled=enabled, **{"from": disposition["state"], "to": state})
-                    except (SkillsToggleError, OSError) as exc:
-                        code = exc.code if isinstance(exc, SkillsToggleError) else "filesystem-error"
+                    except (LoadoutError, OSError) as exc:
+                        code = exc.code if isinstance(exc, LoadoutError) else "filesystem-error"
                         results.append({"skill": sid, "ok": False, "state": disposition["state"], "error": str(exc), "code": code})
                         receipt_items.append({"skill": sid, "ok": False, "from": disposition["state"], "to": disposition["state"]})
 
@@ -1269,21 +1654,33 @@ class SkillsToggleCore:
             refused_codes = {"foreign-link", "unmanaged-dir", "no-dir", "not-a-dir"}
             refused_count = sum(1 for item in results if item.get("code") in refused_codes)
             undone_by = [{"skill": item["skill"], "enabled": not enabled} for item in receipt_items if item["ok"] and item["from"] != item["to"]]
+            for item in receipt_items:
+                if item["ok"]:
+                    item["before"] = before_images[item["skill"]]
+                    item["after"] = ({"kind": "config", "disabled": not enabled} if tool_id == "hermes"
+                                     else after_images[item["skill"]])
             receipt = {
-                "receipt_id": receipt_id, "tool": tool_id, "enabled": enabled, "items": receipt_items,
-                "changed": changed, "failed": failed, "refused": refused_count, "undone_by": undone_by,
+                **durable, "status": "complete", "undo_available": bool(changed),
+                "items": receipt_items, "changed": changed, "failed": failed,
+                "refused": refused_count, "undone_by": undone_by,
             }
+            response = {"ok": True, "results": results, "receipt": receipt, "changed": changed, "failed": failed}
+            try:
+                self._save_receipt(receipt)
+            except (LoadoutError, OSError):
+                receipt.update(status="persistence-failed", undo_available=False)
+                response["receipt_error"] = "Changes completed but the final receipt could not be saved; review the before-images and backups."
             self._log(action="bulk", receipt_id=receipt_id, tool=tool_id, enabled=enabled, receipt=receipt)
             if changed:
                 self.invalidate()
-            return {"ok": True, "results": results, "receipt": receipt, "changed": changed, "failed": failed}
+            return response
 
     def repair(self, skill_id: object, tool_id: object) -> dict:
         with self._lock:
             skill_id = self._validate_skill(skill_id)
             tool_id = self._validate_tool(tool_id)
             if tool_id == "hermes":
-                raise SkillsToggleError("hermes state lives in config.yaml — use toggle instead", "not-a-link")
+                raise LoadoutError("hermes state lives in config.yaml — use toggle instead", "not-a-link")
             skills = self._scan_skills()
             skill = skills[skill_id]
             state = self._one_state(skill, tool_id, self._disabled_set())["state"]
@@ -1291,7 +1688,7 @@ class SkillsToggleCore:
                 self._log(action="repair", skill=skill_id, tool=tool_id, result="noop")
                 return {"ok": True, "skill": skill_id, "tool": tool_id, "state": "enabled", "action": "noop"}
             if state in ("foreign-link", "unmanaged-dir"):
-                raise SkillsToggleError(
+                raise LoadoutError(
                     f"cannot repair {state} at {self.tool_dir(tool_id) / skill['name']} — resolve manually", state
                 )
             action, new_state = self._link_tool(skill, tool_id, True)
@@ -1336,25 +1733,25 @@ class SkillsToggleCore:
                 try:
                     res = self.repair(sid, item["tool"])
                     fixed.append({"skill": sid, "tool": item["tool"], "state": res.get("state")})
-                except SkillsToggleError as exc:
+                except LoadoutError as exc:
                     unfixable.append({**item, "reason": str(exc)})
             return {"ok": True, "fixed": fixed, "unfixable": unfixable}
 
     def ensure_tool_dir(self, tool_id: object) -> dict:
         tool_id = self._validate_tool(tool_id)
         if tool_id == "hermes":
-            raise SkillsToggleError("hermes has no skills dir (config.yaml based)", "no-dir")
+            raise LoadoutError("hermes has no skills dir (config.yaml based)", "no-dir")
         tool_dir = self.tool_dir(tool_id)
         if tool_dir is None:
-            raise SkillsToggleError(f"tool {tool_id} has no target dir configured", "no-dir")
+            raise LoadoutError(f"tool {tool_id} has no target dir configured", "no-dir")
         if tool_dir.is_dir():
             return {"ok": True, "tool": tool_id, "dir": str(tool_dir), "created": False}
         if tool_dir.exists():
-            raise SkillsToggleError(f"{tool_dir} exists but is not a directory — refusing to replace it", "not-a-dir")
+            raise LoadoutError(f"{tool_dir} exists but is not a directory — refusing to replace it", "not-a-dir")
         try:
             tool_dir.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
-            raise SkillsToggleError(f"cannot create {tool_dir}: {exc}", "mkdir-failed") from exc
+            raise LoadoutError(f"cannot create {tool_dir}: {exc}", "mkdir-failed") from exc
         self._log(action="create-tool-dir", tool=tool_id, dir=str(tool_dir))
         self.invalidate()
         return {"ok": True, "tool": tool_id, "dir": str(tool_dir), "created": True}
@@ -1393,6 +1790,8 @@ class SkillsToggleCore:
                 return {"name": entry.name, "kind": "foreign-link", "target": target}
             if entry.is_dir():
                 skill_md = entry / "SKILL.md"
+                if skill_md.is_symlink():
+                    return {"name": entry.name, "kind": "unsafe-source", "path": str(entry)}
                 if skill_md.is_file():
                     _, description = parse_skill_markdown(
                         skill_md.read_text(encoding="utf-8", errors="replace")[:8192]
@@ -1425,7 +1824,7 @@ class SkillsToggleCore:
         for tool_id in self.tools:
             if tool_id == "hermes":
                 continue
-            tool_dir = self.tool_dir(tool_id)
+            tool_dir = self._inventory_dir(tool_id)
             if tool_dir is None or not tool_dir.is_dir():
                 per_tool.append({"tool": tool_id, "present": False, "entries": []})
                 continue
@@ -1454,26 +1853,163 @@ class SkillsToggleCore:
 
     @staticmethod
     def _validate_import_category(category: object) -> str:
-        if not isinstance(category, str) or not re.match(r"^[^/\0]+$", category) or category in (".", ".."):
-            raise SkillsToggleError(f"invalid category {category!r}", "invalid-category")
+        if not isinstance(category, str) or not re.match(r"^[^/\0]+$", category) or category.startswith(".") or "\\" in category:
+            raise LoadoutError(f"invalid category {category!r}", "invalid-category")
         return category
+
+    def _new_review(self, kind: str, payload: dict) -> str:
+        """Keep bounded, short-lived preconditions on the backend, never trust a UI echo."""
+        with self._lock:
+            now = time.monotonic()
+            self._reviews = {key: value for key, value in self._reviews.items()
+                             if now - value["created"] < 600}
+            while len(self._reviews) >= 32:
+                self._reviews.pop(next(iter(self._reviews)))
+            review_id = uuid.uuid4().hex
+            self._reviews[review_id] = {"kind": kind, "created": now, "payload": copy.deepcopy(payload)}
+            return review_id
+
+    def _take_review(self, review_id: object, kind: str) -> dict:
+        with self._lock:
+            if not isinstance(review_id, str):
+                raise LoadoutError("Review this operation before applying it", "review-required")
+            review = self._reviews.get(review_id)
+            if not review or review["kind"] != kind or time.monotonic() - review["created"] >= 600:
+                raise LoadoutError("The preview expired or was already used. Review again.", "review-expired")
+            del self._reviews[review_id]
+            return review["payload"]
+
+    @staticmethod
+    def _import_identity(path: Path) -> dict:
+        st = path.lstat()
+        return {"device": st.st_dev, "inode": st.st_ino, "created": st.st_ctime_ns,
+                "modified": st.st_mtime_ns, "symlink": path.is_symlink()}
+
+    def _import_destination(self, category: object, name: object = None) -> Path:
+        category = self._validate_import_category(category)
+        if not same_path(self.skills_root, self.skills_root_resolved):
+            raise LoadoutError("The library location changed. Restart and review it.", "destination-changed")
+        parent = self.skills_root / category
+        if not is_inside(parent, self.skills_root_resolved) or same_path(parent, self.skills_root_resolved):
+            raise LoadoutError("The import category points outside the library", "destination-escape")
+        if parent.exists() and not parent.is_dir():
+            raise LoadoutError("The import category is not a folder", "destination-invalid")
+        if name is None:
+            return parent
+        name = self._entry_name(name)
+        destination = parent / name
+        if not is_inside(destination, self.skills_root_resolved) or not is_inside(destination, parent):
+            raise LoadoutError("The import destination points outside the library", "destination-escape")
+        return destination
+
+    @staticmethod
+    def _skill_fingerprint(root: Path) -> str:
+        """Hash the complete bounded skill, without following links or special files.
+
+        A link can point at credentials, escape after relocation, or create a discovery
+        cycle. Imports refuse linked content instead of guessing its portability.
+        """
+        if root.is_symlink() or not root.is_dir():
+            raise LoadoutError("Choose a real skill folder", "unsafe-source")
+        digest = hashlib.sha256()
+        total = 0
+        count = 0
+        stack = [root]
+        while stack:
+            directory = stack.pop()
+            if directory.is_symlink() or not is_inside(directory, root):
+                raise LoadoutError("A source folder was redirected", "unsafe-source")
+            children = list(itertools.islice(directory.iterdir(), 2049))
+            if len(children) > 2048:
+                raise LoadoutError("This skill exceeds the 2,048-entry import limit", "scan-limit")
+            for path in sorted(children):
+                count += 1
+                if count > 2048:
+                    raise LoadoutError("This skill exceeds the 2,048-entry import limit", "scan-limit")
+                info = path.lstat()
+                if stat.S_ISLNK(info.st_mode) or not is_inside(path, root):
+                    raise LoadoutError("Linked skill content needs a separate review", "unsafe-source")
+                digest.update(str(path.relative_to(root)).replace(os.sep, "/").encode("utf-8"))
+                digest.update(b"\0")
+                if stat.S_ISDIR(info.st_mode):
+                    digest.update(b"directory\0")
+                    stack.append(path)
+                elif stat.S_ISREG(info.st_mode):
+                    total += info.st_size
+                    if total > 32 * 1024 * 1024:
+                        raise LoadoutError("This skill exceeds the 32 MiB import limit", "scan-limit")
+                    digest.update(b"file\0")
+                    with path.open("rb") as stream:
+                        read = 0
+                        for chunk in iter(lambda: stream.read(65536), b""):
+                            read += len(chunk)
+                            if read > info.st_size or read > 32 * 1024 * 1024:
+                                raise LoadoutError("Skill content changed while being reviewed", "changed-since-preview")
+                            digest.update(chunk)
+                    after = path.lstat()
+                    if (info.st_ino, info.st_mtime_ns, info.st_size) != (after.st_ino, after.st_mtime_ns, after.st_size):
+                        raise LoadoutError("Skill content changed while being reviewed", "changed-since-preview")
+                    digest.update(b"\0")
+                else:
+                    raise LoadoutError("Only ordinary skill files can be imported", "unsafe-source")
+        return digest.hexdigest()
+
+    def _tool_backup_root(self, tool_dir: Path, create: bool = False) -> Path:
+        """Original copies stay outside every discoverable skills directory."""
+        root = self.home / "data" / PLUGIN_ID / "backups" / hashlib.sha256(
+            _canonical(str(tool_dir)).encode("utf-8")).hexdigest()[:20]
+        boundary = self.home.resolve()
+        for parent in (root, *root.parents):
+            if same_path(parent, boundary):
+                break
+            if parent.is_symlink() or not is_inside(parent, boundary):
+                raise LoadoutError("The backup store is redirected", "unsafe-backup-store")
+        for tool_id in self.tools:
+            target = self._inventory_dir(tool_id)
+            if target is not None and is_inside(root, target):
+                raise LoadoutError("The backup store overlaps a client skill source", "unsafe-backup-store")
+        if is_inside(root, self.skills_root_resolved):
+            raise LoadoutError("Backups must stay outside the library", "unsafe-backup-store")
+        if create:
+            root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        return root
+
+    def _new_tool_backup(self, tool_dir: Path, name: str) -> Path:
+        root = self._tool_backup_root(tool_dir, create=True)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        return root / f"{self._entry_name(name)}.bak.{PLUGIN_ID}.{stamp}-{uuid.uuid4().hex[:8]}"
+
+    def _clean_owned_import(self, path: Path, identity: tuple) -> None:
+        """Never clean up through a redirected category or remove a replacement."""
+        if not os.path.lexists(path):
+            return
+        if (path.is_symlink() or not is_inside(path, self.skills_root_resolved)
+                or same_path(path, self.skills_root_resolved)):
+            raise LoadoutError("Import cleanup needs manual inspection", "recovery-required")
+        info = path.lstat()
+        if (info.st_dev, info.st_ino) != identity:
+            raise LoadoutError("Import cleanup found a different folder", "recovery-required")
+        shutil.rmtree(path)
 
     def import_plan(self, tool_ids: object, scan_roots: object, category: object = "imported") -> dict:
         """Build a mutation-free adoption plan across known tool dirs and
         owner-selected roots. Selected roots are read sources only; they never
         alter the canonical Hermes destination."""
         category = self._validate_import_category(category)
-        if not isinstance(tool_ids, list) or not tool_ids:
-            raise SkillsToggleError("'tools' must be a non-empty list", "invalid-body")
+        destination_parent = self._import_destination(category)
+        if not isinstance(tool_ids, list):
+            raise LoadoutError("'tools' must be a list", "invalid-body")
+        if not tool_ids and not scan_roots:
+            raise LoadoutError("Choose an application or a source folder", "invalid-body")
         ordered_tools = []
         for tool_id in tool_ids:
             tool_id = self._validate_tool(tool_id)
             if tool_id == "hermes":
-                raise SkillsToggleError("hermes has no importable dir", "no-dir")
+                raise LoadoutError("hermes has no importable dir", "no-dir")
             if tool_id not in ordered_tools:
                 ordered_tools.append(tool_id)
-        if not isinstance(scan_roots, list):
-            raise SkillsToggleError("'scan_roots' must be a list", "invalid-body")
+        if not isinstance(scan_roots, list) or len(scan_roots) > 32 or len(tool_ids) > 64:
+            raise LoadoutError("Choose at most 32 folders and 64 applications per scan", "scan-limit")
 
         refused = []
         sources = []
@@ -1482,7 +2018,7 @@ class SkillsToggleCore:
         for known_tool_id in self.tools:
             if known_tool_id == "hermes":
                 continue
-            known_root = self.tool_dir(known_tool_id)
+            known_root = self._inventory_dir(known_tool_id)
             if known_root is not None and known_root.is_dir():
                 known_tool_roots.setdefault(_canonical(str(known_root)), known_tool_id)
         for tool_id in ordered_tools:
@@ -1538,7 +2074,10 @@ class SkillsToggleCore:
         for source in sources:
             root = source["root"]
             try:
-                children = sorted(root.iterdir())
+                children = sorted(itertools.islice(root.iterdir(), 2049))
+                if len(children) > 2048:
+                    refused.append({"root": source["source"], "tool": source["tool"], "code": "scan-limit"})
+                    continue
             except OSError:
                 refused.append({"root": source["source"], "tool": source["tool"], "code": "unreadable"})
                 continue
@@ -1564,6 +2103,15 @@ class SkillsToggleCore:
                     row["conflict"] = True
                 elif row["kind"] == "unmanaged-skill" and row["conflict"]:
                     row["kind"] = "drifted" if row["drifted"] else "identical-duplicate"
+                if row["kind"] == "unmanaged-skill" and not row["conflict"]:
+                    try:
+                        row["fingerprint"] = self._skill_fingerprint(child)
+                        row["source_root"] = _canonical(str(root))
+                        row["source_identity"] = self._import_identity(child)
+                    except (LoadoutError, OSError) as exc:
+                        row["kind"] = "unsafe-source"
+                        row["error"] = str(exc)
+                        refused.append({"root": source["source"], "name": row["name"], "code": "unsafe-source"})
                 entries.append(row)
 
         grouped = {}
@@ -1588,9 +2136,15 @@ class SkillsToggleCore:
         kinds = {}
         for row in entries:
             kinds[row["kind"]] = kinds.get(row["kind"], 0) + 1
+        plan_id = self._new_review("import", {"category": category, "entries": entries,
+            "destination": _canonical(str(destination_parent))})
         return {
             "ok": True,
+            "plan_id": plan_id,
+            "expires_in": 600,
             "category": category,
+            "destination": str(destination_parent),
+            "activation": "Preserve existing applications; imported skills stay off in Hermes.",
             "entries": entries,
             "adoptable": adoptable,
             "conflicts": conflicts,
@@ -1603,245 +2157,213 @@ class SkillsToggleCore:
             },
         }
 
-    def import_apply_plan(self, entries: object, category: object = "imported") -> dict:
-        """Apply only explicit source/name/tool tuples from a reviewed plan.
-
-        Every source is reclassified while holding the mutation lock. Plain
-        scan roots are copied into Hermes and left untouched; configured tool
-        roots use the legacy copy/backup/link rollback sequence.
-        """
+    def import_apply_plan(self, entries: object, category: object = "imported", *, plan_id: object = None, _record=None) -> dict:
+        """Consume one exact preview; imports do not grant any new activation."""
         with self._lock:
+            review = self._take_review(plan_id, "import")
             category = self._validate_import_category(category)
-            if not isinstance(entries, list) or not entries:
-                raise SkillsToggleError("'entries' must be a non-empty list", "invalid-body")
-
+            if category != review["category"] or not isinstance(entries, list) or not entries:
+                raise LoadoutError("The selection differs from the reviewed import", "review-mismatch")
+            by_key = {(row["name"], row["source"], row.get("tool")): row for row in review["entries"]}
             requested = []
             for item in entries:
-                if not isinstance(item, dict):
-                    raise SkillsToggleError("each entry must be an object", "invalid-body")
-                name = item.get("name")
-                source_value = item.get("source")
-                tool_id = item.get("tool")
-                if (
-                    not isinstance(name, str)
-                    or not name
-                    or name in (".", "..")
-                    or "/" in name
-                    or "\\" in name
-                    or "\0" in name
-                ):
-                    raise SkillsToggleError(f"invalid import name {name!r}", "invalid-name")
-                if not isinstance(source_value, str) or not source_value.strip():
-                    raise SkillsToggleError("entry source must be a directory path", "invalid-body")
-                try:
-                    source = expand_path(source_value)
-                except (OSError, ValueError) as exc:
-                    raise SkillsToggleError(f"invalid source {source_value!r}", "invalid-root") from exc
-                if source.is_symlink():
-                    raise SkillsToggleError(f"source {source_value!r} is a symlink", "symlink-root")
-                if not source.is_dir():
-                    raise SkillsToggleError(f"source {source_value!r} is not a directory", "not-dir")
-                if tool_id is not None:
-                    tool_id = self._validate_tool(tool_id)
-                    if tool_id == "hermes":
-                        raise SkillsToggleError("hermes has no importable dir", "no-dir")
-                    configured = self.tool_dir(tool_id)
-                    if configured is None or not configured.is_dir() or not same_path(source, configured):
-                        raise SkillsToggleError(
-                            f"source does not match configured tool dir for {tool_id}", "source-mismatch"
-                        )
-                src = source / name
-                if not same_path(src.parent, source):
-                    raise SkillsToggleError(f"entry {name!r} escapes its source root", "outside-root")
-                requested.append({"name": name, "source": source, "tool": tool_id, "src": src})
-
-            receipt_id = uuid.uuid4().hex[:12]
-            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-            results = []
-            undo = []
-            skills = self._scan_skills()
-            tree_names = {skill["name"] for skill in skills.values()}
-
-            for item in requested:
-                name = item["name"]
-                src = item["src"]
-                info = self._classify_entry(src, skills)
-                if not info or info["kind"] != "unmanaged-skill":
-                    code = info["kind"] if info else "missing-entry"
-                    results.append({
-                        "name": name, "source": str(item["source"]), "tool": item["tool"],
-                        "ok": False, "code": code, "error": "entry is no longer an adoptable skill",
-                        "changed_since_preview": True,
-                    })
-                    continue
-                if info.get("conflict") or name in tree_names:
-                    results.append({
-                        "name": name, "source": str(item["source"]), "tool": item["tool"],
-                        "ok": False, "code": "changed-since-preview",
-                        "error": "a same-name Hermes skill now exists",
-                        "changed_since_preview": True, "conflict": True,
-                    })
-                    continue
-
-                dest_dir = self.skills_root / category
-                dest = dest_dir / name
-                if dest.exists() or dest.is_symlink():
-                    results.append({
-                        "name": name, "source": str(item["source"]), "tool": item["tool"],
-                        "ok": False, "code": "changed-since-preview",
-                        "error": f"destination {dest} now exists", "changed_since_preview": True,
-                    })
-                    continue
-                try:
-                    dest_dir.mkdir(parents=True, exist_ok=True)
-                    shutil.copytree(src, dest, symlinks=True)
-                except OSError as exc:
-                    shutil.rmtree(dest, ignore_errors=True)
-                    results.append({
-                        "name": name, "source": str(item["source"]), "tool": item["tool"],
-                        "ok": False, "code": "copy-failed", "error": f"copy failed: {exc}",
-                        "changed_since_preview": False,
-                    })
-                    continue
-
+                if not isinstance(item, dict) or any(not isinstance(item.get(k), str) for k in ("name", "source")):
+                    raise LoadoutError("Invalid import selection", "invalid-body")
+                key = (item["name"], item["source"], item.get("tool"))
+                if not isinstance(key[2], (str, type(None))) or key not in by_key:
+                    raise LoadoutError("An entry was not in the reviewed import", "review-mismatch")
+                if key not in [entry[0] for entry in requested]:
+                    requested.append((key, by_key[key]))
+            results, undo = [], []
+            for (name, source_value, tool_id), reviewed in requested:
+                row = {"name": name, "source": source_value, "tool": tool_id, "ok": False}
+                stage = None
+                stage_identity = None
+                destination = None
+                published = False
                 backup = None
-                if item["tool"] is not None:
-                    backup_path = item["source"] / f"{name}.hermes-switchboard-backup-{stamp}"
-                    try:
-                        os.rename(src, backup_path)
-                        os.symlink(str(dest.resolve()), str(src))
-                        backup = str(backup_path)
-                    except OSError as exc:
+                disabled_before = name in self._disabled_set()
+                disabled_written = False
+                try:
+                    if reviewed["kind"] != "unmanaged-skill" or reviewed.get("conflict"):
+                        raise LoadoutError("This entry is protected or conflicts with the library", reviewed["kind"])
+                    source = Path(source_value)
+                    src = source / self._entry_name(name)
+                    if source.is_symlink() or _canonical(str(source)) != reviewed["source_root"]:
+                        raise LoadoutError("The source location changed", "changed-since-preview")
+                    if tool_id is not None:
+                        self._validate_tool(tool_id)
+                        if self.tool_dir(tool_id) is None or not same_path(source, self.tool_dir(tool_id)):
+                            raise LoadoutError("The application location changed", "changed-since-preview")
+                    info = self._classify_entry(src, self._scan_skills())
+                    if not info or info["kind"] != "unmanaged-skill":
+                        raise LoadoutError("The source entry changed", info["kind"] if info else "changed-since-preview")
+                    if (info.get("conflict") or self._skill_fingerprint(src) != reviewed["fingerprint"]
+                            or self._import_identity(src) != reviewed["source_identity"]):
+                        raise LoadoutError("Skill content changed. Review it again.", "changed-since-preview")
+                    destination = self._import_destination(category, name)
+                    if (_canonical(str(destination.parent)) != review["destination"]
+                            or os.path.lexists(destination)):
+                        raise LoadoutError("The destination changed. Review it again.", "changed-since-preview")
+                    # A broad client link would expose the new copy without consent.
+                    if self.catalog_bypasses():
+                        raise LoadoutError("Repair the catalog bypass before importing", "catalog-bypass")
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    self._import_destination(category, name)
+                    backup = self._new_tool_backup(source, name) if tool_id is not None else None
+                    row.update(skill=f"{category}/{name}", path=str(destination),
+                               backup=str(backup) if backup else None,
+                               hermes_disabled_before=disabled_before,
+                               fingerprint=reviewed["fingerprint"],
+                               source_identity=reviewed["source_identity"])
+                    if _record is not None:
+                        _record(row, "pending")  # durable intent before activation or discovery changes
+                    self._hermes_toggle(name, False)  # before a discoverable copy exists
+                    disabled_written = True
+                    stage = destination.parent.resolve() / (".hermes-loadout-import-" + uuid.uuid4().hex)
+                    stage.mkdir(mode=0o700)
+                    info_stat = stage.lstat()
+                    stage_identity = (info_stat.st_dev, info_stat.st_ino)
+                    shutil.copytree(src, stage, symlinks=True, dirs_exist_ok=True)
+                    if self._skill_fingerprint(stage) != reviewed["fingerprint"]:
+                        raise LoadoutError("Skill content changed during import", "changed-since-preview")
+                    self._import_destination(category, name)
+                    if _canonical(str(destination.parent)) != review["destination"] or os.path.lexists(destination):
+                        raise LoadoutError("The destination changed during import", "changed-since-preview")
+                    os.rename(stage, destination)
+                    published = True
+                    if tool_id is not None:
+                        if self._skill_fingerprint(src) != reviewed["fingerprint"]:
+                            raise LoadoutError("The original changed during import", "changed-since-preview")
+                        os.rename(src, backup)  # refuses safely across filesystems
                         try:
-                            if src.is_symlink():
-                                src.unlink()
-                            if backup_path.is_dir() and not src.exists():
-                                os.rename(backup_path, src)
+                            os.symlink(str(destination.resolve()), str(src), target_is_directory=True)
                         except OSError:
-                            pass
-                        shutil.rmtree(dest, ignore_errors=True)
-                        results.append({
-                            "name": name, "source": str(item["source"]), "tool": item["tool"],
-                            "ok": False, "code": "link-swap-failed", "error": f"link swap failed: {exc}",
-                            "changed_since_preview": False,
-                        })
-                        continue
-                    undo.append({"path": str(src), "backup": backup, "kind": "restore-tool-entry"})
-                else:
-                    undo.append({"path": str(dest), "backup": None, "kind": "remove-canonical-copy"})
-
-                skill_id = f"{category}/{name}"
-                result = {
-                    "name": name, "source": str(item["source"]), "tool": item["tool"],
-                    "ok": True, "code": "adopted", "skill": skill_id, "path": str(dest),
-                    "backup": backup, "changed_since_preview": False,
-                }
-                results.append(result)
-                tree_names.add(name)
-                skills[skill_id] = {"name": name, "category": category, "dir": dest}
-
-            adopted = sum(1 for row in results if row["ok"])
-            refused_codes = {
-                "broken-link", "foreign-link", "unmanaged-dir", "managed", "managed-mismatch",
-                "missing-entry", "changed-since-preview",
-            }
-            refused_count = sum(1 for row in results if row.get("code") in refused_codes)
-            failed = len(results) - adopted - refused_count
-            receipt = {
-                "receipt_id": receipt_id, "items": results, "adopted": adopted,
-                "failed": failed, "refused": refused_count, "undo": undo,
-            }
-            # Log only stable identifiers and dispositions. Owner-selected
-            # filesystem paths and unrecognized request fields stay out.
-            self._log(
-                action="import-plan-apply", receipt_id=receipt_id,
-                items=[{"name": row["name"], "tool": row["tool"], "ok": row["ok"], "code": row["code"]} for row in results],
-                adopted=adopted, failed=failed, refused=refused_count,
-            )
-            if adopted:
-                self.invalidate()
-            return {
-                "ok": True, "results": results, "receipt": receipt,
-                "adopted": adopted, "failed": failed, "refused": refused_count,
-            }
+                            if not os.path.lexists(src):
+                                os.rename(backup, src)
+                            raise
+                    row.update(ok=True, code="adopted", skill=f"{category}/{name}", path=str(destination),
+                               backup=str(backup) if backup else None, changed_since_preview=False,
+                               hermes_disabled_before=disabled_before,
+                               fingerprint=reviewed["fingerprint"], after=self._import_identity(destination))
+                    if tool_id is not None:
+                        row["source_after"] = self._entry_snapshot(src)
+                    undo.append({"path": str(src if tool_id else destination),
+                                 "backup": str(backup) if backup else None,
+                                 "kind": "restore-tool-entry" if tool_id else "remove-canonical-copy"})
+                except (LoadoutError, OSError, ConfigEditError) as exc:
+                    code = exc.code if isinstance(exc, LoadoutError) else "copy-failed"
+                    recovery = bool(backup is not None and backup.exists())
+                    if recovery:
+                        row.update(backup=str(backup), path=str(destination))
+                    if stage is not None and stage_identity is not None and not recovery:
+                        try:
+                            self._clean_owned_import(destination if published else stage, stage_identity)
+                        except (OSError, LoadoutError):
+                            recovery = True
+                    # Never reactivate a copy left behind by a failed cleanup.
+                    if disabled_written and not disabled_before and not recovery:
+                        try:
+                            self._hermes_toggle(name, True)
+                        except (OSError, LoadoutError):
+                            recovery = True
+                    row.update(code="recovery-required" if recovery else code, error=str(exc),
+                               changed_since_preview=code in {"changed-since-preview", "foreign-link", "destination-escape", "destination-changed"},
+                               recovery_required=recovery)
+                results.append(row)
+                if _record is not None:
+                    _record(row, "completed" if row["ok"] else "failed")
+            adopted = sum(bool(row["ok"]) for row in results)
+            refused = sum(not row["ok"] and row["code"] not in {"copy-failed", "recovery-required"} for row in results)
+            failed = len(results) - adopted - refused
+            receipt = {"receipt_id": uuid.uuid4().hex[:12], "items": results, "adopted": adopted,
+                       "failed": failed, "refused": refused, "undo": undo}
+            self._log(action="import-plan-apply", receipt_id=receipt["receipt_id"],
+                      items=[{k: row.get(k) for k in ("name", "tool", "ok", "code")} for row in results],
+                      adopted=adopted, failed=failed, refused=refused)
+            self.invalidate()
+            return {"ok": True, "results": results, "receipt": receipt,
+                    "adopted": adopted, "failed": failed, "refused": refused}
 
     def import_apply(self, tool_id: object, names: object, category: str = "imported") -> dict:
-        """Adopt unmanaged skills: copy into the skills tree, then replace the
-        tool's real dir with a symlink — the original is PRESERVED as a
-        timestamped `<name>.hermes-switchboard-backup-<ts>` sibling (never deleted)."""
-        tool_id = self._validate_tool(tool_id)
+        """Explicit core convenience call. HTTP callers must send a reviewed plan id."""
+        self._validate_tool(tool_id)
         if tool_id == "hermes":
-            raise SkillsToggleError("hermes has no importable dir", "no-dir")
-        if not isinstance(names, list) or not names:
-            raise SkillsToggleError("'names' must be a non-empty list", "invalid-body")
-        category = self._validate_import_category(category)
-        skills = self._scan_skills()
-        tool_dir = self.tool_dir(tool_id)
-        if tool_dir is None or not tool_dir.is_dir():
-            raise SkillsToggleError(f"tool dir for {tool_id} is missing", "absent-dir")
-
-        # validate every requested name against a fresh classification; a name
-        # that already exists anywhere in the tree is a CONFLICT — adopting it
-        # would create a duplicate-named skill, so refuse (the drift flow is
-        # the resolution path), never merge.
-        tree_names = {s["name"] for s in skills.values()}
-        adoptable = {
-            e["name"]: e
-            for e in (
-                self._classify_entry(p, skills) for p in sorted(tool_dir.iterdir())
-            )
-            if e and e["kind"] == "unmanaged-skill"
-        }
-        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        results = []
+            raise LoadoutError("Hermes is the library, not an import source", "no-dir")
+        if not isinstance(names, list) or not names or any(not isinstance(name, str) for name in names):
+            raise LoadoutError("Choose skill names to import", "invalid-body")
+        directory = self.tool_dir(tool_id)
+        if directory is None or not directory.is_dir():
+            raise LoadoutError("The selected application folder is missing", "absent-dir")
+        plan = self.import_plan([tool_id], [], category)
+        found = {row["name"]: row for row in plan["entries"]}
+        chosen = [found[name] for name in dict.fromkeys(names) if name in found]
+        result = self.import_apply_plan(chosen, category, plan_id=plan["plan_id"]) if chosen else {
+            "ok": True, "results": [], "adopted": 0, "failed": 0, "refused": 0}
         for name in names:
-            if not isinstance(name, str) or name not in adoptable:
-                results.append({"name": name, "ok": False, "error": "not an adoptable skill dir"})
+            if name not in found:
+                result["results"].append({"name": name, "ok": False, "code": "missing-entry",
+                                          "error": "This skill was not found in the source"})
+                result["refused"] += 1
+        for row in result["results"]:
+            if row.get("code") in ("identical-duplicate", "drifted"):
+                row["conflict"] = True
+        return result
+
+    def catalog_bypasses(self, tool_id: object = None) -> list[dict]:
+        """Recognize only broad links to this exact library or a category root."""
+        broad_roots = {_canonical(str(self.skills_root_resolved))}
+        if self.skills_root.is_dir():
+            for category in self.skills_root.iterdir():
+                if category.is_dir() and not category.name.startswith(".") and is_inside(category, self.skills_root_resolved):
+                    broad_roots.add(_canonical(str(category)))
+        rows = []
+        for client_id in ([tool_id] if tool_id is not None else list(self.tools)):
+            directory = self._inventory_dir(client_id)
+            if directory is None or not directory.is_dir():
                 continue
-            if name in tree_names:
-                results.append(
-                    {
-                        "name": name,
-                        "ok": False,
-                        "error": "a skill with this name already exists in the skills tree — resolve via drift push instead",
-                        "conflict": True,
-                    }
-                )
-                continue
-            dest_dir = self.skills_root / category
-            dest_dir.mkdir(parents=True, exist_ok=True)
-            dest = dest_dir / name
-            if dest.exists():
-                results.append({"name": name, "ok": False, "error": f"destination {dest} already exists"})
-                continue
-            src = tool_dir / name
-            try:
-                shutil.copytree(src, dest, symlinks=True)
-            except OSError as exc:
-                results.append({"name": name, "ok": False, "error": f"copy failed: {exc}"})
-                continue
-            backup = tool_dir / f"{name}.hermes-switchboard-backup-{stamp}"
-            try:
-                os.rename(src, backup)
-                os.symlink(str(dest.resolve()), str(tool_dir / name))
-            except OSError as exc:
-                # put the original back exactly where it was — the tool must
-                # never lose the entry because the symlink step failed
-                try:
-                    if not (tool_dir / name).exists():
-                        os.rename(backup, src)
-                except OSError:
-                    pass  # original remains recoverable at the backup path
-                shutil.rmtree(dest, ignore_errors=True)
-                results.append({"name": name, "ok": False, "error": f"link swap failed: {exc}"})
-                continue
-            self._log(action="import", tool=tool_id, skill=f"{category}/{name}", backup=str(backup))
-            results.append(
-                {"name": name, "ok": True, "skill": f"{category}/{name}", "backup": str(backup)}
-            )
-        self.invalidate()
-        changed = sum(1 for r in results if r["ok"])
-        return {"ok": True, "tool": tool_id, "results": results, "adopted": changed, "failed": len(results) - changed}
+            for entry in sorted(directory.iterdir()):
+                if entry.is_symlink() and _canonical(str(entry)) in broad_roots:
+                    rows.append({"tool": client_id, "name": entry.name, "path": str(entry),
+                                 "target": os.readlink(entry), "code": "catalog-bypass",
+                                 "error": "This broad link exposes library skills regardless of individual switches."})
+        return rows
+
+    def plan_catalog_repair(self, tool_id: object, name: object) -> dict:
+        with self._lock:
+            tool_id = self._validate_tool(tool_id)
+            name = self._entry_name(name)
+            match = next((row for row in self.catalog_bypasses(tool_id) if row["name"] == name), None)
+            if match is None:
+                raise LoadoutError("This is not a verified broad library link", "not-catalog-bypass")
+            before = self._entry_snapshot(Path(match["path"]))
+            context = _canonical(str(Path(match["path"]).parent))
+            review_id = self._new_review("catalog-repair", {"row": match, "before": before, "context": context})
+            return {"ok": True, "plan_id": review_id, "items": [match], "changed": 1,
+                    "description": "Remove only this broad link. Keep the library and individual selections. Refresh the application afterward."}
+
+    def repair_catalog(self, plan_id: object, _record=None) -> dict:
+        with self._lock:
+            review = self._take_review(plan_id, "catalog-repair")
+            row = review["row"]
+            self._validate_tool(row["tool"])
+            directory = self.tool_dir(row["tool"])
+            path = Path(row["path"])
+            if (directory is None or _canonical(str(directory)) != review["context"]
+                    or self._entry_snapshot(path) != review["before"]
+                    or not any(entry["path"] == str(path) for entry in self.catalog_bypasses(row["tool"]))):
+                raise LoadoutError("The broad link changed. Review it again.", "changed-since-preview")
+            result = {"ok": True, "changed": 1, "tool": row["tool"], "name": row["name"],
+                      "path": str(path), "context": review["context"], "before": review["before"]}
+            if _record is not None:
+                _record(result, "pending")
+            path.unlink()
+            result.update(after=self._entry_snapshot(path), code="completed")
+            if _record is not None:
+                _record(result, "completed")
+            self.invalidate()
+            self._log(action="catalog-bypass-repair", tool=row["tool"], name=row["name"])
+            return result
 
     def drift(self) -> dict:
         """Same-name skills where the tool's copy differs from the Hermes source."""
@@ -1853,7 +2375,7 @@ class SkillsToggleCore:
         for tool_id in self.tools:
             if tool_id == "hermes":
                 continue
-            tool_dir = self.tool_dir(tool_id)
+            tool_dir = self._inventory_dir(tool_id)
             if tool_dir is None or not tool_dir.is_dir():
                 continue
             try:
@@ -1889,32 +2411,32 @@ class SkillsToggleCore:
         return {"ok": True, "drifted": items, "count": len(items)}
 
     def drift_push(self, tool_id: object, name: object) -> dict:
-        """Push the Hermes-canonical copy out to a tool (D31): the tool's real
+        """Push the Hermes-canonical copy out to a tool: the tool's real
         dir for `name` is backup-renamed (NEVER deleted) and replaced with a
         symlink into the skills tree. Also resolves adoption conflicts, since
         both are 'same-name real dir in a tool dir' shapes."""
         with self._lock:
             tool_id = self._validate_tool(tool_id)
             if tool_id == "hermes":
-                raise SkillsToggleError("hermes already is the source of truth", "no-dir")
-            if not isinstance(name, str) or "/" in name or name in (".", "..") or not name.strip():
-                raise SkillsToggleError(f"invalid skill name {name!r}", "invalid-name")
+                raise LoadoutError("hermes already is the source of truth", "no-dir")
+            if not isinstance(name, str) or any(c in name for c in ("/", "\\", "\0")) or name in (".", "..") or not name.strip():
+                raise LoadoutError(f"invalid skill name {name!r}", "invalid-name")
             skills = self._scan_skills()
             existing = next((s for s in skills.values() if s["name"] == name), None)
             if not existing:
-                raise SkillsToggleError(f"no skill named {name!r} in the skills tree", "unknown-skill")
+                raise LoadoutError(f"no skill named {name!r} in the skills tree", "unknown-skill")
             tool_dir = self.tool_dir(tool_id)
             if tool_dir is None or not tool_dir.is_dir():
-                raise SkillsToggleError(f"tool dir for {tool_id} is missing", "absent-dir")
+                raise LoadoutError(f"tool dir for {tool_id} is missing", "absent-dir")
             entry = tool_dir / name
             if entry.is_symlink():
                 return {"ok": True, "tool": tool_id, "name": name, "action": "noop", "state": "managed"}
             if not entry.is_dir() or not (entry / "SKILL.md").is_file():
-                raise SkillsToggleError(
+                raise LoadoutError(
                     f"{entry} is not a skill directory — refusing to touch it", "unmanaged-dir"
                 )
             stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-            backup = tool_dir / f"{name}.hermes-switchboard-backup-{stamp}"
+            backup = self._new_tool_backup(tool_dir, name)
             try:
                 os.rename(entry, backup)
                 os.symlink(str(existing["dir"].resolve()), str(entry))
@@ -1924,7 +2446,7 @@ class SkillsToggleCore:
                         os.rename(backup, entry)
                 except OSError:
                     pass  # original remains recoverable at the backup path
-                raise SkillsToggleError(f"drift push failed: {exc}", "drift-push-failed") from exc
+                raise LoadoutError(f"drift push failed: {exc}", "drift-push-failed") from exc
             self._log(action="drift-push", tool=tool_id, skill=f"{existing['category']}/{name}", backup=str(backup))
             self.invalidate()
             return {
@@ -1940,40 +2462,39 @@ class SkillsToggleCore:
     # -- conflict resolution --------------------------------------------------
 
     def _conflict_context(self, tool_id: object, name: object, require_in_tree: bool):
-        if not isinstance(name, str) or "/" in name or name in (".", "..") or not name.strip():
-            raise SkillsToggleError(f"invalid skill name {name!r}", "invalid-name")
+        if not isinstance(name, str) or any(c in name for c in ("/", "\\", "\0")) or name in (".", "..") or not name.strip():
+            raise LoadoutError(f"invalid skill name {name!r}", "invalid-name")
         tool_id = self._validate_tool(tool_id)
         if tool_id == "hermes":
-            raise SkillsToggleError("hermes already is the source of truth", "no-dir")
+            raise LoadoutError("hermes already is the source of truth", "no-dir")
         skills = self._scan_skills()
         existing = next((sk for sk in skills.values() if sk["name"] == name), None)
         if require_in_tree and not existing:
-            raise SkillsToggleError(f"no skill named {name!r} in the skills tree", "unknown-skill")
+            raise LoadoutError(f"no skill named {name!r} in the skills tree", "unknown-skill")
         tool_dir = self.tool_dir(tool_id)
         if tool_dir is None or not tool_dir.is_dir():
-            raise SkillsToggleError(f"tool dir for {tool_id} is missing", "absent-dir")
+            raise LoadoutError(f"tool dir for {tool_id} is missing", "absent-dir")
         entry = tool_dir / name
         if entry.is_symlink() or not entry.is_dir() or not (entry / "SKILL.md").is_file():
-            raise SkillsToggleError(
+            raise LoadoutError(
                 f"{entry} is not a skill directory — refusing to touch it", "unmanaged-dir"
             )
         return existing, tool_dir, entry
 
     def conflict_pull(self, tool_id: object, name: object) -> dict:
-        """Use the tool's copy as the new canonical source (D31 'pull external
-        in', completed): the hermes source is backed up dotted inside its
+        """Use the tool's copy as the new canonical source (explicit source choice): the hermes source is backed up dotted inside its
         category, the external copy becomes canonical, and the tool entry is
         swapped to a symlink. Originals are never deleted."""
         with self._lock:
             existing, tool_dir, entry = self._conflict_context(tool_id, name, require_in_tree=True)
             hermes_dir = existing["dir"]
             stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-            hermes_backup = hermes_dir.parent / f".hermes-switchboard-backup-{name}-{stamp}"
-            tool_backup = tool_dir / f"{name}.hermes-switchboard-backup-{stamp}"
+            hermes_backup = hermes_dir.parent / f".hermes-loadout-backup-{name}-{stamp}"
+            tool_backup = self._new_tool_backup(tool_dir, name)
             try:
                 os.rename(hermes_dir, hermes_backup)
             except OSError as exc:
-                raise SkillsToggleError(f"could not back up the hermes copy: {exc}", "pull-failed") from exc
+                raise LoadoutError(f"could not back up the hermes copy: {exc}", "pull-failed") from exc
             try:
                 shutil.copytree(entry, hermes_dir, symlinks=True)
                 os.rename(entry, tool_backup)
@@ -1990,7 +2511,7 @@ class SkillsToggleCore:
                         os.rename(tool_backup, entry)
                 except OSError:
                     pass
-                raise SkillsToggleError(f"drift pull failed (rolled back): {exc}", "pull-failed") from exc
+                raise LoadoutError(f"drift pull failed (rolled back): {exc}", "pull-failed") from exc
             skill_id = f"{existing['category']}/{existing['name']}"
             self._log(action="conflict-pull", tool=tool_id, skill=skill_id,
                       hermes_backup=str(hermes_backup), tool_backup=str(tool_backup))
@@ -2001,63 +2522,52 @@ class SkillsToggleCore:
                 "tool_backup": str(tool_backup),
             }
 
-    def conflict_keep_both(self, tool_id: object, name: object) -> dict:
-        """Keep both copies: the tool's copy is adopted under a free suffixed
-        name (imported/<name>.from-<tool>), and the tool entry links to it."""
-        with self._lock:
-            _, tool_dir, entry = self._conflict_context(tool_id, name, require_in_tree=False)
-            skills = self._scan_skills()
-            taken = {sk["name"] for sk in skills.values()}
-            base = f"{name}.from-{tool_id}"
-            dest_name = base
-            n = 2
-            while dest_name in taken:
-                dest_name = f"{base}-{n}"
-                n += 1
-            dest_dir = self.skills_root / "imported"
-            dest = dest_dir / dest_name
-            if dest.exists():
-                raise SkillsToggleError(f"destination {dest} already exists", "invalid-destination")
-            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-            tool_backup = tool_dir / f"{name}.hermes-switchboard-backup-{stamp}"
-            try:
-                dest_dir.mkdir(parents=True, exist_ok=True)
-                shutil.copytree(entry, dest, symlinks=True)
-                os.rename(entry, tool_backup)
-                os.symlink(str(dest.resolve()), str(tool_dir / name))
-            except OSError as exc:
-                shutil.rmtree(dest, ignore_errors=True)
-                try:
-                    if not (tool_dir / name).exists():
-                        os.rename(tool_backup, entry)
-                except OSError:
-                    pass
-                raise SkillsToggleError(f"keep-both failed (rolled back): {exc}", "keep-both-failed") from exc
-            self._log(action="conflict-keep-both", tool=tool_id, skill=f"imported/{dest_name}",
-                      tool_backup=str(tool_backup))
-            self.invalidate()
-            return {
-                "ok": True, "tool": tool_id, "name": name,
-                "skill": f"imported/{dest_name}", "action": "kept-both",
-                "tool_backup": str(tool_backup),
-            }
+    # -- undo symmetry for adoption/drift operations ---------------------
 
-    # -- v3-4: undo symmetry for adoption/drift operations ---------------------
+    @staticmethod
+    def _entry_name(name: object) -> str:
+        if (not isinstance(name, str) or not name.strip() or name in (".", "..")
+                or any(char in name for char in ("/", "\\", "\0"))):
+            raise LoadoutError("Expected one skill directory name", "invalid-name")
+        return name
+
+    @staticmethod
+    def _checked_backup(backup: Path, parent: Path, pattern: str) -> Path:
+        if not backup.is_dir():
+            raise LoadoutError("The preserved backup directory is missing", "backup-missing")
+        if (not backup.is_absolute() or backup.is_symlink()
+                or not same_path(backup.parent, parent)
+                or not is_inside(backup, parent)
+                or not re.fullmatch(pattern, backup.name)):
+            raise LoadoutError("Backup is not a recognized preserved entry in this target", "invalid-backup")
+        return backup
 
     def _restore_tool_entry(self, tool_dir: Path, name: str, backup: Path) -> None:
-        """Swap a managed symlink back to its backed-up real dir. Refuses if
-        the current entry is not our symlink or the backup is missing."""
+        """Restore only a named sibling backup; retain the link on failure."""
+        name = self._entry_name(name)
         entry = tool_dir / name
         if not entry.is_symlink():
-            raise SkillsToggleError(f"{entry} is not a symlink — refusing to revert", "not-managed")
-        if not backup.is_dir():
-            raise SkillsToggleError(f"backup {backup} is missing", "backup-missing")
+            raise LoadoutError("The current entry is not a managed link", "not-managed")
+        self._checked_backup(backup, self._tool_backup_root(tool_dir),
+            re.escape(name) + r"\.bak\.hermes-loadout\.\d{8}-\d{6}-[a-f0-9]{8}")
         resolved = Path(os.readlink(entry))
         base = resolved if resolved.is_absolute() else (entry.parent / resolved)
         if not is_inside(base, self.skills_root_resolved):
-            raise SkillsToggleError(f"{entry} does not point into the skills tree", "not-managed")
-        entry.unlink()
-        os.rename(backup, entry)
+            raise LoadoutError("The current link is outside the Hermes library", "not-managed")
+        parked = entry.with_name(".loadout-restore-" + uuid.uuid4().hex)
+        try:
+            os.rename(entry, parked)
+            try:
+                if os.path.lexists(entry):
+                    raise OSError("target changed during restore")
+                os.rename(backup, entry)
+            except OSError:
+                if not os.path.lexists(entry):
+                    os.rename(parked, entry)
+                raise
+            parked.unlink()
+        except OSError as exc:
+            raise LoadoutError("Restore failed; preserved data was not deleted", "restore-failed") from exc
 
     def revert_push(self, tool_id: object, name: object, tool_backup: object) -> dict:
         """Undo drift_push: restore the backed-up tool copy and drop the
@@ -2066,14 +2576,13 @@ class SkillsToggleCore:
         with self._lock:
             tool_id = self._validate_tool(tool_id)
             if tool_id == "hermes":
-                raise SkillsToggleError("hermes has no tool entry", "no-dir")
-            if not isinstance(name, str) or not name.strip():
-                raise SkillsToggleError("invalid name", "invalid-name")
+                raise LoadoutError("hermes has no tool entry", "no-dir")
+            name = self._entry_name(name)
             if not isinstance(tool_backup, str):
-                raise SkillsToggleError("missing tool_backup", "invalid-body")
+                raise LoadoutError("missing tool_backup", "invalid-body")
             tool_dir = self.tool_dir(tool_id)
             if tool_dir is None:
-                raise SkillsToggleError("tool dir missing", "absent-dir")
+                raise LoadoutError("tool dir missing", "absent-dir")
             self._restore_tool_entry(tool_dir, name, Path(tool_backup))
             self._log(action="revert-push", tool=tool_id, name=name)
             self.invalidate()
@@ -2085,34 +2594,35 @@ class SkillsToggleCore:
         is restored as canonical, and the tool entry returns to a real dir."""
         with self._lock:
             tool_id = self._validate_tool(tool_id)
-            if not isinstance(name, str) or not name.strip():
-                raise SkillsToggleError("invalid name", "invalid-name")
+            name = self._entry_name(name)
             if not isinstance(hermes_backup, str) or not isinstance(tool_backup, str):
-                raise SkillsToggleError("missing backup paths", "invalid-body")
+                raise LoadoutError("missing backup paths", "invalid-body")
             skills = self._scan_skills()
             existing = next((sk for sk in skills.values() if sk["name"] == name), None)
             if not existing:
-                raise SkillsToggleError(f"no skill named {name!r} in the tree", "unknown-skill")
+                raise LoadoutError(f"no skill named {name!r} in the tree", "unknown-skill")
             hermes_dir = existing["dir"]
             tool_dir = self.tool_dir(tool_id)
             if tool_dir is None:
-                raise SkillsToggleError("tool dir missing", "absent-dir")
+                raise LoadoutError("tool dir missing", "absent-dir")
             if not (tool_dir / name).is_symlink():
-                raise SkillsToggleError(
+                raise LoadoutError(
                     f"{tool_dir / name} is not a symlink — refusing to revert", "not-managed"
                 )
             hb = Path(hermes_backup)
-            if not hb.is_dir():
-                raise SkillsToggleError(f"hermes backup {hb} is missing", "backup-missing")
+            self._checked_backup(hb, hermes_dir.parent,
+                r"\.hermes-loadout-backup-" + re.escape(name) + r"-\d{8}-\d{6}(?:-\d+)?")
+            if not same_path(tool_dir / name, hermes_dir):
+                raise LoadoutError("The link no longer points to the pulled skill", "changed-since-preview")
             self._restore_tool_entry(tool_dir, name, Path(tool_backup))
             # canonical: move the pulled copy aside (dotted), restore original
-            pulled_aside = hermes_dir.parent / f".hermes-switchboard-reverted-{name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+            pulled_aside = hermes_dir.parent / f".hermes-loadout-reverted-{name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
             os.rename(hermes_dir, pulled_aside)
             try:
                 os.rename(hb, hermes_dir)
             except OSError:
                 os.rename(pulled_aside, hermes_dir)  # never leave it half-done
-                raise SkillsToggleError("could not restore hermes backup", "pull-failed")
+                raise LoadoutError("could not restore hermes backup", "pull-failed")
             self._log(action="revert-pull", tool=tool_id, name=name, pulled_aside=str(pulled_aside))
             self.invalidate()
             return {
@@ -2125,17 +2635,19 @@ class SkillsToggleCore:
         move the adopted tree copy aside (dotted, never deleted)."""
         with self._lock:
             tool_id = self._validate_tool(tool_id)
-            if not isinstance(name, str) or not name.strip():
-                raise SkillsToggleError("invalid name", "invalid-name")
-            if not isinstance(skill, str) or len(skill.split("/")) != 2:
-                raise SkillsToggleError(f"invalid adopted skill id {skill!r}", "invalid-skill")
+            name = self._entry_name(name)
+            skill = self._validate_skill(skill)
+            if not isinstance(tool_backup, str):
+                raise LoadoutError("missing tool_backup", "invalid-body")
             tool_dir = self.tool_dir(tool_id)
             if tool_dir is None:
-                raise SkillsToggleError("tool dir missing", "absent-dir")
+                raise LoadoutError("tool dir missing", "absent-dir")
+            adopted = self._scan_skills()[skill]["dir"]
+            if not same_path(tool_dir / name, adopted):
+                raise LoadoutError("The link no longer points to the adopted skill", "changed-since-preview")
             self._restore_tool_entry(tool_dir, name, Path(tool_backup))
-            adopted = self.skills_root / skill.split("/")[0] / skill.split("/")[1]
             if adopted.is_dir():
-                aside = adopted.parent / f".hermes-switchboard-reverted-{adopted.name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+                aside = adopted.parent / f".hermes-loadout-reverted-{adopted.name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
                 os.rename(adopted, aside)
             else:
                 aside = None
@@ -2146,7 +2658,7 @@ class SkillsToggleCore:
                 "aside": str(aside) if aside else None,
             }
 
-    # -- v3-2: machine blueprint (additive-only, dry-run first) -----------------
+    # -- machine blueprint (additive-only, dry-run first) -----------------
 
     def blueprint_export(self) -> dict:
         """The machine's full link map + hermes-off set as a portable JSON
@@ -2161,7 +2673,7 @@ class SkillsToggleCore:
             "ok": True,
             "blueprint": {
                 "version": 2,
-                "generated_by": f"hermes-switchboard {PLUGIN_VERSION}",
+                "generated_by": f"hermes-loadout {PLUGIN_VERSION}",
                 "links": links,
                 "skills_disabled": sorted(self._disabled_set()),
             },
@@ -2169,7 +2681,7 @@ class SkillsToggleCore:
         }
 
     def blueprint_apply(self, blueprint: object, dry_run: bool = False) -> dict:
-        """Apply a machine blueprint ADDITIVELY (owner decision): creates
+        """Apply a machine blueprint additively: creates
         missing links and adds skills.disabled entries. Nothing is ever
         removed or unlinked; refusals are reported per row."""
         with self._lock:
@@ -2179,7 +2691,7 @@ class SkillsToggleCore:
                 or not isinstance(blueprint.get("links"), list)
                 or not isinstance(blueprint.get("skills_disabled"), list)
             ):
-                raise SkillsToggleError(
+                raise LoadoutError(
                     "blueprint must be {version: 2, links: [{tool, skill}], skills_disabled: [names]}",
                     "invalid-blueprint",
                 )
@@ -2201,7 +2713,14 @@ class SkillsToggleCore:
                 if skill_id not in skills:
                     refused.append({"row": row, "error": f"unknown skill {skill_id!r}"})
                     continue
-                tool_dir = self.tool_dir(tool_id)
+                try:
+                    self._validate_tool(tool_id)
+                    self._validate_skill(skill_id)
+                    self._validate_client_skill(skills[skill_id], tool_id)
+                    tool_dir = self.tool_dir(tool_id)
+                except LoadoutError as exc:
+                    refused.append({"row": row, "error": str(exc), "code": exc.code})
+                    continue
                 if tool_dir is None:
                     refused.append({"row": row, "error": "tool has no dir configured"})
                     continue
@@ -2240,13 +2759,13 @@ class SkillsToggleCore:
                     try:
                         res = self.toggle(sid, tool_id, True)
                         results.append({"skill": sid, "tool": tool_id, "ok": True, "action": res["action"]})
-                    except SkillsToggleError as exc:
+                    except LoadoutError as exc:
                         results.append({"skill": sid, "tool": tool_id, "ok": False, "error": str(exc)})
             for name in disable_plan:
                 try:
                     self._hermes_toggle(name, False)
                     results.append({"skill": name, "tool": "hermes", "ok": True, "action": "config-updated"})
-                except SkillsToggleError as exc:
+                except LoadoutError as exc:
                     results.append({"skill": name, "tool": "hermes", "ok": False, "error": str(exc)})
             self._log(action="blueprint-apply", planned=len(link_plan), disabled=len(disable_plan))
             return {
@@ -2258,70 +2777,63 @@ class SkillsToggleCore:
                 "refused": refused,
             }
 
-    # -- v3-6: backup browser + restore ----------------------------------------
+    # -- backup browser + restore ----------------------------------------
 
     _BACKUP_PATTERNS = (
-        re.compile(r"^config\.yaml\.bak\.hermes-switchboard\.(\d{8}-\d{6})(?:-\d+)?$"),
-        re.compile(r"^hermes-switchboard\.json\.bak\.hermes-switchboard\.(\d{8}-\d{6})(?:-\d+)?$"),
-        re.compile(r"^(.+)\.hermes-switchboard-backup\.(\d{8}-\d{6})(?:-\d+)?$"),
-        re.compile(r"^(.+)\.hermes-switchboard-backup-(\d{8}-\d{6})$"),
-        re.compile(r"^\.hermes-switchboard-(?:backup|reverted)-(.+)-(\d{8}-\d{6})$"),
-        re.compile(r"^config\.yaml\.bak\.skills-toggle\.(\d{8}-\d{6})(?:-\d+)?$"),
-        re.compile(r"^skills-toggle\.json\.bak\.skills-toggle\.(\d{8}-\d{6})(?:-\d+)?$"),
-        re.compile(r"^(.+)\.skills-toggle-backup\.(\d{8}-\d{6})(?:-\d+)?$"),
-        re.compile(r"^(.+)\.skills-toggle-backup-(\d{8}-\d{6})$"),
-        re.compile(r"^\.skills-toggle-(?:backup|reverted)-(.+)-(\d{8}-\d{6})$"),
+        re.compile(r"^config\.yaml\.bak\.hermes-loadout\.(\d{8}-\d{6})(?:-\d+)?$"),
+        re.compile(r"^hermes-loadout\.json\.bak\.hermes-loadout\.(\d{8}-\d{6})(?:-\d+)?$"),
+        re.compile(r"^(.+)\.hermes-loadout-backup\.(\d{8}-\d{6})(?:-\d+)?$"),
+        re.compile(r"^(.+)\.hermes-loadout-backup-(\d{8}-\d{6})$"),
+        re.compile(r"^\.hermes-loadout-(?:backup|reverted|replaced)-(.+)-(\d{8}-\d{6})$"),
     )
 
     def list_backups(self) -> dict:
         rows = []
         home = self.home
-        for ln in sorted(home.glob("config.yaml.bak.hermes-switchboard.*")):
-            rows.append({"path": str(ln), "kind": "config", "name": ln.name})
-        for ln in sorted(home.glob("config.yaml.bak.skills-toggle.*")):
-            rows.append({"path": str(ln), "kind": "config", "name": ln.name})
-        for ln in sorted(home.glob("hermes-switchboard.json.bak.hermes-switchboard.*")):
-            rows.append({"path": str(ln), "kind": "tools-json", "name": ln.name})
-        for ln in sorted(home.glob("skills-toggle.json.bak.skills-toggle.*")):
-            rows.append({"path": str(ln), "kind": "tools-json", "name": ln.name})
+        for ln in sorted(home.glob("config.yaml.bak.hermes-loadout.*")):
+            if ln.is_file() and not ln.is_symlink() and self._BACKUP_PATTERNS[0].fullmatch(ln.name):
+                rows.append({"path": str(ln), "kind": "config", "name": ln.name})
+        for ln in sorted(home.glob("hermes-loadout.json.bak.hermes-loadout.*")):
+            if ln.is_file() and not ln.is_symlink() and self._BACKUP_PATTERNS[1].fullmatch(ln.name):
+                rows.append({"path": str(ln), "kind": "tools-json", "name": ln.name})
         for tool_id in self.tools:
-            if tool_id == "hermes":
-                continue
-            tool_dir = self.tool_dir(tool_id)
-            if tool_dir is None or not tool_dir.is_dir():
+            tool_dir = self._inventory_dir(tool_id)
+            if tool_dir is None:
                 continue
             try:
-                children = sorted(tool_dir.iterdir())
-            except OSError:
+                backup_root = self._tool_backup_root(tool_dir)
+                children = sorted(backup_root.iterdir()) if backup_root.is_dir() else []
+            except (OSError, LoadoutError):
                 continue
-            for ln in children:
-                if (
-                    ln.name.endswith(".hermes-switchboard-backup")
-                    or ".hermes-switchboard-backup-" in ln.name
-                    or ln.name.endswith(".skills-toggle-backup")
-                    or ".skills-toggle-backup-" in ln.name
-                ):
-                    if ln.is_dir():
-                        rows.append({"path": str(ln), "kind": "tool-link", "tool": tool_id, "name": ln.name})
+            for entry in children:
+                match = re.fullmatch(r"(.+)\.bak\.hermes-loadout\.\d{8}-\d{6}-[a-f0-9]{8}", entry.name)
+                if match and entry.is_dir() and not entry.is_symlink() and is_inside(entry, backup_root):
+                    rows.append({"path": str(entry), "kind": "tool-link", "tool": tool_id,
+                                 "name": entry.name, "skill_name": match.group(1)})
         if self.skills_root.is_dir():
             for cat_dir in sorted(self.skills_root.iterdir()):
-                if not cat_dir.is_dir() or cat_dir.name.startswith("."):
+                if not cat_dir.is_dir() or cat_dir.name.startswith(".") or not is_inside(cat_dir, self.skills_root_resolved):
                     continue
                 try:
                     children = sorted(cat_dir.iterdir())
                 except OSError:
                     continue
                 for ln in children:
-                    if ln.name.startswith((
-                        ".hermes-switchboard-backup-",
-                        ".hermes-switchboard-reverted-",
-                        ".skills-toggle-backup-",
-                        ".skills-toggle-reverted-",
-                    )):
-                        if ln.is_dir():
+                    if re.fullmatch(r"\.hermes-loadout-(?:backup|reverted|replaced)-.+-\d{8}-\d{6}", ln.name):
+                        if ln.is_dir() and not ln.is_symlink() and is_inside(ln, self.skills_root_resolved):
                             rows.append({"path": str(ln), "kind": "hermes-copy", "name": ln.name, "category": cat_dir.name})
+        if self.skills_root.is_dir():
+            for category in sorted(self.skills_root.iterdir()):
+                if not category.is_dir() or category.name.startswith(".") or not is_inside(category, self.skills_root_resolved):
+                    continue
+                backup_root = self._tool_backup_root(category)
+                for entry in sorted(backup_root.iterdir()) if backup_root.is_dir() else []:
+                    match = re.fullmatch(r"(.+)\.bak\.hermes-loadout\.\d{8}-\d{6}-[a-f0-9]{8}", entry.name)
+                    if match and entry.is_dir() and not entry.is_symlink() and is_inside(entry, backup_root):
+                        rows.append({"path": str(entry), "kind": "canonical-copy", "name": entry.name,
+                                     "category": category.name, "skill_name": match.group(1)})
         rows.sort(key=lambda r: r["path"], reverse=True)
-        return {"ok": True, "backups": rows[:200], "count": len(rows)}
+        return {"ok": True, "backups": rows, "count": len(rows)}
 
     def restore_backup(self, path: object) -> dict:
         """Restore a plugin-created backup. The path must appear in the live
@@ -2329,24 +2841,33 @@ class SkillsToggleCore:
         before anything moves."""
         with self._lock:
             if not isinstance(path, str):
-                raise SkillsToggleError("missing path", "invalid-body")
+                raise LoadoutError("missing path", "invalid-body")
             live = {r["path"]: r for r in self.list_backups()["backups"]}
             row = live.get(path)
             if not row:
-                raise SkillsToggleError("not a known hermes-switchboard backup", "unknown-backup")
+                raise LoadoutError("not a known hermes-loadout backup", "unknown-backup")
             src = Path(path)
             kind = row["kind"]
             if kind in ("config", "tools-json"):
                 if kind == "config":
                     target = self.config_path
-                elif row["name"].startswith("skills-toggle.json."):
-                    target = legacy_user_config_path(self.home)
                 else:
                     target = user_config_path(self.home)
                 if not target.is_file():
-                    raise SkillsToggleError(f"{target} is missing — nothing to replace", "restore-failed")
+                    raise LoadoutError(f"{target} is missing — nothing to replace", "restore-failed")
+                if src.is_symlink() or not same_path(src.parent, self.home) or not is_inside(src, self.home):
+                    raise LoadoutError("The backup location is unsafe", "invalid-backup")
+                text = src.read_text(encoding="utf-8")
+                if kind == "tools-json":
+                    data, _ = _read_json_mapping(src, "tools")
+                    _validate_tools_document(data)
+                else:
+                    if not text.strip() or not re.search(r"(?m)^[A-Za-z_][A-Za-z0-9_-]*:", text):
+                        raise LoadoutError("The configuration backup is malformed", "invalid-backup")
+                    # Exercise supported parser/editor round-trip before replacing config.
+                    set_disabled_member(text, "loadout-backup-validation", add=False)
                 pre = self._backup(target)
-                shutil.copy2(src, target)
+                _atomic_write_text(target, text)
                 self._log(action="restore", kind=kind, path=path, pre_restore_backup=pre)
                 self.invalidate()
                 reset_core()
@@ -2354,74 +2875,151 @@ class SkillsToggleCore:
             if kind == "tool-link":
                 tool_dir = self.tool_dir(row["tool"])
                 if tool_dir is None:
-                    raise SkillsToggleError("tool dir missing", "absent-dir")
-                name = re.split(r"\.(?:hermes-switchboard|skills-toggle)-backup", row["name"], maxsplit=1)[0]
+                    raise LoadoutError("tool dir missing", "absent-dir")
+                name = row["skill_name"]
                 self._restore_tool_entry(tool_dir, name, src)
                 self._log(action="restore", kind=kind, path=path)
                 self.invalidate()
                 return {"ok": True, "kind": kind, "action": "restored", "name": name}
             if kind == "hermes-copy":
-                # Accept current and pre-rename backup names.
-                m = re.match(r"^\.(?:hermes-switchboard|skills-toggle)-(?:backup|reverted)-(.+)-\d{8}-\d{6}$", row["name"])
+                # Parse only current-product backup names.
+                m = re.match(r"^\.hermes-loadout-(?:backup|reverted|replaced)-(.+)-\d{8}-\d{6}$", row["name"])
                 if not m:
-                    raise SkillsToggleError("cannot parse backup name", "restore-failed")
+                    raise LoadoutError("cannot parse backup name", "restore-failed")
                 name = m.group(1)
                 canonical = self.skills_root / row["category"] / name
                 if not canonical.is_dir():
-                    raise SkillsToggleError(f"canonical {canonical} is missing", "restore-failed")
-                aside = canonical.parent / f".hermes-switchboard-replaced-{name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+                    raise LoadoutError(f"canonical {canonical} is missing", "restore-failed")
+                aside = canonical.parent / f".hermes-loadout-replaced-{name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
                 os.rename(canonical, aside)
                 try:
                     os.rename(src, canonical)
                 except OSError:
                     os.rename(aside, canonical)
-                    raise SkillsToggleError("restore failed — rolled back", "restore-failed")
+                    raise LoadoutError("restore failed — rolled back", "restore-failed")
                 self._log(action="restore", kind=kind, path=path, replaced_aside=str(aside))
                 self.invalidate()
                 return {"ok": True, "kind": kind, "action": "restored", "name": name, "replaced_aside": str(aside)}
-            raise SkillsToggleError(f"restore not supported for kind {kind}", "restore-failed")
+            raise LoadoutError(f"restore not supported for kind {kind}", "restore-failed")
 
     # -- v2: custom tool config ------------------------------------------------
 
     def set_tool(self, tool_id: object, label: object, dir_str: object) -> dict:
-        """Add or override a tool target dir in <hermes_home>/hermes-switchboard.json
+        """Add or override a tool target dir in <hermes_home>/hermes-loadout.json
         (timestamped backup first). Hermes itself is config-backed and locked."""
         with self._lock:
             if (
                 not isinstance(tool_id, str)
-                or not re.match(r"^[a-z0-9-]{1,32}$", tool_id)
+                or not re.fullmatch(r"[a-z0-9-]+", tool_id)
+                or (len(tool_id) > 32 and tool_id not in self.tools)
                 or tool_id == "hermes"
             ):
-                raise SkillsToggleError(f"invalid tool id {tool_id!r}", "invalid-tool-id")
+                raise LoadoutError(f"invalid tool id {tool_id!r}", "invalid-tool-id")
             if not isinstance(label, str) or not label.strip() or len(label) > 40:
-                raise SkillsToggleError("'label' must be a 1-40 char string", "invalid-label")
+                raise LoadoutError("'label' must be a 1-40 char string", "invalid-label")
             if not isinstance(dir_str, str) or not dir_str.strip() or "\0" in dir_str:
-                raise SkillsToggleError("'dir' must be a non-empty path string", "invalid-dir")
+                raise LoadoutError("'dir' must be a non-empty path string", "invalid-dir")
+            if not Path(os.path.expanduser(dir_str)).is_absolute() and not dir_str.startswith("$"):
+                raise LoadoutError("choose an absolute or home-relative Custom path", "invalid-dir")
             try:
-                expand_path(dir_str)
+                target = expand_path(dir_str)
+                if is_inside(target, self.skills_root_resolved) or is_inside(self.skills_root_resolved, target):
+                    raise LoadoutError("target overlaps the canonical Hermes library", "scope-escape")
             except ValueError:
-                raise SkillsToggleError(f"'dir' expands to an empty path: {dir_str!r}", "invalid-dir")
+                raise LoadoutError(f"'dir' expands to an empty path: {dir_str!r}", "invalid-dir")
             cfg_path = user_config_path(self.home)
-            data = {}
-            if cfg_path.is_file():
-                try:
-                    data = json.loads(cfg_path.read_text(encoding="utf-8"))
-                except (OSError, json.JSONDecodeError):
-                    data = {}
-            backup = None
-            if cfg_path.is_file():
-                stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-                backup_path = cfg_path.with_name(f"{cfg_path.name}.bak.hermes-switchboard.{stamp}")
-                shutil.copy2(cfg_path, backup_path)
-                backup = str(backup_path)
+            source_path = cfg_path
+            data, _ = _read_json_mapping(source_path, "tools")
+            backup = self._backup(source_path)
             tools = data.setdefault("tools", {})
-            tools[tool_id] = {"label": label.strip(), "dir": dir_str.strip()}
+            tools[tool_id] = {"label": label.strip(), "dir": dir_str.strip(), "scope": "custom"}
+            data["schema_version"] = CONFIG_SCHEMA_VERSION
             cfg_path.parent.mkdir(parents=True, exist_ok=True)
-            cfg_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            _atomic_write_text(cfg_path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
             self._log(action="config-tools", tool=tool_id, dir=str(dir_str), backup=backup)
             self.invalidate()
             reset_core()  # tool map is loaded at core build time — rebuild singleton
             return {"ok": True, "tool": tool_id, "label": label.strip(), "dir": str(expand_path(dir_str)), "backup": backup}
+
+    def clients(self, project_root: object = None) -> dict:
+        root = explicit_project_root(project_root) if project_root else None
+        rows = []
+        for source in CLIENT_CATALOG:
+            row = {key: copy.deepcopy(value) for key, value in source.items() if key != "internal"}
+            candidates = []
+            for scope in ("global", "project"):
+                if scope == "project" and root is None:
+                    continue
+                for index, _ in enumerate(source.get(scope, [])):
+                    try:
+                        spec = catalog_target(source["id"], scope, root, index)
+                        directory = validate_scoped_target(spec)
+                        marker = source.get("detect_marker")
+                        detected = directory.is_dir() and (not marker or expand_path(marker).is_dir())
+                        shared_with = []
+                        configured_id = None
+                        for tid, tool in self.tools.items():
+                            try:
+                                target = self.tool_dir(tid)
+                            except (LoadoutError, OSError, ValueError):
+                                continue
+                            if target and same_path(target, directory):
+                                shared_with.append(tool.get("label", tid))
+                                if tool.get("client_id") == source["id"] and tool.get("configured"):
+                                    configured_id = tid
+                        candidates.append({"scope": scope, "index": index, "dir": str(directory),
+                                           "project_root": spec.get("project_root"), "detected": detected,
+                                           "configured_id": configured_id, "shared_with": shared_with,
+                                           "shared": source.get("shared", False) or ".agents" in directory.parts})
+                    except (LoadoutError, OSError, ValueError):
+                        candidates.append({"scope": scope, "index": index, "error": "Path is unavailable or outside this scope. Use an explicit Custom path instead."})
+            row["candidates"] = candidates
+            rows.append(row)
+        return {"ok": True, "catalog_version": CATALOG_VERSION, "clients": rows,
+                "project_root": str(root) if root else None}
+
+    def enable_client(self, client_id: object, scope: object, project_root: object = None,
+                      candidate: object = 0, expected_dir: object = None) -> dict:
+        with self._lock:
+            if isinstance(candidate, bool) or not isinstance(candidate, int):
+                raise LoadoutError("invalid candidate", "invalid-client")
+            spec = catalog_target(client_id, scope, project_root, candidate)
+            target = validate_scoped_target(spec)
+            if not isinstance(expected_dir, str) or not same_path(Path(expected_dir), target):
+                raise LoadoutError("client path changed or was not reviewed; reload the library", "changed-since-preview")
+            if is_inside(target, self.skills_root_resolved) or is_inside(self.skills_root_resolved, target):
+                raise LoadoutError("target overlaps the canonical Hermes library", "scope-escape")
+            cfg = user_config_path(self.home)
+            old = cfg
+            data, _ = _read_json_mapping(old, "tools")
+            saved = data.setdefault("tools", {})
+            suffix = hashlib.sha256((str(scope) + "\0" + _canonical(str(target))).encode()).hexdigest()[:10]
+            tid = str(client_id) if scope == "global" else str(client_id) + "-p-" + suffix
+            if tid in self.tools:
+                current = self.tools[tid]
+                try:
+                    current_dir = self.tool_dir(tid)
+                except (LoadoutError, OSError, ValueError):
+                    current_dir = None
+                if current_dir is None or not same_path(current_dir, target):
+                    tid = str(client_id) + ("-p-" if scope == "project" else "-g-") + suffix
+            # Do not overwrite a manually configured map sharing a generated id.
+            if tid in saved:
+                previous = saved[tid]
+                previous_dir = previous if isinstance(previous, str) else previous.get("dir", "")
+                if not previous_dir or not same_path(expand_path(previous_dir), target):
+                    raise LoadoutError("client id already maps to another path; keep the existing mapping", "client-conflict")
+            backup = self._backup(old)
+            saved[tid] = spec
+            data["schema_version"] = CONFIG_SCHEMA_VERSION
+            _atomic_write_text(cfg, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+            self.tools[tid] = dict(spec, configured=True, optional=False)
+            self.invalidate()
+            reset_core()
+            # Activation saves a mapping only. The first reviewed skill operation
+            # may create the target directory; browsing never creates directories.
+            return {"ok": True, "tool": tid, "dir": str(target), "scope": scope,
+                    "project_root": spec.get("project_root"), "created": False, "backup": backup}
 
     def health(self) -> dict:
         return {
@@ -2431,58 +3029,137 @@ class SkillsToggleCore:
             "hermes_home": str(self.home),
             "skills_root": str(self.skills_root),
             "skills_root_exists": self.skills_root.is_dir(),
-            "tools": {tid: (str(self.tool_dir(tid)) if self.tool_dir(tid) else None) for tid in self.tools},
+            "tools": {tid: (str(self._inventory_dir(tid)) if self._inventory_dir(tid) else None) for tid in self.tools},
+            "capabilities": {"client_catalog": CATALOG_VERSION, "receipt_undo": True, "reviewed_operations": 1, "named_loadouts": 1},
         }
 
 
 # ---------------------------------------------------------------------------
-# Tools config loading (defaults + <hermes_home>/hermes-switchboard.json override)
+# Tools config loading (defaults + <hermes_home>/hermes-loadout.json override)
 # ---------------------------------------------------------------------------
 
 
 def user_config_path(home: Path) -> Path:
-    return home / "hermes-switchboard.json"
+    return home / "hermes-loadout.json"
 
 
-def legacy_user_config_path(home: Path) -> Path:
-    """Return the pre-rename path so existing custom tool maps still load."""
-    return home / f"{LEGACY_PLUGIN_ID}.json"
+
+def catalog_client(client_id: object) -> dict:
+    for row in CLIENT_CATALOG:
+        if row["id"] == client_id:
+            return row
+    raise LoadoutError("unknown client", "invalid-client")
+
+
+def explicit_project_root(value: object) -> Path:
+    if not isinstance(value, (str, Path)) or not str(value).strip() or "\0" in str(value):
+        raise LoadoutError("select an existing project folder", "invalid-project")
+    path = Path(value).expanduser()
+    if not path.is_absolute() or not path.is_dir():
+        raise LoadoutError("select an existing absolute project folder", "invalid-project")
+    return path.resolve()
+
+
+def catalog_target(client_id: object, scope: object, project_root: object = None, candidate: int = 0) -> dict:
+    row = catalog_client(client_id)
+    if not row["skills"] or row["verification"] != "documented" or not row["may_create"]:
+        raise LoadoutError("client has no verified skill target; use Custom only after verifying its format", "client-unverified")
+    if sys.platform not in row["platforms"] or scope not in ("global", "project"):
+        raise LoadoutError("client or scope is unavailable on this platform", "unsupported-scope")
+    paths = row.get(scope, [])
+    if candidate < 0 or candidate >= len(paths):
+        raise LoadoutError("client does not support this scope", "unsupported-scope")
+    root = explicit_project_root(project_root) if scope == "project" else Path.home().resolve()
+    directory = root / paths[candidate] if scope == "project" else expand_path(paths[candidate])
+    if not is_inside(directory, root) or same_path(directory, root):
+        raise LoadoutError("client path escapes its selected scope", "scope-escape")
+    label = row["label"] if scope == "global" else (row["label"] + " · " + root.name)[:40]
+    spec = {"label": label, "client_id": client_id, "dir": str(directory.absolute()),
+            "scope": scope, "scope_root": str(root), "candidate": candidate,
+            "resolved_dir": _canonical(str(directory)), "verification": "documented", "notes": row.get("notes", "")}
+    if scope == "project":
+        spec["project_root"] = str(root)
+    return spec
+
+
+def validate_scoped_target(spec: dict) -> Path:
+    """Recheck the selected scope before every read or mutation, not only setup."""
+    scope = spec.get("scope")
+    row = catalog_client(spec.get("client_id"))
+    if scope not in ("global", "project") or not row.get("skills") or row.get("verification") != "documented":
+        raise LoadoutError("invalid scoped target", "scope-escape")
+    raw_root = spec.get("project_root") if scope == "project" else spec.get("scope_root")
+    # Malformed saved metadata must reach the recoverable scope-error UI,
+    # not leak a Path(None)/Path(list) TypeError through the HTTP boundary.
+    for value in (raw_root, spec.get("scope_root"), spec.get("dir")):
+        if not isinstance(value, str) or not value or "\0" in value or not Path(value).is_absolute():
+            raise LoadoutError("scope metadata needs an absolute path", "scope-escape")
+    root = Path(raw_root)
+    if not root.is_dir() or not same_path(root, Path(spec["scope_root"])):
+        raise LoadoutError("selected scope is unavailable", "scope-escape")
+    if scope == "global" and not same_path(root, Path.home()):
+        raise LoadoutError("global target does not belong to the current user home", "scope-escape")
+    candidate = spec.get("candidate", 0)
+    if isinstance(candidate, bool) or not isinstance(candidate, int) or candidate < 0 or candidate >= len(row.get(scope, [])):
+        raise LoadoutError("invalid scope candidate", "scope-escape")
+    expected = root / row[scope][candidate] if scope == "project" else expand_path(row[scope][candidate])
+    directory = Path(spec.get("dir", ""))
+    if (not directory.is_absolute() or not is_inside(directory, root) or same_path(directory, root)
+            or not same_path(directory, expected) or _canonical(str(directory)) != spec.get("resolved_dir")):
+        raise LoadoutError("target moved or escapes its selected scope; review the client path", "scope-escape")
+    return directory
+
+
+def _validate_tools_document(data: dict) -> None:
+    if type(data.get("schema_version", CONFIG_SCHEMA_VERSION)) is not int or data.get("schema_version", CONFIG_SCHEMA_VERSION) != CONFIG_SCHEMA_VERSION:
+        raise LoadoutError("Unsupported settings version", "config-version")
+    if not isinstance(data.get("tools", {}), dict):
+        raise LoadoutError("Settings must contain a tools mapping", "config-invalid")
+    for tool_id, spec in data.get("tools", {}).items():
+        if (not isinstance(tool_id, str) or not re.fullmatch(r"[a-z0-9-]{1,64}", tool_id)
+                or not isinstance(spec, dict)):
+            raise LoadoutError("Invalid application settings", "config-invalid")
+        if tool_id != "hermes" and (not isinstance(spec.get("dir"), str) or not spec["dir"].strip()
+                or spec.get("scope", "custom") not in ("global", "project", "custom")):
+            raise LoadoutError("Each application needs a reviewed path and scope", "config-invalid")
+        if spec.get("scope") in ("global", "project"):
+            validate_scoped_target(spec)
 
 
 def load_tools_config(home: Path) -> dict:
-    tools = copy.deepcopy(DEFAULT_TOOLS)
-
-    # ZCode default detection: prefer an existing ~/.agents/skills
-    zcode = tools.get("zcode", {})
-    primary = expand_path(zcode.get("dir", "~/.agents/skills"))
-    if not primary.is_dir() and zcode.get("fallback_dir"):
-        zcode["dir"] = zcode["fallback_dir"]
-
-    cfg_path = user_config_path(home)
-    if not cfg_path.is_file() and legacy_user_config_path(home).is_file():
-        cfg_path = legacy_user_config_path(home)
-    if cfg_path.is_file():
+    """Read only current-product settings. Discovery never changes activation."""
+    tools = {"hermes": {"label": "Hermes", "special": "config", "scope": "global", "configured": True}}
+    for row in CLIENT_CATALOG:
+        if row["id"] == "hermes" or row["verification"] != "documented" or not row.get("global"):
+            continue
         try:
-            user_cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            user_cfg = {}
-        for tool_id, spec in (user_cfg.get("tools") or {}).items():
-            if not isinstance(tool_id, str) or not re.match(r"^[a-z0-9-]+$", tool_id):
+            spec = catalog_target(row["id"], "global")
+            if row.get("detect_marker") and not expand_path(row["detect_marker"]).is_dir():
                 continue
-            if tool_id not in tools:
-                tools[tool_id] = {"label": tool_id.title()}
-            if isinstance(spec, str):
-                tools[tool_id]["dir"] = spec
-            elif isinstance(spec, dict):
-                if "label" in spec:
-                    tools[tool_id]["label"] = str(spec["label"])
-                if "dir" in spec:
-                    tools[tool_id]["dir"] = str(spec["dir"])
+            tools[row["id"]] = dict(spec, optional=True, configured=False)
+        except (LoadoutError, ValueError, OSError):
+            continue
+    user_cfg, _ = _read_json_mapping(user_config_path(home), "tools")
+    if type(user_cfg.get("schema_version", CONFIG_SCHEMA_VERSION)) is not int or user_cfg.get("schema_version", CONFIG_SCHEMA_VERSION) != CONFIG_SCHEMA_VERSION:
+        raise LoadoutError("unsupported settings version; update Loadout or restore a current backup", "config-version")
+    for tool_id, spec in user_cfg.get("tools", {}).items():
+        if tool_id == "hermes":
+            if isinstance(spec, dict) and isinstance(spec.get("label"), str) and spec["label"].strip():
+                tools["hermes"]["label"] = spec["label"][:40]
+            continue
+        if not isinstance(tool_id, str) or not re.fullmatch(r"[a-z0-9-]{1,64}", tool_id):
+            raise LoadoutError("invalid client id in settings", "config-invalid")
+        if not isinstance(spec, dict) or not isinstance(spec.get("dir"), str) or not spec["dir"].strip():
+            raise LoadoutError("each custom client needs a reviewed directory", "config-invalid")
+        if spec.get("scope", "custom") not in ("custom", "global", "project"):
+            raise LoadoutError("unknown client scope in settings", "config-invalid")
+        tools[tool_id] = dict(spec, label=str(spec.get("label") or tool_id.title())[:40],
+                             configured=True, optional=False, scope=spec.get("scope", "custom"))
     return tools
 
 
 # ---------------------------------------------------------------------------
-# v2.2 — MCP switchboard core (Q1a: Hermes catalog + Claude Desktop writer)
+# v2.2 — MCP loadout core (Q1a: Hermes catalog + Claude Desktop writer)
 # Hermes config.yaml `mcp_servers` is the source of truth; entries carry an
 # `enabled:` flag (Hermes' own on/off). Claude Desktop mirrors entries into
 # its claude_desktop_config.json `mcpServers` map (presence = enabled).
@@ -2491,103 +3168,48 @@ def load_tools_config(home: Path) -> dict:
 CODEX_CONFIG_CANDIDATES = ["~/.codex/config.toml"]
 
 
-def _toml_scalar(value: str):
-    v = value.strip()
-    if v in ("true", "false"):
-        return v == "true"
-    if len(v) >= 2 and v[0] == '"' and v[-1] == '"':
-        return json.loads(v)
-    if v.startswith("[") and v.endswith("]"):
-        inner = v[1:-1].strip()
-        if not inner:
-            return []
-        return [json.loads(item.strip()) for item in inner.split(",") if item.strip()]
-    return v
+_TOML_SUPPORT = None
+_TOML_LOCK = threading.RLock()
+
+
+def _toml_support():
+    """Load packaged helpers by path, independent of the host's sys.path."""
+    global _TOML_SUPPORT
+    with _TOML_LOCK:
+        if _TOML_SUPPORT is None:
+            import importlib.util
+            path = Path(__file__).with_name("toml_document.py")
+            spec = importlib.util.spec_from_file_location("_loadout_toml_document", path)
+            if spec is None or spec.loader is None:
+                raise LoadoutError("TOML support is missing; reinstall Loadout", "config-unreadable")
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            _TOML_SUPPORT = module
+        return _TOML_SUPPORT
 
 
 def parse_codex_mcp(text: str) -> dict:
-    """Line-based parse of [mcp_servers.<name>] tables (+ sub-tables like env)
-    from a codex config.toml. {name: {enabled, definition}} — enabled defaults
-    to True; a native `enabled = false` flag is honored."""
-    out: dict = {}
-    current = None
-    current_sub = None
-    for raw in text.splitlines():
-        ln = raw.strip()
-        if not ln or ln.startswith("#"):
-            continue
-        m = re.match(r"^\[mcp_servers\.(.+)\]$", ln)
-        if m:
-            key = m.group(1).strip().strip('"')
-            if "." in key:
-                current, current_sub = key.split(".", 1)
-                out.setdefault(current, {"enabled": True, "definition": {}})
-                out[current]["definition"].setdefault(current_sub, {})
-            else:
-                current = key
-                current_sub = None
-                out.setdefault(current, {"enabled": True, "definition": {}})
-            continue
-        if current is None or ln.startswith("["):
-            if ln.startswith("["):
-                current, current_sub = None, None  # left the mcp_servers area
-            continue
-        m = re.match(r"^([^=]+?)\s*=\s*(.*)$", ln)
-        if not m:
-            continue
-        key = m.group(1).strip().strip('"')
-        value = _toml_scalar(m.group(2))
-        if current_sub:
-            out[current]["definition"].setdefault(current_sub, {})[key] = value
-        elif key == "enabled":
-            out[current]["enabled"] = bool(value)
-        else:
-            out[current]["definition"][key] = value
-    return out
-
-
-def _toml_string(value: str) -> str:
-    return json.dumps(str(value))  # basic string; close enough for our values
+    try:
+        servers = _toml_support().load(text).get("mcp_servers", {})
+    except ValueError as exc:
+        raise LoadoutError(str(exc), "config-invalid") from exc
+    return {name: {"enabled": entry.get("enabled", True),
+                   "definition": {k: v for k, v in entry.items() if k != "enabled"}}
+            for name, entry in servers.items()}
 
 
 def codex_server_block(name: str, projection: dict) -> str:
-    """Render one [mcp_servers.<name>] block (universal keys only)."""
-    safe_name = name.replace('"', '')
-    lines = [f"[mcp_servers.{safe_name}]"]
-    for key in ("command", "url", "headers"):
-        if key in projection:
-            lines.append(f"{key} = {_toml_string(projection[key])}")
-    if "args" in projection:
-        lines.append(f"args = [{', '.join(_toml_string(a) for a in projection['args'])}]")
-    lines.append("")
-    if isinstance(projection.get("env"), dict) and projection["env"]:
-        lines.append(f"[mcp_servers.{safe_name}.env]")
-        for k, v in projection["env"].items():
-            lines.append(f"{k} = {_toml_string(v)}")
-        lines.append("")
-    return "\n".join(lines)
+    try:
+        return _toml_support().block(name, _codex_projection(projection))
+    except ValueError as exc:
+        raise LoadoutError(str(exc), "config-edit") from exc
 
 
 def _remove_codex_block(text: str, name: str) -> str:
-    """Delete the [mcp_servers.<name>] block and its sub-tables."""
-    safe = name.replace('"', '')
-    lines = text.splitlines()
-    out = []
-    skipping = False
-    for ln in lines:
-        stripped = ln.strip()
-        m = re.match(r"^\[mcp_servers\.(.+)\]$", stripped)
-        if m:
-            key = m.group(1).strip().strip('"')
-            is_ours = key == safe or key.split(".", 1)[0] == safe
-            skipping = is_ours
-            if skipping:
-                continue
-        if skipping and stripped.startswith("["):
-            skipping = False  # reached an unrelated table
-        if not skipping:
-            out.append(ln)
-    return "\n".join(out) + ("\n" if text.endswith("\n") else "")
+    try:
+        return _toml_support().replace_server(text, name, None)
+    except ValueError as exc:
+        raise LoadoutError(str(exc), "config-edit") from exc
 
 
 CLAUDE_DESKTOP_CONFIG_CANDIDATES = [
@@ -2730,20 +3352,62 @@ def set_mcp_server_enabled(text: str, name: str, enabled: bool) -> str:
 
 def _redact_env(definition: dict) -> dict:
     """env values never leave the gateway: the pane sees key names only."""
-    redacted = dict(definition)
-    if isinstance(redacted.get("env"), dict):
-        redacted["env"] = sorted(redacted["env"].keys())
+    redacted = {}
+    for key in _MCP_UNIVERSAL_KEYS:
+        if key not in definition:
+            continue
+        value = definition[key]
+        if key in ("env", "headers") and isinstance(value, dict):
+            redacted[key] = sorted(str(name) for name in value)
+        elif key == "args" and isinstance(value, list):
+            redacted[key] = ["[REDACTED]" for _ in value]
+        else:
+            # Executable strings may also include inline credentials. The UI
+            # needs only field presence, not raw command lines or endpoints.
+            redacted[key] = "[REDACTED]"
     return redacted
 
 
 def _claude_projection(definition: dict) -> dict:
-    """Catalog definition -> the keys Claude Desktop understands."""
+    """Extract the shared fields used by supported MCP writers."""
     return {k: v for k, v in definition.items() if k in _MCP_UNIVERSAL_KEYS}
 
 
+def _codex_projection(definition: dict) -> dict:
+    projection = _claude_projection(definition)
+    if "headers" in projection:
+        projection["http_headers"] = projection.pop("headers")
+    return projection
+
+
+def _shared_mcp_definition(definition: dict, writer: str) -> dict:
+    keys = ("command", "args", "env", "url", "http_headers", "headers") if writer == "codex" else _MCP_UNIVERSAL_KEYS
+    return {k: v for k, v in definition.items() if k in keys}
+
+
+def _check_mcp_projection(projection: dict, writer: str) -> None:
+    command, url = projection.get("command"), projection.get("url")
+    if bool(command) == bool(url) or (writer == "claude" and url):
+        raise LoadoutError("this transport is unsupported by the selected writer; use the client's native connector setup", "unsupported-transport")
+    for field in ("command", "url"):
+        if field in projection and not isinstance(projection[field], str):
+            raise LoadoutError("MCP commands and URLs must be strings", "invalid-definition")
+    args = projection.get("args", [])
+    if not isinstance(args, list) or any(not isinstance(arg, str) for arg in args):
+        raise LoadoutError("MCP arguments must be a list of strings", "invalid-definition")
+    for field in ("env", "headers", "http_headers"):
+        mapping = projection.get(field, {})
+        if not isinstance(mapping, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in mapping.items()):
+            raise LoadoutError("MCP environment and header values must be strings", "invalid-definition")
+    if command and ("headers" in projection or "http_headers" in projection):
+        raise LoadoutError("HTTP headers require a URL transport", "unsupported-transport")
+    if url and ("args" in projection or "env" in projection):
+        raise LoadoutError("command arguments and environment values require a local command", "unsupported-transport")
+
+
 class McpCore:
-    """MCP switchboard operations. Same construction pattern as
-    SkillsToggleCore: explicit paths, stdlib-only, JSON-able results."""
+    """MCP loadout operations. Same construction pattern as
+    HermesLoadoutCore: explicit paths, stdlib-only, JSON-able results."""
 
     def __init__(self, home: Path, claude_desktop_config: Path | None = None, log_path: Path | None = None, codex_config: Path | None = None):
         self.home = home
@@ -2761,7 +3425,7 @@ class McpCore:
                 continue
             if expanded.is_file():
                 return expanded
-        return None
+        return expand_path(CODEX_CONFIG_CANDIDATES[0])
 
     def _default_claude_config(self) -> Path | None:
         for candidate in CLAUDE_DESKTOP_CONFIG_CANDIDATES:
@@ -2771,12 +3435,14 @@ class McpCore:
                 continue
             if expanded.is_file():
                 return expanded
-        return expand_path(CLAUDE_DESKTOP_CONFIG_CANDIDATES[0])
+        index = 2 if sys.platform == "win32" else (0 if sys.platform == "darwin" else 1)
+        return expand_path(CLAUDE_DESKTOP_CONFIG_CANDIDATES[index])
 
     def _log(self, **rec: object) -> None:
         if not self.log_path:
             return
         rec.setdefault("ts", datetime.now(timezone.utc).isoformat(timespec="seconds"))
+        rec = _redact_log_record(rec)
         try:
             self.log_path.parent.mkdir(parents=True, exist_ok=True)
             with self.log_path.open("a", encoding="utf-8") as fh:
@@ -2785,16 +3451,7 @@ class McpCore:
             pass
 
     def _backup(self, path: Path) -> str | None:
-        if not path.is_file():
-            return None
-        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        backup = path.with_name(f"{path.name}.bak.hermes-switchboard.{stamp}")
-        n = 1
-        while backup.exists():
-            backup = path.with_name(f"{path.name}.bak.hermes-switchboard.{stamp}-{n}")
-            n += 1
-        shutil.copy2(path, backup)
-        return str(backup)
+        return _backup_file(path)
 
     # -- catalog ------------------------------------------------------------
 
@@ -2819,58 +3476,70 @@ class McpCore:
     # -- claude side ----------------------------------------------------------
 
     def _read_claude(self) -> tuple[dict, str]:
-        if self.claude_config is None or not self.claude_config.is_file():
+        if self.claude_config is None:
             return {}, ""
-        try:
-            text = self.claude_config.read_text(encoding="utf-8")
-            return json.loads(text), text
-        except (OSError, json.JSONDecodeError):
-            return {}, ""
+        if self.claude_config.is_symlink():
+            raise LoadoutError("Claude config is a symlink; manage it in the client", "config-protected")
+        return _read_json_mapping(self.claude_config, "mcpServers")
 
     def _read_codex(self) -> tuple[dict, str]:
-        if self.codex_config is None or not self.codex_config.is_file():
+        if self.codex_config is None:
             return {}, ""
+        if self.codex_config.is_symlink():
+            raise LoadoutError("Codex config is a symlink; use the client to manage this configuration", "config-protected")
         try:
-            text = self.codex_config.read_text(encoding="utf-8")
-            return parse_codex_mcp(text), text
-        except OSError:
+            with self.codex_config.open("r", encoding="utf-8", newline="") as stream:
+                text = stream.read()
+        except FileNotFoundError:
             return {}, ""
+        except (OSError, UnicodeError) as exc:
+            raise LoadoutError("Codex config cannot be read; no changes made", "config-unreadable") from exc
+        return parse_codex_mcp(text), text
 
     def _write_codex(self, name: object, create: bool, force: bool = False) -> dict:
-        if not isinstance(name, str) or not name.strip():
-            raise SkillsToggleError("invalid server name", "invalid-name")
+        if not isinstance(name, str) or not name.strip() or "\0" in name:
+            raise LoadoutError("invalid server name", "invalid-name")
         if self.codex_config is None:
-            raise SkillsToggleError("no codex config path resolved", "no-writer")
+            raise LoadoutError("no Codex config path resolved", "no-writer")
         cat = self.catalog()
         entry = next((c for c in cat["catalog"] if c["name"] == name), None)
         codex, raw = self._read_codex()
-        if create and entry is None:
-            raise SkillsToggleError(f"unknown MCP server {name!r} in the catalog", "unknown-server")
         if not create and name not in codex:
             return {"ok": True, "name": name, "action": "noop", "state": "missing"}
-        if not create and entry is None:
-            raise SkillsToggleError(f"{name!r} is not in the Hermes catalog — refusing to remove", "unknown-server")
-        if not create and (codex[name]["definition"] != entry["projection"]) and not force:
-            raise SkillsToggleError(
-                f"Codex's copy of {name!r} differs from the catalog — pass force to overwrite", "drifted"
-            )
-        backup = self._backup(self.codex_config)
+        if entry is None:
+            raise LoadoutError("server is not in the Hermes catalog; no changes made", "unknown-server")
+        projection = _codex_projection(entry["projection"])
         if create:
-            base = _remove_codex_block(raw, name) if name in codex else raw
-            new_text = (base.rstrip("\n") + "\n\n" if base.strip() else "") + codex_server_block(name, entry["projection"])
-            action = "updated" if name in codex else "created"
-            state = "enabled"
-        else:
-            new_text = _remove_codex_block(raw, name)
-            action = "removed"
-            state = "missing"
-        self.codex_config.write_text(new_text, encoding="utf-8")
+            _check_mcp_projection(projection, "codex")
+        current = codex.get(name, {}).get("definition", {})
+        if name in codex and _shared_mcp_definition(current, "codex") != projection and not force:
+            raise LoadoutError("Codex's server definition differs from Hermes; confirm overwrite", "drifted")
+        definition = None
+        if create:
+            # Preserve client-only flags, timeouts, auth references, and tool policy.
+            definition = {k: v for k, v in current.items() if k not in _MCP_UNIVERSAL_KEYS and k != "http_headers"}
+            definition.update(projection)
+            if name in codex and not codex[name]["enabled"]:
+                definition["enabled"] = False
+        try:
+            new_text = _toml_support().replace_server(raw, name, definition)
+        except ValueError as exc:
+            raise LoadoutError(str(exc), "config-edit") from exc
+        # External edits during planning are refused, not overwritten.
+        if self._read_codex()[1] != raw:
+            raise LoadoutError("Codex config changed during review; refresh and retry", "changed-since-preview")
+        backup = self._backup(self.codex_config)
+        _atomic_write_text(self.codex_config, new_text)
+        action = ("updated" if name in codex else "created") if create else "removed"
+        state = ("disabled" if definition.get("enabled") is False else "enabled") if create else "missing"
         self._log(action=f"mcp-codex-{action}", server=name, backup=backup)
         return {"ok": True, "name": name, "writer": "codex", "action": action, "state": state, "backup": backup}
 
-    def sync_to_codex(self, name: object) -> dict:
+    def sync_to_codex(self, name: object, force: object = False) -> dict:
         with self._lock:
-            return self._write_codex(name, create=True)
+            if not isinstance(force, bool):
+                raise LoadoutError("'force' must be a boolean", "invalid-body")
+            return self._write_codex(name, create=True, force=force)
 
     def remove_from_codex(self, name: object, force: object = False) -> dict:
         with self._lock:
@@ -2880,90 +3549,85 @@ class McpCore:
 
     def mcp_state(self) -> dict:
         cat = self.catalog()
-        claude, _raw = self._read_claude()
-        servers = claude.get("mcpServers") if isinstance(claude, dict) else None
-        servers = servers if isinstance(servers, dict) else {}
-        codex_servers, _codex_raw = self._read_codex()
-        codex_servers = codex_servers if codex_servers else None
-        projection_by_name = {c["name"]: c["projection"] for c in cat["catalog"]}
+        writers = {
+            "claude": {"label": "Claude Desktop", "path": str(self.claude_config) if self.claude_config else None,
+                       "present": bool(self.claude_config and self.claude_config.is_file()), "available": True},
+            "codex": {"label": "Codex", "path": str(self.codex_config) if self.codex_config else None,
+                      "present": bool(self.codex_config and self.codex_config.is_file()), "available": True},
+        }
+        entries = {"claude": {}, "codex": {}}
+        for writer, read in (("claude", self._read_claude), ("codex", self._read_codex)):
+            try:
+                doc, _ = read()
+                entries[writer] = doc.get("mcpServers", {}) if writer == "claude" else doc
+            except LoadoutError as exc:
+                writers[writer].update(available=False, error=str(exc), code=exc.code)
+        names = {c["name"] for c in cat["catalog"]}
         foreign = []
-        for name, definition in servers.items():
-            if name not in projection_by_name:
-                foreign.append({"name": name, "keys": sorted(definition.keys()) if isinstance(definition, dict) else []})
+        for writer, servers in entries.items():
+            for name, definition in servers.items():
+                if name not in names:
+                    definition = definition["definition"] if writer == "codex" else definition
+                    foreign.append({"name": name, "writer": writer, "keys": sorted(definition) if isinstance(definition, dict) else []})
         rows = []
         for c in cat["catalog"]:
-            name = c["name"]
-            if name not in servers:
-                claude_state = "missing"
-            elif servers[name] == c["projection"]:
-                claude_state = "enabled"
-            else:
-                claude_state = "drifted"
-            codex_state = "missing"
-            if codex_servers is not None and name in codex_servers:
-                if not codex_servers[name]["definition"]:
-                    codex_state = "missing"
-                elif codex_servers[name]["definition"] == c["projection"]:
-                    codex_state = "enabled" if codex_servers[name]["enabled"] else "missing"
+            states = {}
+            for writer in writers:
+                projection = _codex_projection(c["projection"]) if writer == "codex" else c["projection"]
+                if not writers[writer]["available"]:
+                    states[writer] = "unavailable"
+                    continue
+                try:
+                    _check_mcp_projection(projection, writer)
+                except LoadoutError:
+                    states[writer] = "unsupported"
+                    continue
+                current = entries[writer].get(c["name"])
+                if current is None:
+                    states[writer] = "missing"
+                elif not isinstance(current, dict):
+                    states[writer] = "drifted"
                 else:
-                    codex_state = "drifted"
-            rows.append(
-                {
-                    "name": name,
-                    "enabled": c["enabled"],
-                    # env VALUES are secrets — the payload carries key names only
-                    "definition": _redact_env(c["definition"]),
-                    "writers": {"claude": claude_state, "codex": codex_state},
-                }
-            )
-        return {
-            "ok": True,
-            "rows": rows,
-            "foreign": foreign,
-            "counts": {"catalog": len(rows), "foreign": len(foreign)},
-            "writers": {
-                "claude": {
-                    "label": "Claude Desktop",
-                    "path": str(self.claude_config) if self.claude_config else None,
-                    "present": bool(self.claude_config and self.claude_config.is_file()),
-                },
-                "codex": {
-                    "label": "Codex",
-                    "path": str(self.codex_config) if self.codex_config else None,
-                    "present": bool(self.codex_config and self.codex_config.is_file()),
-                },
-            },
-        }
+                    definition = current["definition"] if writer == "codex" else current
+                    same = _shared_mcp_definition(definition, writer) == projection
+                    states[writer] = ("disabled" if writer == "codex" and not current["enabled"] else "enabled") if same else "drifted"
+            rows.append({"name": c["name"], "enabled": c["enabled"],
+                         "definition": _redact_env(c["definition"]), "writers": states})
+        return {"ok": True, "rows": rows, "foreign": foreign,
+                "counts": {"catalog": len(rows), "foreign": len(foreign)}, "writers": writers,
+                "partial_failure": any(not writer["available"] for writer in writers.values())}
 
     def toggle_hermes(self, name: object, enabled: object) -> dict:
         with self._lock:
             if not isinstance(name, str) or not name.strip():
-                raise SkillsToggleError("invalid server name", "invalid-name")
+                raise LoadoutError("invalid server name", "invalid-name")
             if not isinstance(enabled, bool):
-                raise SkillsToggleError("'enabled' must be a boolean", "invalid-body")
+                raise LoadoutError("'enabled' must be a boolean", "invalid-body")
             if not self.config_path.is_file():
-                raise SkillsToggleError("config.yaml not found", "config-unreadable")
+                raise LoadoutError("config.yaml not found", "config-unreadable")
             try:
                 text = self.config_path.read_text(encoding="utf-8")
             except OSError as exc:
-                raise SkillsToggleError(f"cannot read {self.config_path}: {exc}", "config-unreadable") from exc
+                raise LoadoutError(f"cannot read {self.config_path}: {exc}", "config-unreadable") from exc
             current = parse_mcp_servers(text)
             if name not in current:
-                raise SkillsToggleError(f"unknown MCP server {name!r} in the catalog", "unknown-server")
+                raise LoadoutError(f"unknown MCP server {name!r} in the catalog", "unknown-server")
             if bool(current[name]["enabled"]) == enabled:
                 return {"ok": True, "name": name, "enabled": enabled, "action": "noop"}
             backup = self._backup(self.config_path)
             try:
                 new_text = set_mcp_server_enabled(text, name, enabled)
             except ConfigEditError as exc:
-                raise SkillsToggleError(f"config.yaml edit refused: {exc}", "config-edit") from exc
-            self.config_path.write_text(new_text, encoding="utf-8")
+                raise LoadoutError(f"config.yaml edit refused: {exc}", "config-edit") from exc
+            _atomic_write_text(self.config_path, new_text)
             self._log(action="mcp-toggle", server=name, enabled=enabled, backup=backup)
             return {"ok": True, "name": name, "enabled": enabled, "action": "config-updated", "backup": backup}
 
-    def sync_to_claude(self, name: object) -> dict:
+    def sync_to_claude(self, name: object, force: object = False) -> dict:
         with self._lock:
-            return self._write_claude(name, create=True)
+            if not isinstance(force, bool):
+                raise LoadoutError("'force' must be a boolean", "invalid-body")
+            return self._write_claude(name, create=True, force=force)
 
     def remove_from_claude(self, name: object, force: object = False) -> dict:
         with self._lock:
@@ -2973,38 +3637,45 @@ class McpCore:
 
     def _write_claude(self, name: object, create: bool, force: bool = False) -> dict:
         if not isinstance(name, str) or not name.strip():
-            raise SkillsToggleError("invalid server name", "invalid-name")
+            raise LoadoutError("invalid server name", "invalid-name")
         cat = self.catalog()
         entry = next((c for c in cat["catalog"] if c["name"] == name), None)
         claude, raw = self._read_claude()
         servers = claude.get("mcpServers") if isinstance(claude, dict) and isinstance(claude.get("mcpServers"), dict) else {}
         if create and entry is None:
-            raise SkillsToggleError(f"unknown MCP server {name!r} in the catalog", "unknown-server")
+            raise LoadoutError(f"unknown MCP server {name!r} in the catalog", "unknown-server")
         if not create and name not in servers:
             return {"ok": True, "name": name, "action": "noop", "state": "missing"}
         if not create and entry is None:
             # present in Claude but not in the catalog: foreign, never touched
-            raise SkillsToggleError(f"{name!r} is not in the Hermes catalog — refusing to remove", "unknown-server")
-        if not create and servers[name] != entry["projection"] and not force:
-            raise SkillsToggleError(
+            raise LoadoutError(f"{name!r} is not in the Hermes catalog — refusing to remove", "unknown-server")
+        if create:
+            _check_mcp_projection(entry["projection"], "claude")
+        current = servers.get(name, {})
+        shared = _shared_mcp_definition(current, "claude") if isinstance(current, dict) else None
+        if name in servers and entry is not None and shared != entry["projection"] and not force:
+            raise LoadoutError(
                 f"Claude's copy of {name!r} differs from the catalog — pass force to overwrite", "drifted"
             )
         if self.claude_config is None:
-            raise SkillsToggleError("no Claude Desktop config path resolved", "no-writer")
+            raise LoadoutError("no Claude Desktop config path resolved", "no-writer")
+        if self._read_claude()[1] != raw:
+            raise LoadoutError("Claude config changed during review; refresh and retry", "changed-since-preview")
         backup = self._backup(self.claude_config)
         if raw == "" or not claude:
             doc = {"mcpServers": servers}
         else:
             doc = claude if isinstance(claude, dict) else {"mcpServers": servers}
         if create:
-            doc["mcpServers"] = {**servers, name: entry["projection"]}
+            native = {k: v for k, v in current.items() if k not in _MCP_UNIVERSAL_KEYS} if isinstance(current, dict) else {}
+            doc["mcpServers"] = {**servers, name: {**native, **entry["projection"]}}
             action = "updated" if name in servers else "created"
         else:
             remaining = {k: v for k, v in servers.items() if k != name}
             doc["mcpServers"] = remaining
             action = "removed"
         self.claude_config.parent.mkdir(parents=True, exist_ok=True)
-        self.claude_config.write_text(json.dumps(doc, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        _atomic_write_text(self.claude_config, json.dumps(doc, indent=2, ensure_ascii=False) + "\n")
         self._log(action=f"mcp-{action}", server=name, writer="claude", backup=backup)
         return {
             "ok": True,
@@ -3015,31 +3686,109 @@ class McpCore:
             "backup": backup,
         }
 
+    @staticmethod
+    def _native_digest(value):
+        return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()
+
+    def _native_server(self, app: str, name: str):
+        if app == "codex":
+            _, raw = self._read_codex()
+            doc = _toml_support().load(raw)
+            return self.codex_config, doc, raw, doc.get("mcp_servers", {}).get(name)
+        if app == "claude-desktop":
+            doc, raw = self._read_claude()
+            return self.claude_config, doc, raw, doc.get("mcpServers", {}).get(name)
+        raise LoadoutError("No MCP writer is available for this application", "no-writer")
+
+    def restore_server(self, name: str, app: str, definition, expected_fingerprint: str) -> dict:
+        """Replace only one verified native server, preserving unrelated current data.
+
+        Private orchestration helper: the reviewed operation store supplies the
+        before-definition from a verified private backup, never from an HTTP body.
+        """
+        with self._lock:
+            path, doc, raw, current = self._native_server(app, name)
+            if path is None or not isinstance(expected_fingerprint, str):
+                raise LoadoutError("The reviewed MCP target is unavailable", "no-writer")
+            if self._native_digest(current) != expected_fingerprint:
+                raise LoadoutError("The server changed after review", "changed-since-preview")
+            if current == definition:
+                return {"ok": True, "action": "noop", "backup": None}
+            if definition is not None and not isinstance(definition, dict):
+                raise LoadoutError("Invalid native MCP definition", "config-invalid")
+            if app == "codex":
+                new_text = _toml_support().replace_server(raw, name, definition)
+            else:
+                servers = dict(doc.get("mcpServers", {}))
+                if definition is None:
+                    servers.pop(name, None)
+                else:
+                    servers[name] = copy.deepcopy(definition)
+                doc["mcpServers"] = servers
+                new_text = json.dumps(doc, indent=2, ensure_ascii=False) + "\n"
+            if self._native_server(app, name)[2] != raw:
+                raise LoadoutError("The application configuration changed during review", "changed-since-preview")
+            backup = self._backup(path)
+            _atomic_write_text(path, new_text)
+            self._log(action="mcp-reviewed-change", server=name, writer=app, backup=backup)
+            return {"ok": True, "name": name, "writer": app, "backup": backup,
+                    "action": "removed" if definition is None else "updated"}
+
+    def set_activation(self, name: object, app: object, enabled: object) -> dict:
+        """An explicit activation action, unlike synchronization, enables native flags."""
+        with self._lock:
+            if not isinstance(name, str) or not name.strip() or type(enabled) is not bool:
+                raise LoadoutError("Choose a server and an explicit on/off state", "invalid-body")
+            if app == "hermes":
+                return self.toggle_hermes(name, enabled)
+            source = next((r for r in self.catalog()["catalog"] if r["name"] == name), None)
+            if source is None:
+                raise LoadoutError("This server is not in the Hermes inventory", "unknown-server")
+            path, _, _, current = self._native_server(app, name)
+            writer = "claude" if app == "claude-desktop" else app
+            projection = _codex_projection(source["projection"]) if writer == "codex" else source["projection"]
+            _check_mcp_projection(projection, writer)
+            if current is not None and _shared_mcp_definition(current, writer) != projection:
+                raise LoadoutError("This server conflicts with the application configuration", "conflict")
+            desired = None
+            if enabled:
+                desired = copy.deepcopy(current) if current is not None else copy.deepcopy(projection)
+                if app == "codex" and desired.get("enabled") is False:
+                    desired["enabled"] = True
+            return self.restore_server(name, app, desired, self._native_digest(current))
+
     def health(self) -> dict:
-        return {"ok": True, "catalog": self.catalog()["count"], "writer": "claude"}
+        return {"ok": True, "catalog": self.catalog()["count"], "writer": "claude", "writers": ["claude", "codex"]}
 
 
 # ---------------------------------------------------------------------------
 # Singleton for the route layer
 # ---------------------------------------------------------------------------
 
-_CORE: SkillsToggleCore | None = None
+_CORE: HermesLoadoutCore | None = None
 _CORE_SIG: tuple | None = None
 _CORE_FROZEN = False
 
 
 def _core_signature() -> tuple:
     home = hermes_home()
-    return (str(home), str(user_config_path(home)))
+    result = [str(home)]
+    for path in (user_config_path(home),):
+        try:
+            st = path.stat()
+            result.append((str(path), st.st_mtime_ns, st.st_size, st.st_ino))
+        except OSError:
+            result.append((str(path), None))
+    return tuple(result)
 
 
-def get_core() -> SkillsToggleCore:
+def get_core() -> HermesLoadoutCore:
     global _CORE, _CORE_SIG
     if _CORE_FROZEN and _CORE is not None:
         return _CORE
     sig = _core_signature()
     if _CORE is None or sig != _CORE_SIG:
-        _CORE = SkillsToggleCore.build_default()
+        _CORE = HermesLoadoutCore.build_default()
         _CORE_SIG = sig
     return _CORE
 
@@ -3051,13 +3800,13 @@ def get_mcp_core() -> "McpCore":
     global _MCP_CORE
     if _CORE_FROZEN and _MCP_CORE is not None:
         return _MCP_CORE  # test env: frozen alongside the skills core
-    if _MCP_CORE is None:
-        home = hermes_home()
-        _MCP_CORE = McpCore(home, log_path=Path(__file__).resolve().parent.parent / "data" / "mutations.log")
+    home = hermes_home()
+    if _MCP_CORE is None or not same_path(_MCP_CORE.home, home):
+        _MCP_CORE = McpCore(home, log_path=home / "data" / PLUGIN_ID / "mutations.log")
     return _MCP_CORE
 
 
-def set_core_for_testing(core: SkillsToggleCore | None) -> None:
+def set_core_for_testing(core: HermesLoadoutCore | None) -> None:
     global _CORE, _CORE_SIG, _CORE_FROZEN, _MCP_CORE
     if core is None:
         _CORE = None
@@ -3081,8 +3830,28 @@ def reset_core() -> None:
     _CORE_FROZEN = False
 
 
+_LOADOUT_SERVICE = None
+
+
+def get_loadout_service():
+    """Bind orchestration to the current adapters, independent of gateway imports."""
+    global _LOADOUT_SERVICE
+    core, mcp = get_core(), get_mcp_core()
+    if _LOADOUT_SERVICE is None or _LOADOUT_SERVICE.core is not core or _LOADOUT_SERVICE.mcp is not mcp:
+        import importlib.util
+        import types
+        path = Path(__file__).with_name("loadout_service.py")
+        spec = importlib.util.spec_from_file_location("_hermes_loadout_service", path)
+        if spec is None or spec.loader is None:
+            raise LoadoutError("Loadout operation support is missing; reinstall the plugin", "backend-unavailable")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _LOADOUT_SERVICE = module.LoadoutService(core, mcp, types.SimpleNamespace(**globals()))
+    return _LOADOUT_SERVICE
+
+
 # ---------------------------------------------------------------------------
-# FastAPI route layer (mounted at /api/plugins/hermes-switchboard/)
+# FastAPI route layer (mounted at /api/plugins/hermes-loadout/)
 # ---------------------------------------------------------------------------
 
 try:
@@ -3097,71 +3866,105 @@ if APIRouter is not None:
     def _call(fn, *args, **kwargs) -> dict:
         try:
             return fn(*args, **kwargs)
-        except SkillsToggleError as exc:
+        except LoadoutError as exc:
             return {"ok": False, "error": str(exc), "code": exc.code}
+        except (OSError, ValueError):
+            return {"ok": False, "error": "The operation could not finish. Refresh and inspect recovery before retrying.", "code": "operation-failed"}
+
+    def _core_call(method, *args, **kwargs) -> dict:
+        return _call(lambda: getattr(get_core(), method)(*args, **kwargs))
+
+    def _service_call(method, *args, **kwargs) -> dict:
+        return _call(lambda: getattr(get_loadout_service(), method)(*args, **kwargs))
+
+    @router.get("/inventory/metadata")
+    async def inventory_metadata() -> dict:
+        return _service_call("metadata")
+
+    @router.post("/inventory/classify")
+    async def inventory_classify(body: dict) -> dict:
+        return _service_call("classify", body.get("skill"), body.get("classification"))
+
+    @router.get("/loadouts")
+    async def loadouts() -> dict:
+        return _service_call("list_loadouts")
+
+    @router.post("/loadouts/save")
+    async def save_loadout(body: dict) -> dict:
+        return _service_call("save_loadout", body.get("name"), body.get("states"), body.get("loadout_id"))
+
+    @router.post("/loadouts/edit")
+    async def edit_loadout(body: dict) -> dict:
+        return _service_call("edit_loadout", body.get("loadout_id"), body.get("action"), body.get("name"))
+
+    @router.post("/loadouts/capture")
+    async def capture_loadout(body: dict) -> dict:
+        return _service_call("capture", body.get("apps"))
+
+    @router.post("/loadouts/plan")
+    async def plan_loadout(body: dict) -> dict:
+        return _service_call("plan_loadout", body.get("loadout_id"))
+
+    @router.post("/operations/plan")
+    async def operation_plan(body: dict) -> dict:
+        return _service_call("plan", body.get("states"), body.get("label", "Selection"))
+
+    @router.post("/operations/apply")
+    async def operation_apply(body: dict) -> dict:
+        return _service_call("apply", body.get("plan_id"))
+
+    @router.get("/operations/latest")
+    async def operation_latest() -> dict:
+        return _service_call("latest")
+
+    @router.post("/operations/undo-plan")
+    async def operation_undo_plan() -> dict:
+        return _service_call("undo_plan")
+
+    @router.post("/operations/undo")
+    async def operation_undo(body: dict) -> dict:
+        return _service_call("undo", body.get("plan_id"))
+
+    @router.post("/catalog-bypass/plan")
+    async def catalog_repair_plan(body: dict) -> dict:
+        return _core_call("plan_catalog_repair", body.get("tool"), body.get("name"))
+
+    @router.post("/catalog-bypass/repair")
+    async def catalog_repair_apply(body: dict) -> dict:
+        return _service_call("apply_catalog_repair", body.get("plan_id"))
+
+    @router.get("/clients")
+    async def clients(project_root: str = "") -> dict:
+        return _core_call("clients", project_root or None)
+
+    @router.post("/clients/enable")
+    async def enable_client(body: dict) -> dict:
+        return _core_call("enable_client", body.get("client_id"), body.get("scope"),
+                          body.get("project_root"), body.get("candidate", 0), body.get("expected_dir"))
 
     @router.get("/health")
     async def health() -> dict:
-        return get_core().health()
+        return _core_call("health")
 
     @router.get("/state")
     async def state() -> dict:
-        return get_core().state()
+        return _core_call("state")
 
     @router.get("/detail")
     async def detail(skill: str) -> dict:
-        return _call(get_core().detail, skill)
+        return _core_call("detail", skill)
 
     @router.get("/diff")
     async def diff() -> dict:
-        return get_core().diff()
-
-    @router.post("/toggle")
-    async def toggle(body: dict) -> dict:
-        return _call(get_core().toggle, body.get("skill"), body.get("tool"), body.get("enabled"))
-
-    @router.post("/toggle-bulk")
-    async def toggle_bulk(body: dict) -> dict:
-        return _call(get_core().toggle_bulk, body.get("skills"), body.get("tool"), body.get("enabled"))
-
-    @router.post("/bulk/plan")
-    async def bulk_plan(body: dict) -> dict:
-        return _call(get_core().plan_bulk, body.get("skills"), body.get("tool"), body.get("enabled"))
-
-    @router.post("/bulk/apply")
-    async def bulk_apply(body: dict) -> dict:
-        return _call(
-            get_core().execute_bulk,
-            body.get("skills"),
-            body.get("tool"),
-            body.get("enabled"),
-            body.get("receipt_id"),
-        )
-
-    @router.post("/repair")
-    async def repair(body: dict) -> dict:
-        return _call(get_core().repair, body.get("skill"), body.get("tool"))
-
-    @router.post("/repair-all")
-    async def repair_all() -> dict:
-        return get_core().repair_all()
-
-    @router.post("/ensure-tool-dir")
-    async def ensure_tool_dir(body: dict) -> dict:
-        return _call(get_core().ensure_tool_dir, body.get("tool"))
+        return _core_call("diff")
 
     @router.get("/import/scan")
     async def import_scan() -> dict:
-        return _call(get_core().import_scan)
-
-    @router.post("/import/apply")
-    async def import_apply(body: dict) -> dict:
-        return _call(get_core().import_apply, body.get("tool"), body.get("names"), body.get("category", "imported"))
+        return _core_call("import_scan")
 
     @router.post("/import/plan")
     async def import_plan(body: dict) -> dict:
-        return _call(
-            get_core().import_plan,
+        return _core_call("import_plan",
             body.get("tools"),
             body.get("scan_roots", []),
             body.get("category", "imported"),
@@ -3169,93 +3972,40 @@ if APIRouter is not None:
 
     @router.post("/import/apply-plan")
     async def import_apply_plan(body: dict) -> dict:
-        return _call(
-            get_core().import_apply_plan,
-            body.get("entries"),
-            body.get("category", "imported"),
-        )
+        return _service_call("apply_import", body.get("entries"), body.get("category", "imported"), body.get("plan_id"))
 
     @router.get("/drift")
     async def drift() -> dict:
-        return _call(get_core().drift)
+        return _core_call("drift")
 
     @router.post("/config/tools")
     async def config_tools(body: dict) -> dict:
-        return _call(get_core().set_tool, body.get("id"), body.get("label"), body.get("dir"))
+        return _core_call("set_tool", body.get("id"), body.get("label"), body.get("dir"))
 
     @router.get("/mcp/state")
     async def mcp_state() -> dict:
         return _call(get_mcp_core().mcp_state)
 
-    @router.post("/mcp/toggle")
-    async def mcp_toggle(body: dict) -> dict:
-        return _call(get_mcp_core().toggle_hermes, body.get("name"), body.get("enabled"))
-
-    @router.post("/mcp/sync")
-    async def mcp_sync(body: dict) -> dict:
-        return _call(get_mcp_core().sync_to_claude, body.get("name"))
-
-    @router.post("/mcp/remove")
-    async def mcp_remove(body: dict) -> dict:
-        return _call(get_mcp_core().remove_from_claude, body.get("name"), body.get("force", False))
-
-    @router.post("/mcp/codex/sync")
-    async def mcp_codex_sync(body: dict) -> dict:
-        return _call(get_mcp_core().sync_to_codex, body.get("name"))
-
-    @router.post("/mcp/codex/remove")
-    async def mcp_codex_remove(body: dict) -> dict:
-        return _call(get_mcp_core().remove_from_codex, body.get("name"), body.get("force", False))
-
-    @router.get("/blueprint/export")
-    async def blueprint_export() -> dict:
-        return get_core().blueprint_export()
-
-    @router.post("/blueprint/apply")
-    async def blueprint_apply(body: dict) -> dict:
-        return _call(
-            get_core().blueprint_apply,
-            body.get("blueprint"),
-            bool(body.get("dry_run", False)),
-        )
-
     @router.get("/backups")
     async def list_backups() -> dict:
-        return _call(get_core().list_backups)
+        return _service_call("list_backups")
+
+    @router.post("/backups/plan")
+    async def plan_backup_restore(body: dict) -> dict:
+        return _service_call("plan_backup", body.get("path"))
+
+    @router.post("/conflict/plan")
+    async def plan_conflict_resolution(body: dict) -> dict:
+        return _service_call("plan_conflict", body.get("tool"), body.get("name"), body.get("choice"))
+
+    @router.post("/conflict/apply")
+    async def apply_conflict_resolution(body: dict) -> dict:
+        return _service_call("apply_conflict", body.get("plan_id"))
 
     @router.post("/backups/restore")
     async def restore_backup(body: dict) -> dict:
-        return _call(get_core().restore_backup, body.get("path"))
+        return _service_call("apply_backup", body.get("plan_id"))
 
-    @router.post("/conflict/revert-push")
-    async def revert_push(body: dict) -> dict:
-        return _call(get_core().revert_push, body.get("tool"), body.get("name"), body.get("tool_backup"))
-
-    @router.post("/conflict/revert-pull")
-    async def revert_pull(body: dict) -> dict:
-        return _call(
-            get_core().revert_pull,
-            body.get("tool"), body.get("name"), body.get("hermes_backup"), body.get("tool_backup"),
-        )
-
-    @router.post("/conflict/revert-adopt")
-    async def revert_adopt(body: dict) -> dict:
-        return _call(
-            get_core().revert_adopt,
-            body.get("tool"), body.get("name"), body.get("tool_backup"), body.get("skill"),
-        )
-
-    @router.post("/conflict/pull")
-    async def conflict_pull(body: dict) -> dict:
-        return _call(get_core().conflict_pull, body.get("tool"), body.get("name"))
-
-    @router.post("/conflict/keep-both")
-    async def conflict_keep_both(body: dict) -> dict:
-        return _call(get_core().conflict_keep_both, body.get("tool"), body.get("name"))
-
-    @router.post("/drift/push")
-    async def drift_push(body: dict) -> dict:
-        return _call(get_core().drift_push, body.get("tool"), body.get("name"))
 
 
 else:  # pragma: no cover — non-gateway import (tests); keep attribute defined

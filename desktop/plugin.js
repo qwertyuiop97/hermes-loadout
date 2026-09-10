@@ -1,29 +1,8 @@
 /**
- * hermes-switchboard — desktop half of the unified Hermes plugin package.
- *
- * MIT License — Copyright (c) 2026 qwertyuiop97. See LICENSE at the package root.
- *
- * A native Hermes desktop pane (plus a full-page route and a ⌘K palette
- * command) that treats ~/.hermes/skills as the single source of truth for
- * skills across coding tools (Hermes itself, Claude, Codex, OpenCode, Grok,
- * ZCode): per-tool on/off switches, broken-link repair, diff, and bulk
- * actions — all through this plugin's own backend namespace
- * (`dashboard/plugin_api.py`, reached via ctx.rest('/…')).
- *
- * Install (unified package): ~/.hermes/plugins/hermes-switchboard/
- *   ├── plugin.yaml            agent half (metadata)
- *   ├── dashboard/manifest.json  {"name":"hermes-switchboard","api":"plugin_api.py"}
- *   ├── dashboard/plugin_api.py  backend routes (gated by `plugins.enabled`)
- *   └── desktop/plugin.js      THIS FILE (enable in Settings → Plugins)
- * Then: ⌘K → "Reload desktop plugins".
- *
- * SDK constraints honored (hard failures if broken):
- *   - Plain ESM, loaded uncompiled → jsx()/jsxs() calls only, ZERO JSX syntax.
- *   - Only these import specifiers: @hermes/plugin-sdk, react, react/jsx-runtime.
- *   - Every identifier rendered inside jsx()/jsxs() is imported or defined here.
- *   - Theme variables only — no hardcoded colors or backgrounds.
- *   - Persistence only via ctx.storage. Data via React Query; mutations
- *     invalidate. Optimistic toggle updates roll back on error.
+ * Loadout for Hermes, the no-build desktop entry.
+ * The backend owns plans, filesystem checks, named selections, and recovery.
+ * UI storage holds view preferences only. All capability changes are reviewed.
+ * MIT License. See LICENSE at the package root.
  */
 
 import {
@@ -40,8 +19,6 @@ import {
   SearchField,
   Skeleton,
   ScrollArea,
-  Separator,
-  Tip,
   ConfirmDialog,
   SegmentedControl,
   useQuery,
@@ -55,10 +32,10 @@ import {
   PALETTE_AREA,
   STATUSBAR_AREAS
 } from '@hermes/plugin-sdk'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useId } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
-const ID = 'hermes-switchboard'
+const ID = 'hermes-loadout'
 const STATE_KEY = [ID, 'state']
 const DIFF_KEY = [ID, 'diff']
 const DRIFT_KEY = [ID, 'drift']
@@ -68,7 +45,7 @@ const ONBOARDING_VERSION = 1
 const ccSectionAtom = atom('tools')
 const arrivalsAtom = atom([])
 const watchPrefsEpochAtom = atom(0)
-const WORKSPACE_ID = 'hermes-switchboard.control-center'
+const WORKSPACE_ID = 'hermes-loadout.control-center'
 let workspaceDispose = null
 let bgHosted = false
 const bgWaiters = new Set()
@@ -96,19 +73,7 @@ function storeSet(key, value) {
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-const PROBLEM_STATES = ['broken-link', 'foreign-link', 'unmanaged-dir']
-
-function downloadText(text, filename) {
-  const blob = new Blob([text], { type: 'application/json' })
-  const url = URL.createObjectURL(blob)
-  const anchor = document.createElement('a')
-  anchor.href = url
-  anchor.download = filename
-  document.body.appendChild(anchor)
-  anchor.click()
-  document.body.removeChild(anchor)
-  URL.revokeObjectURL(url)
-}
+const PROBLEM_STATES = ['broken-link', 'foreign-link', 'unmanaged-dir', 'scope-error', 'catalog-bypass']
 
 function isProblemState(state) {
   return PROBLEM_STATES.indexOf(state) !== -1
@@ -140,7 +105,8 @@ export function summaryProblemTotals(diff, drift) {
     drifted: drift && drift.ok ? drift.count || 0 : 0,
     foreign: counts.foreign || 0,
     unmanaged: counts.unmanaged || 0,
-    unlinked: counts.unlinked || 0
+    unlinked: counts.unlinked || 0,
+    bypasses: diff && Array.isArray(diff.catalog_bypasses) ? diff.catalog_bypasses.length : 0
   }
 }
 
@@ -148,8 +114,8 @@ function openControlCenter(section = 'tools') {
   ccSectionAtom.set(section)
   if (typeof host.openWorkspace === 'function') {
     workspaceDispose = host.openWorkspace(WORKSPACE_ID, {
-      title: 'Hermes Switchboard',
-      minWidth: '680px',
+      title: 'Loadout for Hermes',
+      minWidth: '320px',
       render: () => jsx(ControlCenter, {}),
       onClose: () => {
         workspaceDispose = null
@@ -157,35 +123,13 @@ function openControlCenter(section = 'tools') {
     })
     return
   }
-  host.navigate('/hermes-switchboard')
+  host.navigate('/hermes-loadout')
 }
 
 function closeControlCenter() {
   if (!workspaceDispose) return
   workspaceDispose()
   workspaceDispose = null
-}
-
-function dotToneFor(state) {
-  if (state === 'enabled') return 'good'
-  if (state === 'disabled') return 'muted'
-  if (state === 'missing') return 'muted'
-  if (state === 'broken-link') return 'warn'
-  return 'bad' // foreign-link, unmanaged-dir
-}
-
-function patchSkillTool(qc, skillId, toolId, nextState) {
-  qc.setQueryData(STATE_KEY, old => {
-    if (!old || !old.ok || !Array.isArray(old.skills)) return old
-    return {
-      ...old,
-      skills: old.skills.map(s =>
-        s.id === skillId
-          ? { ...s, tools: { ...s.tools, [toolId]: { ...s.tools[toolId], state: nextState } } }
-          : s
-      )
-    }
-  })
 }
 
 function useDebounced(value, delay) {
@@ -221,22 +165,22 @@ function ReducedMotionGuard({ active }) {
   if (!active) return null
   return jsx('style', {
     'data-reduced-motion-guard': 'true',
-    children: '[data-hermes-switchboard-root="true"] *,[data-hermes-switchboard-root="true"] *::before,[data-hermes-switchboard-root="true"] *::after{animation:none!important;transition:none!important}'
+    children: '[data-hermes-loadout-root="true"] *,[data-hermes-loadout-root="true"] *::before,[data-hermes-loadout-root="true"] *::after{animation:none!important;transition:none!important}'
   })
 }
 
 // Container-measured layout: viewport media queries are wrong for dockable
-// panes (a 320px pane on a 1600px screen still matches `sm:`). D24:
-// narrow <360 — 2-col tool grid, no descriptions, scrollable filter chips;
-// medium 360–559 — 3-col grid; wide ≥560 — 3-col with roomier spacing.
+// panes (a 320px pane on a 1600px screen still matches `sm:`).
+// Narrow <640 keeps core controls stacked; medium spans 640–959.
+// Wide layouts (960+) may expose the optional horizontally scrollable matrix.
 function usePaneLayout(ref) {
-  const [layout, setLayout] = useState('medium')
+  const [layout, setLayout] = useState('narrow')
   useEffect(() => {
     if (typeof ResizeObserver === 'undefined') return undefined
     const ro = new ResizeObserver(entries => {
       const w = entries && entries[0] ? entries[0].contentRect.width : 0
       if (!w) return
-      setLayout(w < 360 ? 'narrow' : w < 560 ? 'medium' : 'wide')
+      setLayout(w < 640 ? 'narrow' : w < 960 ? 'medium' : 'wide')
     })
     if (ref.current) ro.observe(ref.current)
     return () => ro.disconnect()
@@ -247,348 +191,6 @@ function usePaneLayout(ref) {
 // ---------------------------------------------------------------------------
 // Tool switch cell — one (skill, tool) pair
 // ---------------------------------------------------------------------------
-
-function ToolCell({ skill, tool, st, onToggle, onRepair, busy }) {
-  const t = usePluginI18n(ID)
-  const state = st ? st.state : 'missing'
-  const isHermes = tool.special === 'config'
-  const checked = state === 'enabled'
-  const locked = state === 'foreign-link' || state === 'unmanaged-dir'
-  const broken = state === 'broken-link'
-
-  let tip = ''
-  if (isHermes) {
-    tip = checked ? 'hermesOnTip' : 'hermesOffTip'
-  } else if (state === 'foreign-link') {
-    tip = 'foreignLinkTip'
-  } else if (state === 'unmanaged-dir') {
-    tip = 'unmanagedDirTip'
-  } else if (broken) {
-    tip = 'brokenLinkTip'
-  } else if (!tool.present) {
-    tip = 'dirAbsentTip'
-  } else {
-    tip = checked ? 'linkedTip' : 'unlinkTip'
-  }
-
-  const labelNode = jsxs('span', {
-    className: 'inline-flex min-w-0 items-center gap-1',
-    children: [
-      jsx(StatusDot, { tone: dotToneFor(state) }),
-      jsx('span', { className: 'truncate text-[0.625rem] leading-3 text-muted-foreground', children: tool.label })
-    ]
-  })
-
-  const controls = jsxs('span', {
-    className: 'inline-flex items-center gap-1',
-    children: [
-      jsx(Switch, {
-        size: 'xs',
-        checked: checked,
-        disabled: locked || busy,
-        'aria-label': `${skill.name} — ${tool.label}`,
-        onCheckedChange: next => onToggle(skill, tool, next)
-      }),
-      broken
-        ? jsx(Tip, {
-            label: t('repairTip'),
-            children: jsx(Button, {
-              variant: 'ghost',
-              size: 'xs',
-              className: 'h-4 px-1 text-[0.625rem]',
-              disabled: busy,
-              onClick: () => onRepair(skill, tool),
-              children: t('fix')
-            })
-          })
-        : null
-    ]
-  })
-
-  const cellBody = jsxs('span', {
-    className: cn(
-      'inline-flex min-w-0 items-center justify-between gap-1 rounded-[4px] px-1 py-0.5',
-      locked && 'opacity-60'
-    ),
-    children: [labelNode, controls]
-  })
-
-  return jsx(Tip, { label: t(tip), children: cellBody })
-}
-
-// ---------------------------------------------------------------------------
-// Skill row
-// ---------------------------------------------------------------------------
-
-function SkillRow({ skill, tools, view, activeTool, onToggle, onRepair, onRowAll, onRowNone, busy, layout }) {
-  const t = usePluginI18n(ID)
-  const hermes = skill.tools.hermes
-  const hermesOff = hermes && hermes.state === 'disabled'
-  const anyProblem = Object.keys(skill.tools).some(k => isProblemState(skill.tools[k].state))
-  const enabledSomewhere = Object.keys(skill.tools).some(
-    k => k !== 'hermes' && skill.tools[k].state === 'enabled'
-  )
-  const shown = view === 'issues' ? anyProblem : view === 'off' ? !enabledSomewhere : true
-  if (!shown) return null
-
-  const dotTone = anyProblem ? 'warn' : enabledSomewhere ? 'good' : 'muted'
-
-  return jsxs('div', {
-    className: cn(
-      'group rounded-md px-2 py-2 transition-colors hover:bg-(--chrome-action-hover)',
-      busy && 'opacity-70'
-    ),
-    children: [
-      jsxs('div', {
-        className: 'flex min-w-0 items-center gap-1.5',
-        children: [
-          jsx(StatusDot, { tone: dotTone }),
-          jsx('span', { className: 'min-w-0 truncate text-[0.8125rem] font-medium', children: skill.name }),
-          hermesOff
-            ? jsx(Tip, {
-                label: t('hermesOffTip'),
-                children: jsx(Badge, { variant: 'muted', size: 'xs', children: t('hermesOffBadge') })
-              })
-            : null,
-          jsxs('span', { className: 'ml-auto flex shrink-0 items-center gap-1', children: [
-            jsx('span', { className: 'text-[0.625rem] text-muted-foreground', children: skill.category }),
-            jsx(Tip, {
-              label: t('rowAllTip'),
-              children: jsx(Button, {
-                variant: 'ghost', size: 'xs', className: 'h-4 px-1 text-[0.625rem]', disabled: busy,
-                onClick: () => onRowAll(skill), children: t('rowAll')
-              })
-            }),
-            jsx(Tip, {
-              label: t('rowNoneTip'),
-              children: jsx(Button, {
-                variant: 'ghost', size: 'xs', className: 'h-4 px-1 text-[0.625rem]', disabled: busy,
-                onClick: () => onRowNone(skill), children: t('rowNone')
-              })
-            })
-          ] })
-        ]
-      }),
-      skill.description
-        ? jsx('div', {
-            className: 'mt-0.5 whitespace-normal break-words pl-3 text-xs text-muted-foreground',
-            children: skill.description
-          })
-        : null,
-      jsxs('div', {
-        className: cn(
-          'mt-1.5 grid gap-x-2 gap-y-1 pl-3',
-          layout === 'narrow' ? 'grid-cols-2' : 'grid-cols-3'
-        ),
-        children: tools.map(tool =>
-          jsx(
-            ToolCell,
-            {
-              skill: skill,
-              tool: tool,
-              st: skill.tools[tool.id],
-              onToggle: onToggle,
-              onRepair: onRepair,
-              busy: busy
-            },
-            tool.id
-          )
-        )
-      })
-    ]
-  })
-}
-
-// ---------------------------------------------------------------------------
-// Category group with bulk actions
-// ---------------------------------------------------------------------------
-
-function CategoryGroup({
-  category,
-  skills,
-  tools,
-  view,
-  activeTool,
-  onToggle,
-  onRepair,
-  onBulk,
-  onRowAll,
-  onRowNone,
-  busy,
-  layout
-}) {
-  const t = usePluginI18n(ID)
-  const bulkable = activeTool !== 'all'
-  const ids = skills.map(s => s.id)
-
-  return jsxs('section', {
-    className: 'mb-3',
-    children: [
-      jsxs('div', {
-        className: 'sticky top-0 z-10 mb-1 flex items-center gap-2 bg-background px-1 py-1',
-        children: [
-          jsx('span', {
-            className: 'text-[0.65rem] font-semibold uppercase tracking-wider text-muted-foreground',
-            children: category
-          }),
-          jsx(Badge, { variant: 'outline', size: 'xs', children: String(skills.length) }),
-          bulkable
-            ? jsxs('span', { className: 'ml-auto flex items-center gap-1', children: [
-                jsx(Tip, {
-                  label: t('bulkOnTip'),
-                  children: jsx(Button, {
-                    variant: 'ghost',
-                    size: 'xs',
-                    disabled: busy,
-                    onClick: () => onBulk(ids, true),
-                    children: t('bulkOn')
-                  })
-                }),
-                jsx(Tip, {
-                  label: t('bulkOffTip'),
-                  children: jsx(Button, {
-                    variant: 'ghost',
-                    size: 'xs',
-                    disabled: busy,
-                    onClick: () => onBulk(ids, false),
-                    children: t('bulkOff')
-                  })
-                })
-              ] })
-            : null
-        ]
-      }),
-      jsxs('div', {
-        className: 'flex flex-col',
-        children: skills.map(skill =>
-          jsx(
-            SkillRow,
-            {
-              skill: skill,
-              tools: tools,
-              view: view,
-              activeTool: activeTool,
-              onToggle: onToggle,
-              onRepair: onRepair,
-              onRowAll: onRowAll,
-              onRowNone: onRowNone,
-              busy: busy,
-              layout: layout
-            },
-            skill.id
-          )
-        )
-      }),
-      jsx(Separator, {})
-    ]
-  })
-}
-
-// ---------------------------------------------------------------------------
-// Header controls
-// ---------------------------------------------------------------------------
-
-function HeaderBadges({ state, diff, onRepairAll, busy }) {
-  const t = usePluginI18n(ID)
-  if (!state || !state.ok) return null
-  const broken = diff && diff.ok ? diff.counts.broken : 0
-  return jsxs('div', {
-    className: 'flex items-center gap-1.5',
-    children: [
-      jsx(Tip, { label: t('totalTip'), children: jsx(Badge, { variant: 'default', size: 'xs', children: t('skillsCount', state.counts.skills) }) }),
-      broken > 0
-        ? jsx(Tip, {
-            label: t('brokenTip'),
-            children: jsx(Badge, {
-              variant: 'warn',
-              size: 'xs',
-              children: t('brokenCount', broken)
-            })
-          })
-        : null,
-      state.counts.unlinked > 0
-        ? jsx(Tip, {
-            label: t('unlinkedTip'),
-            children: jsx(Badge, { variant: 'outline', size: 'xs', children: t('unlinkedCount', state.counts.unlinked) })
-          })
-        : null,
-      broken > 0
-        ? jsx(Button, { variant: 'secondary', size: 'xs', disabled: busy, onClick: onRepairAll, children: t('repairAll') })
-        : null
-    ]
-  })
-}
-
-function ToolFilter({ tools, active, onChange, layout }) {
-  const t = usePluginI18n(ID)
-  const options = [{ id: 'all', label: t('toolAll') }].concat(
-    tools.map(tool => ({ id: tool.id, label: tool.label }))
-  )
-  return jsx('div', {
-    className: cn(
-      'flex items-center gap-1',
-      layout === 'narrow' ? 'overflow-x-auto whitespace-nowrap pb-0.5' : 'flex-wrap'
-    ),
-    role: 'tablist',
-    'aria-label': 'Filter by tool',
-    children: options.map(opt =>
-      jsx(
-        'button',
-        {
-          type: 'button',
-          role: 'tab',
-          'aria-selected': active === opt.id,
-          onClick: () => onChange(opt.id),
-          className: cn(
-            'rounded-[4px] px-1.5 py-0.5 text-[0.6875rem] transition-colors',
-            layout === 'narrow' && 'shrink-0',
-            active === opt.id
-              ? 'bg-primary/10 font-medium text-primary'
-              : 'text-muted-foreground hover:bg-(--chrome-action-hover) hover:text-foreground'
-          ),
-          children: opt.label
-        },
-        opt.id
-      )
-    )
-  })
-}
-
-// ---------------------------------------------------------------------------
-// v2 — presets (D20/D21), arrival + auto-link machinery (D22/D23), undo (D29)
-// ---------------------------------------------------------------------------
-
-const BUILT_IN_PRESETS = [
-  { id: 'coding', label: 'Coding', catRe: /(software|devops|web|autonomous|delegating|coding)/i },
-  { id: 'writing', label: 'Writing', catRe: /(creative|note-taking|email|research)/i },
-  { id: 'minimal', label: 'Minimal', disableAll: true }
-]
-
-function getAutoLinkPrefs() {
-  try {
-    return JSON.parse(storeGet('autoLink', '{}')) || {}
-  } catch (_err) {
-    return {}
-  }
-}
-
-// V3-7: a pref value is `true` (all categories), '' (all), or a category
-// regex string. A skill matches when the pattern is empty/all or its
-// category matches the pattern (case-insensitive; invalid patterns never
-// match — they surface in the Setup panel as typed text, not crashes).
-function autoLinkMatches(pref, category) {
-  if (pref === true || pref === '' || pref === undefined) return true
-  if (typeof pref !== 'string') return false
-  try {
-    return new RegExp(pref, 'i').test(category)
-  } catch (_err) {
-    return false
-  }
-}
-
-function setAutoLinkPrefs(prefs) {
-  storeSet('autoLink', JSON.stringify(prefs || {}))
-}
 
 function markSkillsSeen(ids) {
   let seen = []
@@ -663,40 +265,6 @@ function useBackgroundSync() {
     }
   }, [state, t])
 
-  const autoLinkRef = useRef(false)
-  useEffect(() => {
-    if (!arrivals.length || !state || !state.ok || autoLinkRef.current) return
-    const prefs = getAutoLinkPrefs()
-    const tools = presentLinkTools(state).filter(tool => prefs[tool.id] && tool.present !== false)
-    if (!tools.length) return
-    autoLinkRef.current = true
-    const skills = Array.isArray(state.skills) ? state.skills : []
-    const byId = new Map(skills.map(skill => [skill.id, skill]))
-    const valid = arrivals.filter(id => byId.has(id))
-    ;(async () => {
-      let changed = 0
-      for (const tool of tools) {
-        const wanted = valid.filter(id => autoLinkMatches(prefs[tool.id], byId.get(id).category || ''))
-        if (!wanted.length) continue
-        try {
-          const result = await pluginCtx.rest('/toggle-bulk', {
-            method: 'POST',
-            body: { skills: wanted, tool: tool.id, enabled: true }
-          })
-          if (result && result.ok) changed += result.changed || 0
-        } catch (_err) {
-          /* the invalidate below reconciles per-tool failures */
-        }
-      }
-      markSkillsSeen(arrivals)
-      arrivalsAtom.set([])
-      autoLinkRef.current = false
-      if (changed) host.notify({ kind: 'success', message: t('toastAutoLinked', changed) })
-      qc.invalidateQueries({ queryKey: STATE_KEY })
-      qc.invalidateQueries({ queryKey: DIFF_KEY })
-    })()
-  }, [arrivals, state, t, qc])
-
   const watchRef = useRef({ initialized: false, broken: null, drift: null })
   useEffect(() => {
     let prefs = { on: false, arrivals: true, broken: true, drift: true }
@@ -768,12 +336,13 @@ function HealthChip() {
   })
   const diff = diffQuery && diffQuery.data
   const broken = diff && diff.ok ? diff.counts.broken : 0
-  const unlinked = diff && diff.ok ? diff.counts.unlinked : 0
-  if (diffQuery.isPending || (!broken && !unlinked)) {
+  const bypasses = diff && diff.ok && Array.isArray(diff.catalog_bypasses) ? diff.catalog_bypasses.length : 0
+  if (diffQuery.isPending || (!broken && !bypasses)) {
     return jsx('button', {
       type: 'button',
       className: 'inline-flex h-full items-center gap-1 px-1.5 text-[0.6875rem] text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover)',
       onClick: () => openControlCenter('problems'),
+      'aria-label': 'Loadout health, no known broken links or bypasses',
       children: jsx(StatusDot, { tone: 'good' })
     })
   }
@@ -784,7 +353,7 @@ function HealthChip() {
       type: 'button',
       className: 'inline-flex cursor-pointer items-center gap-1',
       onClick: () => openControlCenter('problems'),
-      children: broken ? `${broken} broken` : `${unlinked} unlinked`
+      children: broken ? `${broken} broken` : `${bypasses} catalog bypasses`
     })
   })
 }
@@ -827,7 +396,8 @@ function CompactSummaryPane() {
   const enabled = countEnabledByTool(state)
   const problems = summaryProblemTotals(diffQuery.data, driftQuery.data)
   const protectedProblems = problems.foreign + problems.unmanaged
-  const problemTotal = problems.broken + problems.drifted + protectedProblems + problems.unlinked
+  const issueTotal = problems.broken + problems.drifted + problems.bypasses
+  const reviewTotal = issueTotal + protectedProblems
   const skillList = state && state.ok && Array.isArray(state.skills) ? state.skills : []
   const rowProblems = toolId => skillList.reduce((count, skill) => {
     const entry = skill.tools && skill.tools[toolId]
@@ -865,7 +435,7 @@ function CompactSummaryPane() {
       })
     })
   } else if (state && state.ok && !state.skills_root_exists) {
-    body = jsx(EmptyState, { title: t('noRootTitle'), description: t('noRootDesc') })
+    body = jsx(EmptyState, { title: t('noRootTitle'), description: t('noRootDesc'), children: jsx(Button, { variant: 'secondary', size: 'xs', onClick: () => stateQuery.refetch(), children: t('retry') }) })
   } else {
     const total = state && state.ok && state.counts ? state.counts.skills || 0 : 0
     body = jsxs('div', {
@@ -890,7 +460,7 @@ function CompactSummaryPane() {
             }, tool.id)
           })
         }),
-        problemTotal > 0
+        reviewTotal > 0
           ? jsx('button', {
               type: 'button',
               className: 'flex items-center gap-2 py-1 text-left text-xs text-muted-foreground',
@@ -899,7 +469,7 @@ function CompactSummaryPane() {
                 className: 'inline-flex items-center gap-2',
                 children: [
                   jsx(StatusDot, { tone: 'warn' }),
-                  t('problemLine', problems.broken, problems.drifted, protectedProblems, problems.unlinked)
+                  t('problemLine', problems.broken, problems.drifted, protectedProblems, problems.bypasses)
                 ]
               })
             })
@@ -922,13 +492,13 @@ function CompactSummaryPane() {
               onClick: () => openControlCenter('onboarding'),
               children: t('scan')
             }),
-            problemTotal > 0
+            issueTotal > 0
               ? jsx(Button, {
                   variant: 'secondary',
                   size: 'sm',
                   className: 'w-full',
                   onClick: () => openControlCenter('problems'),
-                  children: t('problemsAction', problemTotal)
+                  children: t('problemsAction', issueTotal)
                 })
               : null
           ]
@@ -939,7 +509,7 @@ function CompactSummaryPane() {
 
   return jsxs('div', {
     ref: rootRef,
-    'data-hermes-switchboard-root': 'true',
+    'data-hermes-loadout-root': 'true',
     'data-reduced-motion': reducedMotion ? 'true' : 'false',
     className: 'flex h-full min-w-0 flex-col text-sm',
     children: [
@@ -968,63 +538,6 @@ function CompactSummaryPane() {
   })
 }
 
-// Drift view (#11, D31) — same-name skills whose tool copy differs from the
-// Hermes source. "Use Hermes" backs up the tool copy (never deletes) and
-// swaps in the canonical symlink.
-function DriftPanel({ drift, tools, onPush, onPull, onKeepBoth, busy }) {
-  const t = usePluginI18n(ID)
-  if (!drift || !drift.ok) {
-    return jsx(EmptyState, { title: t('errorTitle'), description: t('adoptFailed') })
-  }
-  if (!drift.count) {
-    return jsx(EmptyState, { title: t('driftEmpty'), description: t('driftDesc') })
-  }
-  const toolById = new Map(tools.map(x => [x.id, x]))
-  return jsxs('div', {
-    className: 'flex flex-col gap-2 px-3 pb-4',
-    children: [
-      jsx('div', { className: 'px-1 text-xs text-muted-foreground', children: t('driftDesc') }),
-      drift.drifted.map(item =>
-        jsxs('div', {
-          className: 'rounded-md border border-(--ui-stroke-secondary) p-2 text-xs',
-          children: [
-            jsxs('div', { className: 'flex items-center gap-1.5', children: [
-              jsx(StatusDot, { tone: 'warn' }),
-              jsx('span', { className: 'font-medium', children: item.name }),
-              jsx('span', {
-                className: 'text-muted-foreground',
-                children: (toolById.get(item.tool) || { label: item.tool }).label
-              }),
-              jsxs('span', { className: 'ml-auto inline-flex items-center gap-1', children: [
-                jsx(Button, {
-                  variant: 'secondary', size: 'xs', disabled: busy,
-                  onClick: () => onPush(item), children: t('useHermes')
-                }),
-                jsx(Tip, {
-                  label: t('useToolCopyTip'),
-                  children: jsx(Button, {
-                    variant: 'ghost', size: 'xs', disabled: busy,
-                    onClick: () => onPull(item), children: t('useToolCopy')
-                  })
-                }),
-                jsx(Tip, {
-                  label: t('keepBothTip'),
-                  children: jsx(Button, {
-                    variant: 'ghost', size: 'xs', disabled: busy,
-                    onClick: () => onKeepBoth(item), children: t('keepBoth')
-                  })
-                })
-              ] })
-            ] })
-          ]
-        },
-        item.tool + '/' + item.name
-      )
-      )
-    ]
-  })
-}
-
 function BrokenLinksPanel({ skills, tools, onRepair, onRepairAll, busy }) {
   const t = usePluginI18n(ID)
   const toolById = new Map(tools.map(tool => [tool.id, tool]))
@@ -1049,7 +562,7 @@ function BrokenLinksPanel({ skills, tools, onRepair, onRepairAll, busy }) {
       ] }),
       broken.map(item => jsxs('div', {
         'data-broken-entry': `${item.skill.id}:${item.tool.id}`,
-        className: 'flex items-center gap-2 rounded-md border border-(--ui-stroke-secondary) p-2 text-xs',
+        className: 'flex flex-wrap items-center gap-2 rounded-md border border-(--ui-stroke-secondary) p-2 text-xs',
         children: [
           jsx(StatusDot, { tone: 'warn' }),
           jsx('span', { className: 'min-w-0 flex-1 truncate font-medium', children: item.skill.name }),
@@ -1057,29 +570,6 @@ function BrokenLinksPanel({ skills, tools, onRepair, onRepairAll, busy }) {
           jsx(Button, { variant: 'secondary', size: 'xs', disabled: busy, onClick: () => onRepair(item.skill, item.tool), children: t('repair') })
         ]
       }, `${item.skill.id}:${item.tool.id}`))
-    ]
-  })
-}
-
-function UnlinkedSkillsPanel({ diff }) {
-  const t = usePluginI18n(ID)
-  const unlinked = diff && diff.ok && Array.isArray(diff.unlinked) ? diff.unlinked : []
-  if (!unlinked.length) {
-    return jsx(EmptyState, { title: t('unlinkedEmpty'), description: t('unlinkedDesc') })
-  }
-  return jsxs('section', {
-    'data-unlinked-skills': 'true',
-    className: 'flex flex-col gap-2 px-3 pb-4',
-    children: [
-      jsx('h3', { className: 'font-medium', children: t('unlinkedTitle', unlinked.length) }),
-      jsx('p', { className: 'text-xs text-muted-foreground', children: t('unlinkedDesc') }),
-      unlinked.map(skillId => jsxs('div', {
-        className: 'flex items-center gap-2 rounded-md border border-(--ui-stroke-secondary) p-2 text-xs',
-        children: [
-          jsx(StatusDot, { tone: 'muted' }),
-          jsx('span', { className: 'min-w-0 break-words font-medium', children: skillId })
-        ]
-      }, skillId))
     ]
   })
 }
@@ -1122,1660 +612,147 @@ function ProtectedEntriesPanel({ diff, tools }) {
   })
 }
 
-// Setup / onboarding panel — create tool dirs, add custom tools, manage
-// auto-link prefs, and find copies to adopt. Purely user-initiated (opt-in).
-function SetupPanel({
-  allTools, tools, onClose, onEnsureDir, onAddTool, busy, autoLink, onAutoLink, adopt, onScanAdopt, onAdoptTool,
-  watchPrefs, onWatchPref, onBlueprintExport, onBlueprintFile, blueprintPreview, onBlueprintApply,
-  backups, onScanBackups, onRestoreBackup, onAutoLinkPattern
-}) {
-  const t = usePluginI18n(ID)
-  const [label, setLabel] = useState('')
-  const [dir, setDir] = useState('')
-  const linkTools = tools.filter(tool => tool.special !== 'config')
-
-  return jsxs('div', {
-    className: 'mx-3 mb-2 rounded-md border border-(--ui-stroke-secondary) p-2 text-xs',
-    children: [
-      jsxs('div', { className: 'flex items-center gap-2', children: [
-        jsx('span', { className: 'font-medium', children: t('setupTitle') }),
-        jsx('span', { className: 'ml-auto' }),
-        jsx(Button, { variant: 'ghost', size: 'xs', onClick: onClose, children: t('close') })
-      ] }),
-      jsx('div', { className: 'mt-1 text-muted-foreground', children: t('setupDesc') }),
-      jsxs('div', { className: 'mt-2 flex flex-col gap-1', children: allTools.filter(tool => tool.special !== 'config').map(tool =>
-        jsxs('div', { className: 'flex items-center gap-2', children: [
-          jsx(StatusDot, { tone: tool.present ? 'good' : 'muted' }),
-          jsx('span', { className: 'w-20 shrink-0 truncate', children: tool.label }),
-          jsx('span', { className: 'min-w-0 flex-1 truncate text-muted-foreground', children: tool.dir || '' }),
-          tool.present
-            ? jsx(Badge, { variant: 'success', size: 'xs', children: t('present') })
-            : jsx(Button, {
-                variant: 'secondary', size: 'xs', disabled: busy,
-                onClick: () => onEnsureDir(tool), children: t('createDir')
-              })
-        ] }, tool.id)
-      ) }),
-      jsxs('div', { className: 'mt-2', children: [
-        jsx('div', { className: 'mb-1 text-muted-foreground', children: t('addTool') }),
-        jsxs('div', { className: 'flex items-center gap-1', children: [
-          jsx(Input, {
-            value: label,
-            onChange: e => setLabel(e && e.target ? e.target.value : e),
-            placeholder: t('toolLabel'),
-            className: 'h-6 w-24 text-xs'
-          }),
-          jsx(Input, {
-            value: dir,
-            onChange: e => setDir(e && e.target ? e.target.value : e),
-            placeholder: t('toolDir'),
-            className: 'h-6 min-w-0 flex-1 text-xs'
-          }),
-          jsx(Button, {
-            variant: 'secondary', size: 'xs', disabled: busy || !label.trim() || !dir.trim(),
-            onClick: () => { onAddTool(label, dir); setLabel(''); setDir('') },
-            children: t('add')
-          })
-        ] })
-      ] }),
-      jsxs('div', { className: 'mt-2', children: [
-        jsx('div', { className: 'mb-1 text-muted-foreground', children: t('autoLinkDesc') }),
-        jsxs('div', { className: 'flex flex-wrap gap-1', children: linkTools.map(tool =>
-          jsx('button', {
-            type: 'button',
-            onClick: () => onAutoLink(tool.id),
-            className: cn(
-              'rounded-[4px] px-1.5 py-0.5 text-[0.6875rem] transition-colors',
-              autoLink[tool.id]
-                ? 'bg-primary/10 font-medium text-primary'
-                : 'text-muted-foreground hover:bg-(--chrome-action-hover) hover:text-foreground'
-            ),
-            children: autoLink[tool.id] ? `⚡ ${tool.label}` : tool.label
-          }, tool.id)
-        ) })
-      ] }),
-      jsxs('div', { className: 'mt-2', children: [
-        jsx('div', { className: 'mb-1 text-muted-foreground', children: t('watchDesc') }),
-        jsxs('div', { className: 'flex flex-wrap items-center gap-1', children: [
-          jsx('button', {
-            type: 'button',
-            onClick: () => onWatchPref('on', !watchPrefs.on),
-            className: cn(
-              'rounded-[4px] px-1.5 py-0.5 text-[0.6875rem] transition-colors',
-              watchPrefs.on ? 'bg-primary/10 font-medium text-primary' : 'text-muted-foreground hover:bg-(--chrome-action-hover) hover:text-foreground'
-            ),
-            children: watchPrefs.on ? '⚡ ' + t('watchOn') : t('watchOff')
-          }),
-          linkTools.map(tool =>
-            jsxs('span', { className: 'inline-flex items-center gap-1', children: [
-              jsx('button', {
-                type: 'button',
-                onClick: () => onAutoLink(tool.id),
-                className: cn(
-                  'rounded-[4px] px-1.5 py-0.5 text-[0.6875rem] transition-colors',
-                  autoLink[tool.id]
-                    ? 'bg-primary/10 font-medium text-primary'
-                    : 'text-muted-foreground hover:bg-(--chrome-action-hover) hover:text-foreground'
-                ),
-                children: autoLink[tool.id] ? '⚡ ' + tool.label : tool.label
-              }, 'al-' + tool.id),
-              autoLink[tool.id]
-                ? jsx('input', {
-                    value: typeof autoLink[tool.id] === 'string' ? autoLink[tool.id] : '',
-                    placeholder: t('autoLinkPattern'),
-                    className: 'h-5 w-28 rounded-[4px] border border-(--ui-stroke-secondary) bg-transparent px-1 text-[0.625rem]',
-                    onChange: e => onAutoLinkPattern(tool.id, e && e.target ? e.target.value : e)
-                  }, 'alp-' + tool.id)
-                : null
-            ] }, 'alw-' + tool.id)
-          ),
-          watchPrefs.on
-            ? ['arrivals', 'broken', 'drift'].map(cls =>
-                jsx('button', {
-                  type: 'button',
-                  onClick: () => onWatchPref(cls, !watchPrefs[cls]),
-                  className: cn(
-                    'rounded-[4px] px-1 py-0.5 text-[0.625rem] transition-colors',
-                    watchPrefs[cls] ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:bg-(--chrome-action-hover)'
-                  ),
-                  children: t('watch' + cls.charAt(0).toUpperCase() + cls.slice(1))
-                }, cls)
-              )
-            : null
-        ] })
-      ] }),
-      jsxs('div', { className: 'mt-2', children: [
-        jsx('div', { className: 'mb-1 text-muted-foreground', children: t('blueprintDesc') }),
-        jsxs('div', { className: 'flex flex-wrap items-center gap-1', children: [
-          jsx(Button, { variant: 'secondary', size: 'xs', disabled: busy, onClick: onBlueprintExport, children: t('blueprintExport') }),
-          jsx('label', {
-            className: cn(
-              'cursor-pointer rounded-[4px] border border-(--ui-stroke-secondary) px-1.5 py-0.5 text-[0.6875rem] text-muted-foreground transition-colors',
-              'hover:bg-(--chrome-action-hover) hover:text-foreground',
-              busy && 'opacity-50'
-            ),
-            children: [
-              t('blueprintOpen'),
-              jsx('input', {
-                type: 'file',
-                accept: '.json,application/json',
-                className: 'hidden',
-                onChange: e => {
-                  const file = e && e.target && e.target.files ? e.target.files[0] : null
-                  onBlueprintFile(file)
-                  e.target.value = ''
-                }
-              }, 'blueprint-file-input')
-            ]
-          })
-        ] }),
-        blueprintPreview
-          ? jsxs('div', { className: 'mt-1 text-muted-foreground', children: [
-              jsx('span', { children: t('blueprintPreview', blueprintPreview.counts.links, blueprintPreview.counts.skills_disabled, blueprintPreview.counts.refused) }),
-              blueprintPreview.counts.links + blueprintPreview.counts.skills_disabled > 0
-                ? jsx(Button, {
-                    variant: 'secondary', size: 'xs', className: 'ml-2', disabled: busy,
-                    onClick: onBlueprintApply, children: t('blueprintApply')
-                  })
-                : null
-            ] })
-          : null
-      ] }),
-      jsxs('div', { className: 'mt-2', children: [
-        jsx(Button, {
-          variant: 'secondary', size: 'xs', disabled: busy,
-          onClick: onScanBackups,
-          children: t('backupList')
-        }),
-        backups && backups.ok
-          ? jsxs('div', { className: 'mt-1 flex flex-col gap-0.5', children: [
-              jsx('span', { className: 'text-[0.625rem] text-muted-foreground', children: t('backupCount', backups.count) }),
-              backups.backups.slice(0, 12).map(b =>
-                jsxs('div', { className: 'flex items-center gap-2', children: [
-                  jsx('span', { className: 'min-w-0 flex-1 truncate text-muted-foreground', children: b.name }),
-                  jsx(Badge, { variant: 'outline', size: 'xs', children: b.kind }),
-                  jsx(Button, {
-                    variant: 'ghost', size: 'xs', className: 'h-4 px-1 text-[0.625rem]', disabled: busy,
-                    onClick: () => onRestoreBackup(b), children: t('backupRestore')
-                  })
-                ] }, b.path)
-              )
-            ] })
-          : null
-      ] }),
-      jsxs('div', { className: 'mt-2', children: [
-        jsx(Button, {
-          variant: 'secondary', size: 'xs', disabled: busy,
-          onClick: onScanAdopt,
-          children: t('adoptScan')
-        }),
-        adopt && adopt.ok
-          ? jsxs('div', { className: 'mt-1 flex flex-col gap-1', children: [
-              adopt.tools
-                .filter(x => x.present && (x.adoptable > 0 || x.drifted > 0))
-                .map(x =>
-                  jsxs('div', { className: 'flex items-center gap-2', children: [
-                    jsx('span', { className: 'w-20 shrink-0 truncate', children: (tools.find(t2 => t2.id === x.tool) || { label: x.tool }).label }),
-                    jsx('span', { className: 'min-w-0 flex-1 truncate text-muted-foreground', children: t('adoptToolCount', x.adoptable, x.drifted) }),
-                    x.adoptable > 0
-                      ? jsx(Button, {
-                          variant: 'secondary', size: 'xs', disabled: busy,
-                          onClick: () => onAdoptTool(x),
-                          children: t('adoptAll')
-                        })
-                      : null
-                  ] }, x.tool)
-                ),
-              adopt.counts.adoptable === 0 && adopt.counts.drifted === 0
-                ? jsx('span', { className: 'text-muted-foreground', children: t('adoptNone') })
-                : null
-            ] })
-          : null
-      ] })
-    ]
-  })
-}
-
-// Arrival banner — new skills detected since last visit. Never auto-enables
-// unless a tool has an explicit auto-link preference (D22/D23).
-function ArrivalBanner({ arrivals, tools, autoLink, onLink, onDismiss, onAutoLink, busy }) {
-  const t = usePluginI18n(ID)
-  const [selected, setSelected] = useState(() => new Set())
-  const linkTools = tools.filter(tool => tool.special !== 'config')
-  const toggleSel = id => {
-    setSelected(prev => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
-  }
-  const sample = arrivals.slice(0, 3).join(', ')
-  return jsxs('div', {
-    className: 'mx-3 mb-2 rounded-md border border-(--ui-stroke-secondary) bg-background p-2 text-xs',
-    children: [
-      jsxs('div', { className: 'flex items-center gap-2', children: [
-        jsx(StatusDot, { tone: 'good' }),
-        jsx('span', { className: 'font-medium', children: t('arrivalsTitle', arrivals.length) }),
-        jsx(Button, {
-          variant: 'ghost', size: 'xs', className: 'ml-auto', disabled: busy,
-          onClick: onDismiss, children: t('dismiss')
-        })
-      ] }),
-      jsx('div', { className: 'mt-0.5 truncate text-muted-foreground', children: sample }),
-      jsxs('div', { className: 'mt-1.5 flex flex-wrap items-center gap-1', children: [
-        linkTools.map(tool =>
-          jsxs('span', { className: 'inline-flex items-center gap-1', children: [
-            jsx('button', {
-              type: 'button',
-              onClick: () => toggleSel(tool.id),
-              className: cn(
-                'rounded-[4px] px-1.5 py-0.5 text-[0.6875rem] transition-colors',
-                selected.has(tool.id)
-                  ? 'bg-primary/10 font-medium text-primary'
-                  : 'text-muted-foreground hover:bg-(--chrome-action-hover) hover:text-foreground'
-              ),
-              children: tool.label
-            }),
-            jsx(Tip, {
-              label: t('alwaysAuto'),
-              children: jsx('button', {
-                type: 'button',
-                onClick: () => onAutoLink(tool.id),
-                className: cn(
-                  'rounded-[4px] px-1 py-0.5 text-[0.625rem] transition-colors',
-                  autoLink[tool.id]
-                    ? 'bg-primary/10 font-medium text-primary'
-                    : 'text-muted-foreground hover:bg-(--chrome-action-hover) hover:text-foreground'
-                ),
-                children: '⚡'
-              })
-            })
-          ] }, tool.id)
-        ),
-        jsx(Button, {
-          variant: 'secondary', size: 'xs', className: 'ml-auto',
-          disabled: busy || selected.size === 0,
-          onClick: () => onLink(Array.from(selected)),
-          children: t('linkChecked', arrivals.length)
-        })
-      ] })
-    ]
-  })
-}
-
-// Undo banner — 30 s window over the last bulk/preset/arrival action (D29).
-function UndoBanner({ undo, onUndo, busy }) {
-  const t = usePluginI18n(ID)
-  if (!undo) return null
-  return jsxs('div', {
-    className: 'mx-3 mb-2 flex items-center gap-2 rounded-md border border-(--ui-stroke-secondary) bg-background px-2 py-1 text-xs',
-    children: [
-      jsx('span', { className: 'text-muted-foreground', children: t('undoAvail', undo.count) }),
-      jsx(Button, {
-        variant: 'secondary', size: 'xs', className: 'ml-auto', disabled: busy,
-        onClick: onUndo, children: t('undo')
-      })
-    ]
-  })
-}
-
-
-// ---------------------------------------------------------------------------
-// Main pane
-// ---------------------------------------------------------------------------
-
-function SkillsPane({ section = 'tools' }) {
-  const t = usePluginI18n(ID)
+function MaintenancePane({ section }) {
   const qc = useQueryClient()
-  const rootRef = useRef(null)
-  const layout = usePaneLayout(rootRef)
-
-  const [rawQuery, setRawQuery] = useState('')
-  const searchQuery = useDebounced(rawQuery, 200)
-  const [activeTool, setActiveTool] = useState(() => storeGet('toolFilter', 'all'))
-  const [view, setView] = useState(() => storeGet('viewFilter', 'all'))
-  const [confirm, setConfirm] = useState(null)
-  const arrivals = useValue(arrivalsAtom)
-  const [showSetup, setShowSetup] = useState(() => storeGet('setupDismissed', false) !== true)
-  const [undo, setUndo] = useState(null)
-  const [autoLink, setAutoLinkState] = useState(() => getAutoLinkPrefs())
-  const [adopt, setAdopt] = useState(null)
-  const [showPresetImport, setShowPresetImport] = useState(false)
-  const [presetText, setPresetText] = useState('')
-  const [taskBusy, setTaskBusy] = useState(false)
-  const [watchPrefs, setWatchPrefsState] = useState(
-    () => storeGet('watchPrefs', null) || { on: false, arrivals: true, broken: true, drift: true }
-  )
-  const setWatchPrefs = next => {
-    setWatchPrefsState(next)
-    storeSet('watchPrefs', JSON.stringify(next))
-    watchPrefsEpochAtom.set(watchPrefsEpochAtom.get() + 1)
-  }
-  const [blueprintBp, setBlueprintBp] = useState(null)
-  const [blueprintPreview, setBlueprintPreview] = useState(null)
-  const [backups, setBackups] = useState(null)
-
-  useEffect(() => storeSet('toolFilter', activeTool), [activeTool])
-  useEffect(() => storeSet('viewFilter', view), [view])
-
-  // -- undo window (D29) ---------------------------------------------------
-  useEffect(() => {
-    if (!undo) return undefined
-    const timer = setTimeout(() => setUndo(null), Math.max(0, undo.expires - Date.now()))
-    return () => clearTimeout(timer)
-  }, [undo])
-
-  const stateQuery = useQuery({
-    queryKey: STATE_KEY,
-    queryFn: () => (pluginCtx ? pluginCtx.rest('/state') : Promise.reject(new Error('no backend'))),
-    staleTime: 10000,
-    refetchInterval: 15000,
-    refetchOnWindowFocus: false,
-    retry: 1
+  const ui = useValue(operationUIAtom)
+  const [backupSearch, setBackupSearch] = useState('')
+  const [page, setPage] = useState(0)
+  const [showBackups, setShowBackups] = useState(false)
+  const [showLibrary, setShowLibrary] = useState(false)
+  const [notifications, setNotifications] = useState(() => {
+    try { return !!JSON.parse(storeGet('watchPrefs', '{}')).on } catch (_) { return false }
   })
-  const diffQuery = useQuery({
-    queryKey: DIFF_KEY,
-    queryFn: () => (pluginCtx ? pluginCtx.rest('/diff') : Promise.reject(new Error('no backend'))),
-    staleTime: 10000,
-    refetchInterval: 30000,
-    refetchOnWindowFocus: false,
-    retry: 1
-  })
-  const driftQuery = useQuery({
-    queryKey: DRIFT_KEY,
-    queryFn: () => (pluginCtx ? pluginCtx.rest('/drift') : Promise.reject(new Error('no backend'))),
-    staleTime: 30000,
-    refetchInterval: 60000,
-    refetchOnWindowFocus: false,
-    retry: 0
-  })
-
+  const stateQuery = useQuery({ queryKey: STATE_KEY, queryFn: () => pluginCtx.rest('/state'), staleTime: 10000 })
+  const diffQuery = useQuery({ queryKey: DIFF_KEY, queryFn: () => pluginCtx.rest('/diff'), staleTime: 10000 })
+  const driftQuery = useQuery({ queryKey: DRIFT_KEY, queryFn: () => pluginCtx.rest('/drift'), staleTime: 10000 })
+  const backupsQuery = useQuery({ queryKey: [ID, 'backups'], queryFn: () => pluginCtx.rest('/backups').then(requireOk), enabled: showBackups, staleTime: 0 })
   const state = stateQuery.data
+  const tools = state && state.ok && Array.isArray(state.tools) ? state.tools : []
+  const skills = state && state.ok && Array.isArray(state.skills) ? state.skills : []
   const diff = diffQuery.data
   const drift = driftQuery.data
-  const allTools = state && state.ok ? state.tools : []
-  // optional targets (v3) stay in Setup but stay out of the rows/filters
-  // until their dir exists or is created
-  const tools = allTools.filter(tool => !tool.optional || tool.present)
-  const toolsRef = useRef(tools)
-  toolsRef.current = tools
-
-  // -- mutations ----------------------------------------------------------
-
-  const toggleMutation = useMutation({
-    mutationFn: vars => pluginCtx.rest('/toggle', { method: 'POST', body: vars }),
-    onMutate: async vars => {
-      await qc.cancelQueries({ queryKey: STATE_KEY })
-      const previous = qc.getQueryData(STATE_KEY)
-      patchSkillTool(qc, vars.skill, vars.tool, vars.enabled ? 'enabled' : 'missing')
-      return { previous }
-    },
-    onSuccess: (data, vars, ctx) => {
-      if (!data || data.ok !== true) {
-        if (ctx && ctx.previous) qc.setQueryData(STATE_KEY, ctx.previous)
-        host.notify({ kind: 'error', message: data && data.error ? data.error : t('toggleFailed') })
-        return
-      }
-      haptic('tap')
-      if (vars.tool === 'hermes') {
-        patchSkillTool(qc, vars.skill, 'hermes', vars.enabled ? 'enabled' : 'disabled')
-        host.notify({ kind: 'success', message: t('toastConfig', vars.enabled) })
-      } else {
-        const toolLabel =
-          (toolsRef.current.find(x => x.id === vars.tool) || { label: vars.tool }).label
-        host.notify({
-          kind: 'success',
-          message: vars.enabled ? t('toastLinked', toolLabel) : t('toastUnlinked', toolLabel)
-        })
-      }
-    },
-    onError: (err, _vars, ctx) => {
-      if (ctx && ctx.previous) qc.setQueryData(STATE_KEY, ctx.previous)
-      host.notifyError(err, t('toggleFailed'))
-    },
-    onSettled: () => {
-      qc.invalidateQueries({ queryKey: STATE_KEY })
-      qc.invalidateQueries({ queryKey: DIFF_KEY })
+  const bypasses = diff && diff.ok && Array.isArray(diff.catalog_bypasses) ? diff.catalog_bypasses : []
+  const busy = ui.busy || !!ui.preview || !backendReady(state)
+  const appLabel = id => tools.find(tool => tool.id === id)?.label || id
+  const repair = (skill, tool) => reviewSelections([{ kind: 'skill', app: tool.id, id: skill.id, enabled: true }], 'Repair skill link')
+  const repairAll = () => {
+    const states = []
+    for (const skill of skills) for (const tool of tools) if (skill.tools?.[tool.id]?.state === 'broken-link') {
+      states.push({ kind: 'skill', app: tool.id, id: skill.id, enabled: true })
     }
-  })
-
-  const repairMutation = useMutation({
-    mutationFn: vars => pluginCtx.rest('/repair', { method: 'POST', body: vars }),
-    onSuccess: data => {
-      if (!data || data.ok !== true) {
-        host.notify({ kind: 'error', message: data && data.error ? data.error : t('repairFailed') })
-        return
-      }
-      haptic('tap')
-      host.notify({ kind: 'success', message: t('toastRepaired') })
-    },
-    onError: err => host.notifyError(err, t('repairFailed')),
-    onSettled: () => {
-      qc.invalidateQueries({ queryKey: STATE_KEY })
-      qc.invalidateQueries({ queryKey: DIFF_KEY })
-    }
-  })
-
-  const repairAllMutation = useMutation({
-    mutationFn: () => pluginCtx.rest('/repair-all', { method: 'POST', body: {} }),
-    onSuccess: data => {
-      if (!data || data.ok !== true) {
-        host.notify({ kind: 'error', message: t('repairFailed') })
-        return
-      }
-      host.notify({
-        kind: 'success',
-        message: t('toastRepairedAll', data.fixed.length, data.unfixable.length)
-      })
-    },
-    onError: err => host.notifyError(err, t('repairFailed')),
-    onSettled: () => {
-      qc.invalidateQueries({ queryKey: STATE_KEY })
-      qc.invalidateQueries({ queryKey: DIFF_KEY })
-    }
-  })
-
-  const bulkMutation = useMutation({
-    mutationFn: vars => pluginCtx.rest('/toggle-bulk', { method: 'POST', body: vars }),
-    onSuccess: data => {
-      if (!data || data.ok !== true) {
-        host.notify({ kind: 'error', message: t('bulkFailed') })
-        return
-      }
-      host.notify({ kind: 'success', message: t('toastBulk', data.changed, data.failed) })
-    },
-    onError: err => host.notifyError(err, t('bulkFailed')),
-    onSettled: () => {
-      qc.invalidateQueries({ queryKey: STATE_KEY })
-      qc.invalidateQueries({ queryKey: DIFF_KEY })
-    }
-  })
-
-  // -- handlers -----------------------------------------------------------
-
-  const onEnsureDir = tool => {
-    setTaskBusy(true)
-    pluginCtx
-      .rest('/ensure-tool-dir', { method: 'POST', body: { tool: tool.id } })
-      .then(res => {
-        if (res && res.ok) host.notify({ kind: 'success', message: t('dirCreated', tool.label) })
-        else host.notify({ kind: 'error', message: res && res.error ? res.error : t('toolAddFailed') })
-      })
-      .catch(err => host.notifyError(err, t('toolAddFailed')))
-      .finally(() => {
-        setTaskBusy(false)
-        qc.invalidateQueries({ queryKey: STATE_KEY })
-      })
+    reviewSelections(states, 'Repair broken links')
   }
-
-  const onToggle = useCallback(
-    (skill, tool, enabled) => {
-      toggleMutation.mutate({ skill: skill.id, tool: tool.id, enabled: enabled })
-    },
-    [toggleMutation]
-  )
-
-  const onRepair = useCallback(
-    (skill, tool) => {
-      repairMutation.mutate({ skill: skill.id, tool: tool.id })
-    },
-    [repairMutation]
-  )
-
-  const onBulk = useCallback(
-    (skillIds, enabled) => {
-      const toolLabel =
-        (toolsRef.current.find(x => x.id === activeTool) || { label: activeTool }).label
-      setConfirm({
-        title: enabled ? t('bulkOnTitle', toolLabel) : t('bulkOffTitle', toolLabel),
-        description: t('bulkDesc', skillIds.length, toolLabel),
-        confirmLabel: enabled ? t('bulkOn') : t('bulkOff'),
-        destructive: !enabled,
-        action: () =>
-          bulkMutation.mutate({ skills: skillIds, tool: activeTool, enabled: enabled })
-      })
-    },
-    [activeTool, bulkMutation, t]
-  )
-
-  const onRepairAll = useCallback(() => {
-    setConfirm({
-      title: t('repairAllTitle'),
-      description: t('repairAllDesc'),
-      confirmLabel: t('repairAll'),
-      destructive: false,
-      action: () => repairAllMutation.mutate()
-    })
-  }, [repairAllMutation, t])
-
-  // -- derived view ---------------------------------------------------------
-
-  const skills = state && state.ok && Array.isArray(state.skills) ? state.skills : []
-  const linkTools = tools.filter(tool => tool.special !== 'config')
-  const busy = taskBusy || toggleMutation.isPending || repairMutation.isPending || repairAllMutation.isPending || bulkMutation.isPending
-
-  // -- imperative bulk runner with undo capture ------------------------------
-  // entries: [{ tool, ids, enabled }]; undoActions: [{ skill, tool, enabled }]
-  // carrying the RESTORE polarity captured before the change.
-  const runBulkEntries = useCallback(
-    async (entries, undoActions) => {
-      setTaskBusy(true)
-      let changed = 0
-      let failed = 0
-      try {
-        for (const entry of entries) {
-          if (!entry.ids.length) continue
-          try {
-            const res = await pluginCtx.rest('/toggle-bulk', {
-              method: 'POST',
-              body: { skills: entry.ids, tool: entry.tool, enabled: entry.enabled }
-            })
-            if (res && res.ok) {
-              changed += res.changed || 0
-              failed += res.failed || 0
-            } else {
-              failed += entry.ids.length
-            }
-          } catch (_err) {
-            failed += entry.ids.length
-          }
-        }
-      } finally {
-        setTaskBusy(false)
-        qc.invalidateQueries({ queryKey: STATE_KEY })
-        qc.invalidateQueries({ queryKey: DIFF_KEY })
-        qc.invalidateQueries({ queryKey: DRIFT_KEY })
-      }
-      if (undoActions && undoActions.length) {
-        setUndo({ actions: undoActions, count: undoActions.length, expires: Date.now() + 30000 })
-      }
-      host.notify({
-        kind: failed ? 'error' : 'success',
-        message: failed ? t('toastBulk', changed, failed) : t('toastBulkDone', changed)
-      })
-      return changed
-    },
-    [qc, t]
-  )
-
-  const onUndo = useCallback(() => {
-    if (!undo) return
-    const byKey = new Map()
-    const reverts = []
-    for (const action of undo.actions) {
-      if (action.kind && action.kind !== 'toggle') {
-        reverts.push(action)
-        continue
-      }
-      const key = `${action.tool}|${action.enabled}`
-      const entry = byKey.get(key) || { tool: action.tool, enabled: action.enabled, ids: [] }
-      entry.ids.push(action.skill)
-      byKey.set(key, entry)
-    }
-    setUndo(null)
-    setTaskBusy(true)
-    ;(async () => {
-      const entries = Array.from(byKey.values())
-      for (const action of reverts) {
-        const path =
-          action.kind === 'revert-push'
-            ? '/conflict/revert-push'
-            : action.kind === 'revert-pull'
-              ? '/conflict/revert-pull'
-              : '/conflict/revert-adopt'
-        try {
-          await pluginCtx.rest(path, { method: 'POST', body: action })
-        } catch (_err) {
-          host.notify({ kind: 'error', message: t('undoFailed') })
-        }
-      }
-      if (entries.length) await runBulkEntries(entries)
-    })().finally(() => {
-      setTaskBusy(false)
-      qc.invalidateQueries({ queryKey: STATE_KEY })
-      qc.invalidateQueries({ queryKey: DIFF_KEY })
-      qc.invalidateQueries({ queryKey: DRIFT_KEY })
-    })
-  }, [undo, runBulkEntries, qc, t])
-
-  // -- presets (D20/D21) ------------------------------------------------------
-  const captureEnableUndo = (ids, tool) => {
-    const byId = new Map(skills.map(s => [s.id, s]))
-    const undoActions = []
-    for (const id of ids) {
-      const s = byId.get(id)
-      const st = s && s.tools[tool] ? s.tools[tool].state : 'missing'
-      if (st !== 'enabled') undoActions.push({ skill: id, tool: tool, enabled: false })
-    }
-    return undoActions
-  }
-
-  const applyEnablePreset = preset => {
-    const ids = skills
-      .filter(s => preset.catRe && preset.catRe.test(s.category))
-      .map(s => s.id)
-    const targets = linkTools.filter(tool => tool.present !== false)
-    if (!ids.length || !targets.length) {
-      host.notify({ kind: 'info', message: t('presetNoop') })
-      return
-    }
-    const sample = ids.slice(0, 5).join(', ')
-    setConfirm({
-      title: t('presetApplyTitle', preset.label),
-      description: t('presetApplyDesc', ids.length, targets.length, sample),
-      confirmLabel: t('applyPreset'),
-      destructive: false,
-      action: () => {
-        const undoActions = []
-        const entries = targets.map(tool => {
-          undoActions.push(...captureEnableUndo(ids, tool.id))
-          return { tool: tool.id, ids: ids, enabled: true }
-        })
-        runBulkEntries(entries, undoActions)
-      }
-    })
-  }
-
-  const applyMinimalPreset = () => {
-    const byId = new Map(skills.map(s => [s.id, s]))
-    const entries = []
-    const undoActions = []
-    let total = 0
-    for (const tool of linkTools) {
-      if (tool.present === false) continue
-      const ids = skills
-        .filter(s => s.tools[tool.id] && s.tools[tool.id].state === 'enabled')
-        .map(s => s.id)
-      if (!ids.length) continue
-      total += ids.length
-      for (const id of ids) undoActions.push({ skill: id, tool: tool.id, enabled: true })
-      entries.push({ tool: tool.id, ids: ids, enabled: false })
-    }
-    if (!total) {
-      host.notify({ kind: 'info', message: t('presetNoop') })
-      return
-    }
-    setConfirm({
-      title: t('minimalTitle'),
-      description: t('minimalDesc', total),
-      confirmLabel: t('applyPreset'),
-      destructive: true,
-      action: () => runBulkEntries(entries, undoActions)
-    })
-  }
-
-  const buildPresetExport = () => ({
-    version: 1,
-    name: 'my-skills',
-    skills: skills
-      .filter(sk => linkTools.some(tool => sk.tools[tool.id] && sk.tools[tool.id].state === 'enabled'))
-      .map(sk => sk.id),
-    tools: linkTools.map(tool => tool.id)
-  })
-
-  const downloadPresetFile = () => {
-    downloadText(JSON.stringify(buildPresetExport(), null, 2), 'hermes-switchboard-preset.json')
-    host.notify({ kind: 'success', message: t('downloaded') })
-  }
-
-  const importPresetFile = file => {
-    if (!file) return
-    const reader = new FileReader()
-    reader.onload = () => {
-      setPresetText(String(reader.result || ''))
-      setShowPresetImport(true)
-    }
-    reader.onerror = () => host.notify({ kind: 'error', message: t('invalidPreset') })
-    reader.readAsText(file)
-  }
-
-  const importPreset = () => {
-    let parsed
-    try {
-      parsed = JSON.parse(presetText)
-      if (!parsed || parsed.version !== 1 || !Array.isArray(parsed.skills)) throw new Error('bad shape')
-    } catch (_err) {
-      host.notify({ kind: 'error', message: t('invalidPreset') })
-      return
-    }
-    const known = new Set(skills.map(s => s.id))
-    const ids = parsed.skills.filter(id => known.has(id))
-    const skipped = parsed.skills.length - ids.length
-    const knownTools = new Set(linkTools.map(tool => tool.id))
-    const toolIds = (Array.isArray(parsed.tools) ? parsed.tools : []).filter(id => knownTools.has(id))
-    const targets = linkTools.filter(tool => toolIds.includes(tool.id) && tool.present !== false)
-    if (!ids.length || !targets.length) {
-      host.notify({ kind: 'error', message: t('invalidPreset') })
-      return
-    }
-    const sample = ids.slice(0, 5).join(', ')
-    setConfirm({
-      title: t('presetApplyTitle', String(parsed.name || 'preset')),
-      description: t('presetImportDesc', ids.length, targets.length, skipped, sample),
-      confirmLabel: t('applyPreset'),
-      destructive: false,
-      action: () => {
-        const undoActions = []
-        const entries = targets.map(tool => {
-          undoActions.push(...captureEnableUndo(ids, tool.id))
-          return { tool: tool.id, ids: ids, enabled: true }
-        })
-        runBulkEntries(entries, undoActions)
-        setPresetText('')
-        setShowPresetImport(false)
-      }
-    })
-  }
-
-  const exportPreset = async () => {
-    const text = JSON.stringify(buildPresetExport(), null, 2)
-    try {
-      if (pluginCtx && pluginCtx.os && typeof pluginCtx.os.writeClipboard === 'function') {
-        const okDone = await pluginCtx.os.writeClipboard(text)
-        host.notify({ kind: okDone ? 'success' : 'error', message: okDone ? t('copied') : t('copyFailed') })
-        return
-      }
-    } catch (_err) {
-      /* fall through to error toast */
-    }
-    host.notify({ kind: 'error', message: t('copyFailed') })
-  }
-
-  // -- setup / adoption (D26, #10) --------------------------------------------
-  const onAddTool = (label, dir) => {
-    setTaskBusy(true)
-    pluginCtx
-      .rest('/config/tools', {
-        method: 'POST',
-        body: { id: label.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 32), label: label, dir: dir }
-      })
-      .then(res => {
-        if (res && res.ok) host.notify({ kind: 'success', message: t('toolAdded', label) })
-        else host.notify({ kind: 'error', message: res && res.error ? res.error : t('toolAddFailed') })
-      })
-      .catch(err => host.notifyError(err, t('toolAddFailed')))
-      .finally(() => {
-        setTaskBusy(false)
-        qc.invalidateQueries({ queryKey: STATE_KEY })
-      })
-  }
-
-  const onScanAdopt = () => {
-    setTaskBusy(true)
-    pluginCtx
-      .rest('/import/scan')
-      .then(res => setAdopt(res))
-      .catch(err => host.notifyError(err, t('adoptFailed')))
-      .finally(() => setTaskBusy(false))
-  }
-
-  const onAdopt = scanResult => {
-    const targets = scanResult.tools.filter(tool => tool.adoptable > 0)
-    const sample = targets
-      .flatMap(tool => tool.entries.filter(e => e.kind === 'unmanaged-skill').slice(0, 2).map(e => `${tool.tool}/${e.name}`))
-      .slice(0, 5)
-      .join(', ')
-    setConfirm({
-      title: t('adoptConfirmTitle'),
-      description: t('adoptConfirmDesc', scanResult.counts.adoptable, sample),
-      confirmLabel: t('adoptAll'),
-      destructive: false,
-      action: () => {
-        setTaskBusy(true)
-        ;(async () => {
-          let adopted = 0
-          for (const target of targets) {
-            try {
-              const res = await pluginCtx.rest('/import/apply', {
-                method: 'POST',
-                body: {
-                  tool: target.tool,
-                  names: target.entries.filter(e => e.kind === 'unmanaged-skill' && !e.conflict).map(e => e.name)
-                }
-              })
-              if (res && res.ok) adopted += res.adopted || 0
-            } catch (_err) {
-              /* reported per-run by the summary toast */
-            }
-          }
-          host.notify({ kind: 'success', message: t('adoptDone', adopted) })
-        })().finally(() => {
-          setTaskBusy(false)
-          qc.invalidateQueries({ queryKey: STATE_KEY })
-          qc.invalidateQueries({ queryKey: DIFF_KEY })
-        })
-      }
-    })
-  }
-
-  const onAdoptTool = toolScan => {
-    const names = toolScan.entries
-      .filter(e => e.kind === 'unmanaged-skill' && !e.conflict)
-      .map(e => e.name)
-    if (!names.length) {
-      host.notify({ kind: 'info', message: t('presetNoop') })
-      return
-    }
-    const sample = names.slice(0, 5).join(', ')
-    setConfirm({
-      title: t('adoptConfirmTitle'),
-      description: t('adoptConfirmDesc', names.length, sample),
-      confirmLabel: t('adoptAll'),
-      destructive: false,
-      action: () => {
-        setTaskBusy(true)
-        pluginCtx
-          .rest('/import/apply', { method: 'POST', body: { tool: toolScan.tool, names: names } })
-          .then(res => {
-            if (res && res.ok) {
-              host.notify({ kind: 'success', message: t('adoptDone', res.adopted || 0) })
-              const undoActions = (res.results || [])
-                .filter(x => x.ok && x.backup)
-                .map(x => ({ kind: 'revert-adopt', tool: toolScan.tool, name: x.name, tool_backup: x.backup, skill: x.skill }))
-              if (undoActions.length) {
-                setUndo({ actions: undoActions, count: undoActions.length, expires: Date.now() + 30000 })
-              }
-            } else {
-              host.notify({ kind: 'error', message: res && res.error ? res.error : t('adoptFailed') })
-            }
-          })
-          .catch(err => host.notifyError(err, t('adoptFailed')))
-          .finally(() => {
-            setTaskBusy(false)
-            qc.invalidateQueries({ queryKey: STATE_KEY })
-            qc.invalidateQueries({ queryKey: DIFF_KEY })
-            onScanAdopt()
-          })
-      }
-    })
-  }
-
-  const runConflictAction = (path, payload, successKey) => {
-    setTaskBusy(true)
-    return pluginCtx
-      .rest(path, { method: 'POST', body: payload })
-      .then(res => {
-        if (res && res.ok) host.notify({ kind: 'success', message: t(successKey, payload.name) })
-        else host.notify({ kind: 'error', message: res && res.error ? res.error : t('pushFailed') })
-        return res
-      })
-      .catch(err => {
-        host.notifyError(err, t('pushFailed'))
-        return null
-      })
-      .finally(() => {
-        setTaskBusy(false)
-        qc.invalidateQueries({ queryKey: STATE_KEY })
-        qc.invalidateQueries({ queryKey: DIFF_KEY })
-        qc.invalidateQueries({ queryKey: DRIFT_KEY })
-      })
-  }
-
-  const onPushDrift = item => {
-    setConfirm({
-      title: t('useHermesTitle', item.name),
-      description: t('useHermesDesc', item.tool),
-      confirmLabel: t('useHermes'),
-      destructive: false,
-      action: () => {
-        runConflictAction('/drift/push', { tool: item.tool, name: item.name }, 'pushDone').then(res => {
-          if (res && res.ok && res.tool_backup) {
-            setUndo({
-              actions: [{ kind: 'revert-push', tool: item.tool, name: item.name, tool_backup: res.tool_backup }],
-              count: 1,
-              expires: Date.now() + 30000
-            })
-          }
-        })
-      }
-    })
-  }
-
-  const onPullDrift = item => {
-    setConfirm({
-      title: t('useToolCopyTitle', item.name, item.tool),
-      description: t('useToolCopyDesc'),
-      confirmLabel: t('useToolCopy'),
-      destructive: true,
-      action: () => {
-        runConflictAction('/conflict/pull', { tool: item.tool, name: item.name }, 'pullDone').then(res => {
-          if (res && res.ok) {
-            setUndo({
-              actions: [{
-                kind: 'revert-pull', tool: item.tool, name: item.name,
-                hermes_backup: res.hermes_backup, tool_backup: res.tool_backup
-              }],
-              count: 1,
-              expires: Date.now() + 30000
-            })
-          }
-        })
-      }
-    })
-  }
-
-  const onKeepBothDrift = item => {
-    setConfirm({
-      title: t('keepBothTitle', item.name),
-      description: t('keepBothDesc'),
-      confirmLabel: t('keepBoth'),
-      destructive: false,
-      action: () => {
-        runConflictAction('/conflict/keep-both', { tool: item.tool, name: item.name }, 'keepBothDone').then(res => {
-          if (res && res.ok) {
-            setUndo({
-              actions: [{ kind: 'revert-adopt', tool: item.tool, name: item.name, tool_backup: res.tool_backup, skill: res.skill }],
-              count: 1,
-              expires: Date.now() + 30000
-            })
-          }
-        })
-      }
-    })
-  }
-
-  // -- machine blueprint (v3-2, additive-only) --------------------------------
-  const onBlueprintExport = () => {
-    setTaskBusy(true)
-    pluginCtx
-      .rest('/blueprint/export')
-      .then(res => {
-        if (res && res.ok) {
-          downloadText(JSON.stringify(res.blueprint, null, 2), 'hermes-switchboard-blueprint.json')
-          host.notify({ kind: 'success', message: t('blueprintExported') })
-        } else host.notify({ kind: 'error', message: t('blueprintFailed') })
-      })
-      .catch(err => host.notifyError(err, t('blueprintFailed')))
-      .finally(() => setTaskBusy(false))
-  }
-
-  const onBlueprintFile = file => {
-    if (!file) return
-    const reader = new FileReader()
-    reader.onload = () => {
-      let bp
-      try {
-        bp = JSON.parse(String(reader.result || ''))
-        if (!bp || bp.version !== 2) throw new Error('version')
-      } catch (_err) {
-        host.notify({ kind: 'error', message: t('blueprintInvalid') })
-        return
-      }
-      setBlueprintBp(bp)
-      setTaskBusy(true)
-      pluginCtx
-        .rest('/blueprint/apply', { method: 'POST', body: { blueprint: bp, dry_run: true } })
-        .then(res => {
-          if (res && res.ok) setBlueprintPreview(res.plan)
-          else host.notify({ kind: 'error', message: t('blueprintFailed') })
-        })
-        .catch(err => host.notifyError(err, t('blueprintFailed')))
-        .finally(() => setTaskBusy(false))
-    }
-    reader.readAsText(file)
-  }
-
-  const onBlueprintApply = () => {
-    if (!blueprintBp) return
-    setConfirm({
-      title: t('blueprintApplyTitle'),
-      description: t('blueprintApplyDesc', blueprintPreview.counts.links, blueprintPreview.counts.skills_disabled),
-      confirmLabel: t('blueprintApply'),
-      destructive: false,
-      action: () => {
-        setTaskBusy(true)
-        pluginCtx
-          .rest('/blueprint/apply', { method: 'POST', body: { blueprint: blueprintBp, dry_run: false } })
-          .then(res => {
-            if (res && res.ok) {
-              host.notify({ kind: 'success', message: t('blueprintApplied', res.applied.links, res.applied.skills_disabled, res.applied.failed) })
-              setBlueprintBp(null)
-              setBlueprintPreview(null)
-            } else host.notify({ kind: 'error', message: res && res.error ? res.error : t('blueprintFailed') })
-          })
-          .catch(err => host.notifyError(err, t('blueprintFailed')))
-          .finally(() => {
-            setTaskBusy(false)
-            qc.invalidateQueries({ queryKey: STATE_KEY })
-            qc.invalidateQueries({ queryKey: DIFF_KEY })
-          })
-      }
-    })
-  }
-
-  // -- backups (v3-6) ----------------------------------------------------------
-  const onScanBackups = () => {
-    setTaskBusy(true)
-    pluginCtx
-      .rest('/backups')
-      .then(res => setBackups(res))
-      .catch(err => host.notifyError(err, t('backupScanFailed')))
-      .finally(() => setTaskBusy(false))
-  }
-
-  const onRestoreBackup = backup => {
-    setConfirm({
-      title: t('backupRestoreTitle'),
-      description: t('backupRestoreDesc', backup.name),
-      confirmLabel: t('backupRestore'),
-      destructive: false,
-      action: () => {
-        setTaskBusy(true)
-        pluginCtx
-          .rest('/backups/restore', { method: 'POST', body: { path: backup.path } })
-          .then(res => {
-            if (res && res.ok) host.notify({ kind: 'success', message: t('backupRestored', backup.name) })
-            else host.notify({ kind: 'error', message: res && res.error ? res.error : t('backupScanFailed') })
-          })
-          .catch(err => host.notifyError(err, t('backupScanFailed')))
-          .finally(() => {
-            setTaskBusy(false)
-            qc.invalidateQueries({ queryKey: STATE_KEY })
-            onScanBackups()
-          })
-      }
-    })
-  }
-
-  const onArrivalLink = toolIds => {
-    const byId = new Map(skills.map(s => [s.id, s]))
-    const undoActions = []
-    const entries = toolIds
-      .filter(id => linkTools.some(tool => tool.id === id))
-      .map(toolId => {
-        undoActions.push(...captureEnableUndo(arrivals, toolId))
-        return { tool: toolId, ids: arrivals.slice(), enabled: true }
-      })
-    markSkillsSeen(arrivals)
-    arrivalsAtom.set([])
-    runBulkEntries(entries, undoActions)
-  }
-
-  const onArrivalDismiss = () => {
-    markSkillsSeen(arrivals)
-    arrivalsAtom.set([])
-  }
-
-  const onToggleAutoLink = toolId => {
-    const prefs = getAutoLinkPrefs()
-    if (prefs[toolId]) delete prefs[toolId]
-    else prefs[toolId] = true
-    setAutoLinkPrefs(prefs)
-    setAutoLinkState({ ...prefs })
-  }
-
-  const onAutoLinkPattern = (toolId, pattern) => {
-    const prefs = getAutoLinkPrefs()
-    prefs[toolId] = pattern.trim() === '' ? true : pattern
-    setAutoLinkPrefs(prefs)
-    setAutoLinkState({ ...prefs })
-  }
-
-  // per-skill all/none across every present link tool (#5)
-  const onRowAll = useCallback(
-    skill => {
-      const targets = linkTools.filter(tool => tool.present !== false)
-      const undoActions = []
-      const entries = targets.map(tool => {
-        undoActions.push(...captureEnableUndo([skill.id], tool.id))
-        return { tool: tool.id, ids: [skill.id], enabled: true }
-      })
-      runBulkEntries(entries, undoActions)
-    },
-    [linkTools, captureEnableUndo, runBulkEntries]
-  )
-
-  const onRowNone = useCallback(
-    skill => {
-      const entries = []
-      const undoActions = []
-      for (const tool of linkTools) {
-        if (tool.present === false) continue
-        const st = skill.tools[tool.id]
-        if (st && (st.state === 'enabled' || st.state === 'broken-link')) {
-          undoActions.push({ skill: skill.id, tool: tool.id, enabled: true })
-          entries.push({ tool: tool.id, ids: [skill.id], enabled: false })
-        }
-      }
-      runBulkEntries(entries, undoActions)
-    },
-    [linkTools, runBulkEntries]
-  )
-
-  const filtered = useMemo(() => {
-
-    const q = searchQuery.trim().toLowerCase()
-    const groups = new Map()
-    for (const skill of skills) {
-      if (
-        q &&
-        skill.name.toLowerCase().indexOf(q) === -1 &&
-        skill.category.toLowerCase().indexOf(q) === -1 &&
-        (skill.description || '').toLowerCase().indexOf(q) === -1
-      ) {
-        continue
-      }
-      if (!groups.has(skill.category)) groups.set(skill.category, [])
-      groups.get(skill.category).push(skill)
-    }
-    return Array.from(groups.entries()).map(([category, list]) => ({ category, skills: list }))
-  }, [skills, searchQuery])
-
-  // -- render ---------------------------------------------------------------
-
-  const header = jsxs('div', {
-    className: 'flex flex-col gap-2 px-3 pb-2 pt-3',
-    children: [
-      jsxs('div', {
-        className: 'flex items-center gap-2',
-        children: [
-          jsx('span', { className: 'text-sm font-medium', children: t('paneTitle') }),
-          jsxs('div', { className: 'ml-auto flex items-center gap-1.5', children: [
-            jsx(HeaderBadges, {
-              state: state,
-              diff: diff,
-              onRepairAll: onRepairAll,
-              busy: busy
-            }),
-            jsx(Button, {
-              variant: 'ghost',
-              size: 'xs',
-              onClick: () => setShowSetup(v => !v),
-              children: t('setup')
-            }),
-            jsx(Button, {
-              variant: 'ghost',
-              size: 'xs',
-              disabled: stateQuery.isFetching,
-              onClick: () => {
-                qc.invalidateQueries({ queryKey: STATE_KEY })
-                qc.invalidateQueries({ queryKey: DIFF_KEY })
-              },
-              children: t('refresh')
-            })
-          ] })
-        ]
-      }),
-      jsx(SearchField, {
-        placeholder: t('searchPlaceholder'),
-        value: rawQuery,
-        onChange: setRawQuery,
-        containerClassName: 'w-full',
-        'aria-label': t('searchPlaceholder')
-      }),
-      jsx(ToolFilter, { tools: tools, active: activeTool, onChange: setActiveTool, layout: layout }),
-      jsx(SegmentedControl, {
-        options: [
-          { id: 'all', label: t('viewAll') },
-          { id: 'issues', label: t('viewIssues') },
-          { id: 'off', label: t('viewOff') },
-          { id: 'drift', label: t('viewDrift') }
-        ],
-        value: view,
-        onChange: setView
-      })
-    ]
-  })
-
-  let body = null
-  if (stateQuery.isPending || (stateQuery.isLoading && !state)) {
-    body = jsxs('div', {
-      className: 'flex flex-col gap-2 px-3',
-      children: [0, 1, 2, 3, 4, 5, 6, 7].map(i =>
-        jsx(Skeleton, { className: 'h-10 w-full' }, `sk-${i}`)
-      )
-    })
-  } else if (stateQuery.isError) {
-    const raw = stateQuery.error && stateQuery.error.message ? stateQuery.error.message : ''
-    // Map known backend-mount failures to their exact remedy (see README
-    // troubleshooting): the gateway mounts plugin API routes at startup only.
-    const needsRestart =
-      raw.indexOf('Headless backend') !== -1 ||
-      raw.indexOf('web UI disabled') !== -1 ||
-      raw.indexOf('Plugin not found') !== -1
-    body = jsx(ErrorState, {
-      title: t('errorTitle'),
-      description: needsRestart ? t('errorNeedsRestart') : raw || t('errorDesc'),
-      children: jsxs('div', {
-        className: 'flex flex-col items-center gap-2',
-        children: [
-          jsx(Button, {
-            variant: 'secondary',
-            size: 'xs',
-            onClick: () => stateQuery.refetch(),
-            children: t('retry')
-          }),
-          needsRestart && raw
-            ? jsx('span', {
-                className: 'max-w-[280px] text-center text-[0.625rem] text-muted-foreground',
-                children: raw
-              })
-            : null
-        ]
-      })
-    })
-  } else if (view === 'drift') {
-    body = jsx(DriftPanel, {
-      drift: drift,
-      tools: tools,
-      onPush: onPushDrift,
-      onPull: onPullDrift,
-      onKeepBoth: onKeepBothDrift,
-      busy: busy
-    })
-  } else if (state && state.ok && !state.skills_root_exists) {
-    body = jsx(EmptyState, { title: t('noRootTitle'), description: t('noRootDesc') })
-  } else if (skills.length === 0) {
-    body = jsx(EmptyState, { title: t('emptyTitle'), description: t('emptyDesc') })
-  } else if (filtered.length === 0) {
-    body = jsx(EmptyState, { title: t('noMatchTitle'), description: t('noMatchDesc') })
-  } else {
-    body = jsxs('div', {
-      className: 'flex flex-col px-2 pb-4',
-      children: filtered.map(group =>
-        jsx(
-          CategoryGroup,
-          {
-            category: group.category,
-            skills: group.skills,
-            tools: tools,
-            view: view,
-            activeTool: activeTool,
-            onToggle: onToggle,
-            onRepair: onRepair,
-            onBulk: onBulk,
-            onRowAll: onRowAll,
-            onRowNone: onRowNone,
-            busy: busy,
-            layout: layout
-          },
-          group.category
-        )
-      )
-    })
-  }
-
-  const allAbsent = linkTools.length > 0 && linkTools.every(tool => tool.present === false)
-
-  const sharedConfirm = jsx(ConfirmDialog, {
-    open: !!confirm,
-    onClose: () => setConfirm(null),
-    onConfirm: confirm ? confirm.action : () => undefined,
-    title: confirm ? confirm.title : '',
-    description: confirm ? confirm.description : undefined,
-    confirmLabel: confirm ? confirm.confirmLabel : undefined,
-    destructive: confirm ? confirm.destructive : false
-  })
-
-  if (section === 'sets') {
-    const presetControls = jsxs('div', {
-      className: 'flex flex-wrap items-center gap-2 p-3',
-      children: [
-        jsx('span', { className: 'mr-1 text-xs font-medium', children: t('presets') }),
-        BUILT_IN_PRESETS.map(preset =>
-          jsx('button', {
-            type: 'button',
-            onClick: () => (preset.disableAll ? applyMinimalPreset() : applyEnablePreset(preset)),
-            disabled: busy,
-            className: 'rounded-[4px] border border-(--ui-stroke-secondary) px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground',
-            children: preset.label
-          }, preset.id)
-        ),
-        jsx(Button, {
-          variant: 'secondary', size: 'xs', disabled: busy,
-          onClick: () => setShowPresetImport(value => !value), children: t('presetImport')
-        }),
-        jsx(Button, {
-          variant: 'secondary', size: 'xs', disabled: busy,
-          onClick: downloadPresetFile, children: t('downloadPreset')
-        }),
-        jsx('label', {
-          className: cn(
-            'cursor-pointer rounded-[4px] border border-(--ui-stroke-secondary) px-2 py-1 text-xs text-muted-foreground transition-colors',
-            'hover:bg-(--chrome-action-hover) hover:text-foreground',
-            busy && 'opacity-50'
-          ),
-          children: [
-            t('importFile'),
-            jsx('input', {
-              type: 'file',
-              accept: '.json,application/json',
-              className: 'hidden',
-              onChange: event => {
-                const file = event && event.target && event.target.files ? event.target.files[0] : null
-                importPresetFile(file)
-                event.target.value = ''
-              }
-            }, 'sets-preset-file')
-          ]
-        }),
-        jsx(Button, {
-          variant: 'secondary', size: 'xs', disabled: busy,
-          onClick: exportPreset, children: t('copyPreset')
-        })
-      ]
-    })
-    return jsxs('div', {
-      className: 'flex h-full min-w-0 flex-col text-sm',
-      children: [
-        presetControls,
-        showPresetImport
-          ? jsxs('div', {
-              className: 'mx-3 mb-2 rounded-md border border-(--ui-stroke-secondary) p-2 text-xs',
-              children: [
-                jsx('div', { className: 'mb-1 text-muted-foreground', children: t('pasteHint') }),
-                jsx(Input, {
-                  value: presetText,
-                  onChange: event => setPresetText(event && event.target ? event.target.value : event),
-                  placeholder: '{"version": 1, "name": "…", "skills": ["…"], "tools": ["…"]}',
-                  className: 'h-6 w-full text-xs'
-                }),
-                jsx(Button, {
-                  variant: 'secondary', size: 'xs', disabled: busy || !presetText.trim(),
-                  onClick: importPreset, children: t('applyPreset')
-                })
-              ]
-            })
-          : null,
-        jsx(ScrollArea, {
-          className: 'min-h-0 flex-1',
-          children: jsx(EmptyState, { title: t('ccSets'), description: t('toolsLandingHint') })
-        }),
-        jsx(UndoBanner, { undo: undo, onUndo: onUndo, busy: busy }),
-        sharedConfirm
-      ]
-    })
-  }
-
-  if (section === 'problems') {
-    return jsxs('div', {
-      className: 'flex h-full min-w-0 flex-col text-sm',
-      children: [
-        jsx(ScrollArea, {
-          className: 'min-h-0 flex-1',
-          children: jsxs('div', { children: [
-            jsx(BrokenLinksPanel, { skills: skills, tools: tools, onRepair: onRepair, onRepairAll: onRepairAll, busy: busy }),
-            jsx(DriftPanel, {
-              drift: drift,
-              tools: tools,
-              onPush: onPushDrift,
-              onPull: onPullDrift,
-              onKeepBoth: onKeepBothDrift,
-              busy: busy
-            }),
-            jsx(ProtectedEntriesPanel, { diff: diff, tools: tools }),
-            jsx(UnlinkedSkillsPanel, { diff: diff })
-          ] })
-        }),
-        jsx(UndoBanner, { undo: undo, onUndo: onUndo, busy: busy }),
-        sharedConfirm
-      ]
-    })
-  }
-
-  if (section === 'advanced') {
-    return jsxs('div', {
-      className: 'flex h-full min-w-0 flex-col text-sm',
-      children: [
-        jsx(ScrollArea, {
-          className: 'min-h-0 flex-1',
-          children: jsx(SetupPanel, {
-            tools: tools,
-            onClose: () => ccSectionAtom.set('tools'),
-            onEnsureDir: onEnsureDir,
-            onAddTool: onAddTool,
-            busy: busy,
-            autoLink: autoLink,
-            onAutoLink: onToggleAutoLink,
-            allTools: allTools,
-            adopt: adopt,
-            onScanAdopt: onScanAdopt,
-            onAdoptTool: onAdoptTool,
-            onAutoLinkPattern: onAutoLinkPattern,
-            watchPrefs: watchPrefs,
-            onWatchPref: (cls, value) => {
-              const next = { ...watchPrefs, [cls]: value }
-              setWatchPrefs(next)
-            },
-            onBlueprintExport: onBlueprintExport,
-            onBlueprintFile: onBlueprintFile,
-            blueprintPreview: blueprintPreview,
-            onBlueprintApply: onBlueprintApply,
-            backups: backups,
-            onScanBackups: onScanBackups,
-            onRestoreBackup: onRestoreBackup
-          })
-        }),
-        arrivals.length
-          ? jsx(ArrivalBanner, {
-              arrivals: arrivals,
-              tools: tools,
-              autoLink: autoLink,
-              onLink: onArrivalLink,
-              onDismiss: onArrivalDismiss,
-              onAutoLink: onToggleAutoLink,
-              busy: busy
-            })
-          : null,
-        jsx(UndoBanner, { undo: undo, onUndo: onUndo, busy: busy }),
-        sharedConfirm
-      ]
-    })
-  }
-
-  return jsx(SectionPlaceholder, { title: t('ccTools'), hint: t('toolsLandingHint') })
+  const backups = backupsQuery.data && backupsQuery.data.ok && Array.isArray(backupsQuery.data.backups) ? backupsQuery.data.backups : []
+  const filtered = backups.filter(row => `${row.name} ${row.kind}`.toLowerCase().includes(backupSearch.toLowerCase()))
+  if (stateQuery.isPending) return jsx(Skeleton, { className: 'm-3 h-32' })
+  if (!backendReady(state)) return jsx(ErrorState, { title: 'Updated backend required', description: 'Restart Hermes with the current Loadout plugin. No recovery changes are available while the backend is mismatched.', children: jsx(Button, { onClick: () => stateQuery.refetch(), children: 'Retry' }) })
+  if (section === 'problems') return jsx(ScrollArea, { className: 'h-full', children: jsxs('div', { className: 'flex min-w-0 flex-col gap-4 p-3', children: [
+    jsxs('header', { className: 'flex flex-wrap items-center gap-2', children: [jsx('h2', { className: 'font-medium', children: 'Issues' }), jsx(Button, { variant: 'ghost', size: 'xs', onClick: () => refreshInventory(qc), children: 'Refresh' })] }),
+    jsx('p', { className: 'text-xs text-muted-foreground', children: 'Off is a deliberate choice, not a problem. Review broken links, shared discovery bypasses, or conflicting copies here.' }),
+    diffQuery.isError || driftQuery.isError ? jsx(ErrorState, { title: 'Diagnostics unavailable', children: jsx(Button, { onClick: () => { diffQuery.refetch(); driftQuery.refetch() }, children: 'Retry diagnostics' }) }) : null,
+    jsx('section', { 'data-catalog-bypasses': 'true', className: 'flex flex-col gap-2', children: bypasses.length ? [
+      jsx('h3', { className: 'font-medium', children: 'Catalog bypass' }, 'title'),
+      jsx('p', { className: 'text-xs text-muted-foreground', children: 'A broad link exposes library skills regardless of individual switches. Review its removal before relying on Off. Your library and individual links are preserved; refresh the client afterward.' }, 'description'),
+      ...bypasses.map(row => jsxs('div', { className: 'flex min-w-0 flex-col gap-2 rounded-md border border-(--ui-stroke-secondary) p-3 text-xs', children: [
+        jsx('span', { className: 'font-medium break-words', children: `${appLabel(row.tool)} · ${row.name}` }),
+        jsx('span', { className: 'break-all text-muted-foreground', children: row.path }),
+        jsx(Button, { variant: 'secondary', size: 'xs', disabled: busy, onClick: () => reviewOperation('/catalog-bypass/plan', { tool: row.tool, name: row.name }, '/catalog-bypass/repair'), children: 'Review bypass repair' })
+      ] }, row.tool + '/' + row.name))
+    ] : jsx('p', { className: 'text-xs text-muted-foreground', children: 'No broad library links detected in configured application folders.' }) }),
+    jsx('h3', { className: 'font-medium', children: 'Broken links' }),
+    jsx(BrokenLinksPanel, { skills: skills, tools: tools, busy: busy, onRepair: repair, onRepairAll: repairAll }),
+    jsx('section', { className: 'flex flex-col gap-2', children: [
+      jsx('h3', { className: 'font-medium', children: 'Conflicting copies' }, 'title'),
+      jsx('p', { className: 'text-xs text-muted-foreground', children: 'Keep both originals until you choose which copy to use. Nothing here rewrites or automatically renames a skill.' }, 'description'),
+      ...(drift && drift.ok ? drift.drifted : []).map(row => jsxs('div', { 'data-conflict': `${row.tool}/${row.name}`, className: 'flex min-w-0 flex-col gap-2 rounded-md border border-(--ui-stroke-secondary) p-3 text-xs', children: [
+        jsx('span', { className: 'break-words font-medium', children: `${row.name} · ${appLabel(row.tool)}` }),
+        jsxs('div', { className: 'flex flex-wrap gap-2', children: [
+          jsx(Button, { variant: 'secondary', size: 'xs', disabled: busy, onClick: () => reviewOperation('/conflict/plan', { tool: row.tool, name: row.name, choice: 'library' }, '/conflict/apply'), children: 'Use library copy' }),
+          jsx(Button, { variant: 'secondary', size: 'xs', disabled: busy, onClick: () => reviewOperation('/conflict/plan', { tool: row.tool, name: row.name, choice: 'source' }, '/conflict/apply'), children: 'Use application copy' })
+        ] })
+      ] }, row.tool + '/' + row.name)),
+      drift && drift.ok && !drift.count ? jsx('p', { className: 'text-xs text-muted-foreground', children: 'No differing same-name copies.' }, 'empty') : null
+    ] }),
+    jsx(ProtectedEntriesPanel, { diff: diff, tools: tools })
+  ] }) })
+  return jsx(ScrollArea, { className: 'h-full', children: jsxs('div', { 'data-maintenance': 'true', className: 'flex min-w-0 flex-col gap-4 p-3 text-sm', children: [
+    jsx('h2', { className: 'font-medium', children: 'Advanced' }),
+    jsx('p', { className: 'text-xs text-muted-foreground', children: 'Paths belong to the active Hermes backend, which may be a different computer. Discovery never enables capabilities.' }),
+    jsxs('div', { className: 'flex flex-wrap gap-2', children: [
+      jsx(Button, { variant: 'secondary', size: 'xs', disabled: busy, onClick: () => { storeSet(ONBOARDING_KEY, { ...wizardState(), complete: false, step: 'welcome' }); ccSectionAtom.set('onboarding') }, children: 'Scan and import skills' }),
+      jsx(Button, { variant: 'secondary', size: 'xs', onClick: () => setShowLibrary(value => !value), children: 'Manage application paths', 'aria-expanded': showLibrary }),
+      jsx(Button, { variant: 'secondary', size: 'xs', onClick: () => setShowBackups(value => !value), children: 'Browse backups', 'aria-expanded': showBackups })
+    ] }),
+    showLibrary ? jsx(ClientLibrary, { onBack: () => setShowLibrary(false) }) : null,
+    jsxs('label', { className: 'flex flex-wrap items-center gap-2 text-xs', children: [
+      jsx('input', { type: 'checkbox', checked: notifications, onChange: event => { const on = event.target.checked; setNotifications(on); storeSet('watchPrefs', JSON.stringify({ on: on, arrivals: true, broken: true, drift: true })); watchPrefsEpochAtom.set(watchPrefsEpochAtom.get() + 1) } }),
+      'Notify about discoveries and problems, never enable automatically'
+    ] }),
+    showBackups ? jsxs('section', { className: 'flex min-w-0 flex-col gap-2', children: [
+      jsx('h3', { className: 'font-medium', children: 'Preserved backups' }),
+      jsx('p', { className: 'text-xs text-muted-foreground', children: 'Configuration backups may contain credentials. Restoration replaces the reviewed file or copy, not just one setting, and preserves the current version for undo. Never share raw backup contents.' }),
+      jsx(Button, { variant: 'ghost', size: 'xs', onClick: () => backupsQuery.refetch(), children: 'Refresh backups' }),
+      backupsQuery.isPending ? jsx(Skeleton, { className: 'h-16' }) : backupsQuery.isError || backupsQuery.data?.ok === false ? jsx(ErrorState, { title: 'Backups unavailable', children: jsx(Button, { onClick: () => backupsQuery.refetch(), children: 'Retry backups' }) }) : null,
+      jsx(SearchField, { 'aria-label': 'Search backups', placeholder: 'Search backups', value: backupSearch, onChange: value => { setBackupSearch(value); setPage(0) } }),
+      filtered.slice(page * 20, page * 20 + 20).map(row => jsxs('div', { className: 'flex min-w-0 flex-col gap-1 rounded-md border border-(--ui-stroke-secondary) p-2 text-xs', children: [
+        jsx('span', { className: 'break-all font-medium', children: row.name }),
+        jsx('span', { className: 'break-all text-muted-foreground', children: row.path }),
+        jsx(Button, { variant: 'secondary', size: 'xs', disabled: busy, onClick: () => reviewOperation('/backups/plan', { path: row.path }, '/backups/restore'), children: 'Review restore' })
+      ] }, row.path)),
+      jsx('p', { className: 'text-xs text-muted-foreground', children: `${filtered.length} matching backups` }),
+      jsxs('div', { className: 'flex gap-2', children: [jsx(Button, { size: 'xs', disabled: page === 0, onClick: () => setPage(value => value - 1), children: 'Previous' }), jsx(Button, { size: 'xs', disabled: (page + 1) * 20 >= filtered.length, onClick: () => setPage(value => value + 1), children: 'Next' })] })
+    ] }) : null
+  ] }) })
 }
-
-// ---------------------------------------------------------------------------
-// MCP switchboard pane — Hermes catalog + supported client writers
-// ---------------------------------------------------------------------------
 
 function McpPane() {
-  const t = usePluginI18n(ID)
   const qc = useQueryClient()
-  const rootRef = useRef(null)
-  const layout = usePaneLayout(rootRef)
-  const [busyName, setBusyName] = useState(null)
-  const [confirm, setConfirm] = useState(null)
-
-  const stateQuery = useQuery({
-    queryKey: MCP_KEY,
-    queryFn: () => (pluginCtx ? pluginCtx.rest('/mcp/state') : Promise.reject(new Error('no backend'))),
-    staleTime: 10000,
-    refetchInterval: 30000,
-    refetchOnWindowFocus: false,
-    retry: 1
-  })
-  const st = stateQuery.data
-  const rows = st && st.ok && Array.isArray(st.rows) ? st.rows : []
-  const writers = [
-    {
-      id: 'claude',
-      label: 'Claude',
-      syncPath: '/mcp/sync',
-      removePath: '/mcp/remove'
-    },
-    {
-      id: 'codex',
-      label: 'Codex',
-      syncPath: '/mcp/codex/sync',
-      removePath: '/mcp/codex/remove'
-    }
-  ]
-
-  const run = useCallback(
-    (name, path, payload, successKey, writerLabel) => {
-      setBusyName(name + path)
-      pluginCtx
-        .rest(path, { method: 'POST', body: payload })
-        .then(res => {
-          if (res && res.ok) host.notify({ kind: 'success', message: t(successKey, name, writerLabel) })
-          else host.notify({ kind: 'error', message: res && res.error ? res.error : t('mcpFailed') })
-        })
-        .catch(err => host.notifyError(err, t('mcpFailed')))
-        .finally(() => {
-          setBusyName(null)
-          qc.invalidateQueries({ queryKey: MCP_KEY })
-        })
-    },
-    [qc, t]
-  )
-
-  const busy = busyName !== null
-
-  const header = jsxs('div', {
-    className: 'flex flex-col gap-2 px-3 pb-2 pt-3',
-    children: [
-      jsxs('div', { className: 'flex items-center gap-2', children: [
-        jsx('span', { className: 'text-sm font-medium', children: t('mcpTitle') }),
-        st && st.ok
-          ? jsx(Badge, { variant: 'default', size: 'xs', children: t('mcpCount', st.counts.catalog) })
-          : null,
-        jsx(Button, {
-          variant: 'ghost', size: 'xs', className: 'ml-auto',
-          disabled: stateQuery.isFetching,
-          onClick: () => qc.invalidateQueries({ queryKey: MCP_KEY }),
-          children: t('refresh')
-        })
-      ] }),
-      st && st.ok && st.writers
-        ? jsx('div', {
-            className: 'flex flex-wrap items-center gap-2 text-xs text-muted-foreground',
-            children: Object.keys(st.writers).map(wid =>
-              jsxs('span', { className: 'inline-flex items-center gap-1', children: [
-                jsx(StatusDot, { tone: st.writers[wid].present ? 'good' : 'muted' }),
-                jsx('span', { className: 'truncate', children: t('mcpWriterLine', st.writers[wid].label, st.writers[wid].present ? '' : t('dirAbsentTip')) })
-              ] }, wid)
-            )
-          })
-        : null,
-      st && st.ok && st.counts.foreign > 0
-        ? jsx(Tip, {
-            label: t('mcpForeignTip'),
-            children: jsx(Badge, { variant: 'outline', size: 'xs', children: t('mcpForeignNote', st.counts.foreign) })
-          })
-        : null
-    ]
-  })
-
-  let body = null
-  if (stateQuery.isPending || (stateQuery.isLoading && !st)) {
-    body = jsxs('div', {
-      className: 'flex flex-col gap-2 px-3',
-      children: [0, 1, 2, 3].map(i => jsx(Skeleton, { className: 'h-8 w-full' }, 'mcp-sk-' + i))
-    })
-  } else if (stateQuery.isError) {
-    body = jsx(ErrorState, {
-      title: t('errorTitle'),
-      description: stateQuery.error && stateQuery.error.message ? stateQuery.error.message : t('errorDesc'),
-      children: jsx(Button, {
-        variant: 'secondary', size: 'xs',
-        onClick: () => stateQuery.refetch(), children: t('retry')
-      })
-    })
-  } else if (rows.length === 0) {
-    body = jsx(EmptyState, { title: t('mcpEmpty'), description: t('mcpEmptyDesc') })
-  } else {
-    body = jsxs('div', {
-      className: 'flex flex-col px-2 pb-4',
-      children: rows.map(row => {
-        const drifted = writers.some(writer => row.writers[writer.id] === 'drifted')
-        return jsxs('div', {
-          className: 'rounded-md px-2 py-2 transition-colors hover:bg-(--chrome-action-hover)',
-          children: [
-            jsxs('div', { className: 'flex items-center gap-1.5', children: [
-              jsx(StatusDot, { tone: row.enabled ? (drifted ? 'warn' : 'good') : 'muted' }),
-              jsx('span', { className: 'min-w-0 truncate text-[0.8125rem] font-medium', children: row.name }),
-              drifted ? jsx(Badge, { variant: 'warn', size: 'xs', children: t('mcpDrifted') }) : null,
-              row.enabled ? null : jsx(Badge, { variant: 'muted', size: 'xs', children: t('mcpDisabledHermes') })
-            ] }),
-            jsxs('div', { className: cn('mt-1.5 grid gap-2 pl-3', layout === 'narrow' ? 'grid-cols-2' : 'grid-cols-3'), children: [
-              jsxs('span', { className: 'inline-flex items-center justify-between gap-1', children: [
-                jsx('span', { className: 'text-[0.625rem] text-muted-foreground', children: 'Hermes' }),
-                jsx(Switch, {
-                  size: 'xs',
-                  checked: row.enabled,
-                  disabled: busyName !== null,
-                  'aria-label': row.name + ' — Hermes',
-                  onCheckedChange: next => run(row.name, '/mcp/toggle', { name: row.name, enabled: next }, next ? 'mcpOn' : 'mcpOff')
-                })
-              ] }),
-              writers.map(writer => {
-                const wstate = row.writers[writer.id] || 'missing'
-                const wdrifted = wstate === 'drifted'
-                return jsxs('span', { className: 'inline-flex items-center justify-between gap-1', children: [
-                  jsx('span', { className: 'text-[0.625rem] text-muted-foreground', children: writer.label }),
-                  jsxs('span', { className: 'inline-flex items-center gap-1', children: [
-                    jsx(Switch, {
-                      size: 'xs',
-                      checked: wstate === 'enabled',
-                      disabled: busyName !== null,
-                      'aria-label': row.name + ' — ' + writer.label,
-                      onCheckedChange: next => {
-                        if (next && !wdrifted) {
-                          run(row.name, writer.syncPath, { name: row.name }, 'mcpSynced', writer.label)
-                        } else if (next) {
-                          setConfirm({
-                            title: t('mcpSyncTitle', row.name, writer.label),
-                            description: t('mcpOverwriteDesc'),
-                            confirmLabel: t('mcpSync'),
-                            destructive: false,
-                            action: () => run(row.name, writer.syncPath, { name: row.name }, 'mcpSynced', writer.label)
-                          })
-                        } else if (!wdrifted) {
-                          run(row.name, writer.removePath, { name: row.name }, 'mcpRemoved', writer.label)
-                        } else {
-                          setConfirm({
-                            title: t('mcpRemoveTitle', row.name, writer.label),
-                            description: t('mcpRemoveForceDesc'),
-                            confirmLabel: t('mcpRemoveForce'),
-                            destructive: true,
-                            action: () => run(row.name, writer.removePath, { name: row.name, force: true }, 'mcpRemoved', writer.label)
-                          })
-                        }
-                      }
-                    }),
-                    wdrifted
-                      ? jsx(Button, {
-                          variant: 'secondary', size: 'xs', className: 'h-4 px-1 text-[0.625rem]',
-                          disabled: busyName !== null,
-                          onClick: () => run(row.name, writer.syncPath, { name: row.name }, 'mcpSynced', writer.label),
-                          children: t('mcpSync')
-                        })
-                      : null
-                  ] })
-                ] }, writer.id)
-              })
-            ] })
-          ]
-        }, row.name)
-      })
-    })
-  }
-
-  return jsxs('div', {
-    ref: rootRef,
-    className: 'flex h-full min-w-0 flex-col text-sm',
-    children: [
-      header,
-      jsx(ScrollArea, { className: 'min-h-0 flex-1', children: body }),
-      jsx(ConfirmDialog, {
-        open: !!confirm,
-        onClose: () => setConfirm(null),
-        onConfirm: confirm ? confirm.action : () => undefined,
-        title: confirm ? confirm.title : '',
-        description: confirm ? confirm.description : undefined,
-        confirmLabel: confirm ? confirm.confirmLabel : undefined,
-        destructive: confirm ? confirm.destructive : false
-      })
-    ]
-  })
+  const ui = useValue(operationUIAtom)
+  const [search, setSearch] = useState('')
+  const [app, setApp] = useState('hermes')
+  const query = useQuery({ queryKey: MCP_KEY, queryFn: () => pluginCtx.rest('/mcp/state').then(requireOk), staleTime: 10000, refetchInterval: 30000, retry: 1 })
+  const inventory = useQuery({ queryKey: STATE_KEY, queryFn: () => pluginCtx.rest('/state'), staleTime: 10000 })
+  const state = query.data
+  const rows = state && state.ok && Array.isArray(state.rows) ? state.rows : []
+  const writers = [{ id: 'hermes', app: 'hermes', label: 'Hermes' }, { id: 'claude', app: 'claude-desktop', label: 'Claude Desktop' }, { id: 'codex', app: 'codex', label: 'Codex' }]
+  const busy = ui.busy || !!ui.preview || !backendReady(inventory.data)
+  const review = (servers, writer, enabled) => reviewSelections(servers.map(row => ({ kind: 'mcp', app: writer.app, id: row.name, enabled: enabled })), `${enabled ? 'Enable' : 'Disable'} MCP in ${writer.label}`)
+  const filtered = rows.filter(row => row.name.toLowerCase().includes(search.toLowerCase()))
+  const names = { missing: 'Not configured', disabled: 'Off', enabled: 'On', drifted: 'Conflict', unsupported: 'Unsupported', unavailable: 'Unavailable' }
+  const refresh = () => { refreshInventory(qc); query.refetch() }
+  if (query.isPending) return jsx('div', { className: 'p-3', children: jsx(Skeleton, { className: 'h-32 w-full' }) })
+  if (query.isError || !state || !state.ok) return jsx(ErrorState, { title: 'MCP inventory unavailable', description: 'Check the Hermes server configuration, then refresh. No server settings were changed.', children: jsx(Button, { onClick: refresh, children: 'Retry' }) })
+  return jsxs('div', { className: 'flex h-full min-w-0 flex-col text-sm', children: [
+    jsxs('header', { className: 'flex min-w-0 flex-col gap-2 border-b border-(--ui-stroke-secondary) p-3', children: [
+      jsxs('div', { className: 'flex flex-wrap items-center gap-2', children: [jsx('h2', { className: 'font-medium', children: 'MCP connections' }), jsx(Badge, { variant: 'outline', size: 'xs', children: `${rows.length} servers` }), jsx(Button, { variant: 'ghost', size: 'xs', onClick: refresh, children: 'Refresh' })] }),
+      jsx('p', { className: 'text-xs text-muted-foreground', children: 'Hermes supplies server definitions. Each application has its own activation. Credentials stay in the original configurations, never in a loadout.' }),
+      state.partial_failure ? jsx('p', { role: 'alert', className: 'text-xs text-(--ui-text-warning)', children: 'One client configuration is unavailable. Other supported clients remain usable. Check the client settings, then refresh.' }) : null,
+      state.counts && state.counts.foreign ? jsx('p', { className: 'text-xs text-muted-foreground', children: `${state.counts.foreign} client-only servers are protected and not controlled by these switches.` }) : null,
+      !backendReady(inventory.data) ? jsx('p', { role: 'alert', className: 'text-xs text-(--ui-text-warning)', children: 'Fully restart Hermes to load the matching backend before changing activation.' }) : null,
+      jsx(SearchField, { 'aria-label': 'Find an MCP server', placeholder: 'Find a server', value: search, onChange: setSearch }),
+      jsxs('div', { className: 'flex min-w-0 flex-wrap items-center gap-2', children: [
+        jsx('label', { htmlFor: 'mcp-bulk-app', className: 'text-xs', children: 'Application' }),
+        jsx('select', { id: 'mcp-bulk-app', 'aria-label': 'MCP bulk application', value: app, onChange: event => setApp(event.target.value), className: 'max-w-full rounded-md border border-(--ui-stroke-secondary) bg-background p-1 text-xs', children: writers.map(writer => jsx('option', { value: writer.app, children: writer.label }, writer.app)) }),
+        jsx(Button, { variant: 'secondary', size: 'xs', disabled: busy || !filtered.length, onClick: () => review(filtered, writers.find(writer => writer.app === app), true), children: 'Enable visible' }),
+        jsx(Button, { variant: 'secondary', size: 'xs', disabled: busy || !filtered.length, onClick: () => review(filtered, writers.find(writer => writer.app === app), false), children: 'Disable visible' })
+      ] })
+    ] }),
+    jsx(ScrollArea, { className: 'min-h-0 flex-1', children: filtered.length ? jsx('div', { className: 'flex flex-col gap-2 p-3', children: filtered.map(row =>
+      jsxs('article', { 'data-mcp-server': row.name, className: 'min-w-0 rounded-md border border-(--ui-stroke-secondary) p-3', children: [
+        jsx('h3', { className: 'break-words font-medium', children: row.name }),
+        jsx('div', { className: 'mt-2 flex flex-col gap-2', children: writers.map(writer => {
+          const current = writer.id === 'hermes' ? row.enabled ? 'enabled' : 'disabled' : row.writers[writer.id] || 'unavailable'
+          const blocked = ['drifted', 'unsupported', 'unavailable'].includes(current)
+          return jsxs('div', { className: 'flex min-w-0 flex-wrap items-center gap-2 text-xs', children: [
+            jsx('span', { className: 'min-w-0 flex-1', children: writer.label }),
+            jsx('span', { className: blocked ? 'text-(--ui-text-warning)' : 'text-muted-foreground', children: names[current] || current }),
+            jsx(Switch, { size: 'xs', checked: current === 'enabled', disabled: busy || blocked, 'aria-label': `${row.name} in ${writer.label}`, onCheckedChange: enabled => review([row], writer, enabled) }),
+            blocked ? jsx('p', { className: 'w-full text-muted-foreground', children: current === 'drifted' ? 'This client has a different definition. Resolve it in the client configuration; applying a loadout will not overwrite it.' : current === 'unsupported' ? 'This client does not support the configured transport or fields.' : 'This client configuration could not be read safely. Correct it and refresh.' }) : null
+          ] }, writer.app)
+        }) })
+      ] }, row.name)) }) : jsx(EmptyState, { title: rows.length ? 'No matching servers' : 'No MCP servers configured', description: 'Configure a server in Hermes first, then refresh here. Loadout never invents credentials.' }) })
+  ] })
 }
-
-// ---------------------------------------------------------------------------
-// Full workspace shell — shared by openWorkspace and the route fallback.
-// ---------------------------------------------------------------------------
 
 function ToolCard({ tool, counts, busy, onManage, onEnableAll, onDisableAll }) {
   const t = usePluginI18n(ID)
@@ -2791,6 +768,7 @@ function ToolCard({ tool, counts, busy, onManage, onEnableAll, onDisableAll }) {
             className: 'min-w-0 flex-1',
             children: [
               jsx('h3', { className: 'font-medium', children: tool.label }),
+              jsx('span', { 'data-tool-scope': tool.id, className: 'text-xs text-muted-foreground', children: t(tool.scope === 'project' ? 'projectScope' : tool.scope === 'global' ? 'globalScope' : 'libraryCustom') }),
               jsx('div', {
                 'data-tool-path': tool.id,
                 className: 'whitespace-normal break-words text-xs text-muted-foreground',
@@ -2804,6 +782,8 @@ function ToolCard({ tool, counts, busy, onManage, onEnableAll, onDisableAll }) {
           })
         ]
       }),
+      tool.path_error || tool.read_only ? jsx('p', { role: 'alert', className: 'text-xs text-(--ui-text-warning)', children: tool.path_error || (tool.catalog_bypasses && tool.catalog_bypasses.length ? 'Catalog bypass: review the broad link in Issues before changing this application.' : tool.notes || t('libraryReviewCustom')) }) : null,
+      tool.shared_with?.length ? jsx('p', { className: 'text-xs text-(--ui-text-warning)', children: t('sharedDirectoryWarning') }) : null,
       jsxs('div', {
         className: 'grid grid-cols-3 gap-2 text-xs',
         children: [
@@ -2831,11 +811,11 @@ function ToolCard({ tool, counts, busy, onManage, onEnableAll, onDisableAll }) {
         className: 'flex flex-wrap gap-2',
         children: [
           jsx(Button, {
-            variant: 'secondary', size: 'xs', disabled: busy || counts.total === 0,
+            variant: 'secondary', size: 'xs', disabled: busy || !!tool.read_only || counts.total === 0,
             onClick: onEnableAll, children: t('enableAll')
           }),
           jsx(Button, {
-            variant: 'secondary', size: 'xs', disabled: busy || counts.total === 0,
+            variant: 'secondary', size: 'xs', disabled: busy || !!tool.read_only || counts.total === 0,
             onClick: onDisableAll, children: t('disableAll')
           })
         ]
@@ -2844,54 +824,30 @@ function ToolCard({ tool, counts, busy, onManage, onEnableAll, onDisableAll }) {
   })
 }
 
-function BulkPlanPreview({ plan }) {
-  const t = usePluginI18n(ID)
-  if (!plan) return null
-  const totals = plan.totals || {}
-  const sample = Array.isArray(plan.sample) ? plan.sample : []
-  const refused = Array.isArray(plan.refused) ? plan.refused : []
-  return jsxs('div', {
-    'data-bulk-plan': 'preview',
-    className: 'flex max-h-64 flex-col gap-2 overflow-y-auto text-left text-xs',
-    children: [
-      jsx('div', { className: 'font-medium', children: t('toolBulkPreview', totals.would_change || 0, totals.already_satisfied || 0, totals.refused || 0) }),
-      sample.length ? jsxs('div', { children: [
-        jsx('div', { className: 'text-muted-foreground', children: t('bulkSampleTitle') }),
-        sample.map(row => jsx('div', {
-          'data-plan-sample': row.skill_id,
-          children: t('bulkSampleLine', row.name, row.category, row.current_state, row.next_state)
-        }, row.skill_id))
-      ] }) : null,
-      refused.length ? jsxs('div', { children: [
-        jsx('div', { className: 'font-medium text-(--ui-text-warning)', children: t('bulkRefusedTitle') }),
-        refused.map(row => jsx('div', {
-          'data-plan-refused': row.skill,
-          className: 'text-(--ui-text-warning)',
-          children: t('bulkRefusedLine', row.skill, row.code, row.reason)
-        }, `${row.skill}-${row.code}`))
-      ] }) : null
-    ]
-  })
-}
-
-function BulkReceipt({ receipt, tool }) {
-  const t = usePluginI18n(ID)
-  if (!receipt) return null
-  const details = receipt.receipt || {}
-  const results = Array.isArray(receipt.results) ? receipt.results : []
-  return jsxs('div', {
-    'data-bulk-receipt': tool.id,
-    className: 'mx-3 mb-2 max-h-48 overflow-y-auto rounded-md border border-(--ui-stroke-secondary) p-2 text-xs',
-    children: [
-      jsx('div', { className: 'mb-1 font-medium', children: t('bulkReceiptTitle', tool.label, details.changed || 0, details.failed || 0, details.refused || 0) }),
-      details.receipt_id ? jsx('div', { className: 'mb-1 text-muted-foreground', children: t('bulkReceiptId', details.receipt_id) }) : null,
-      results.map(result => jsx('div', {
-        'data-bulk-result': result.skill,
-        className: result.ok ? 'text-muted-foreground' : 'text-(--ui-text-danger)',
-        children: t('bulkResultLine', result.skill, result.ok ? t('bulkResultOk', result.state) : t('bulkResultFailed', result.error || result.code || t('bulkFailed')))
-      }, result.skill))
-    ]
-  })
+function SkillDetails({ skill, onClose }) {
+  const qc = useQueryClient()
+  const [error, setError] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const metadataQuery = useQuery({ queryKey: METADATA_KEY, queryFn: () => pluginCtx.rest('/inventory/metadata').then(requireOk), staleTime: 10000 })
+  const data = metadataQuery.data
+  const fields = data && data.ok && data.skills ? data.skills[skill.id] || {} : {}
+  const labels = data && data.ok && Array.isArray(data.classifications) ? data.classifications : ['Unclassified']
+  const save = async classification => {
+    setBusy(true); setError(null)
+    try {
+      requireOk(await pluginCtx.rest('/inventory/classify', { method: 'POST', body: { skill: skill.id, classification: classification } }))
+      qc.setQueryData(METADATA_KEY, requireOk(await pluginCtx.rest('/inventory/metadata')))
+    } catch (caught) { setError(caught.message) }
+    finally { setBusy(false) }
+  }
+  return jsxs('section', { 'data-skill-details': skill.id, className: 'flex min-w-0 flex-col gap-2 rounded-md border border-(--ui-stroke-secondary) p-3 text-xs', children: [
+    jsxs('div', { className: 'flex flex-wrap items-center gap-2', children: [jsx('h3', { className: 'break-words font-medium', children: skill.name }), jsx(Button, { size: 'xs', variant: 'ghost', onClick: onClose, children: 'Close details' })] }),
+    jsx('p', { className: 'break-words', children: skill.description || 'No description provided.' }),
+    jsx('span', { children: `Source: ${fields.source || 'Existing library'}` }),
+    jsx('label', { children: ['Designed for ', jsx('select', { 'aria-label': `Designed for ${skill.name}`, value: fields.classification || 'Unclassified', disabled: busy || !data?.ok, onChange: event => save(event.target.value), className: 'max-w-full rounded-md border border-(--ui-stroke-secondary) bg-background p-1', children: labels.map(label => jsx('option', { value: label, children: label }, label)) }, 'choice')] }),
+    jsx('p', { className: 'text-muted-foreground', children: 'This is your informational label, not a compatibility guarantee. Changing it never changes activation or skill contents.' }),
+    error || metadataQuery.isError ? jsx('div', { role: 'alert', children: [jsx('p', { children: error || 'Labels unavailable. Refresh after checking metadata.' }, 'error'), jsx(Button, { size: 'xs', onClick: () => metadataQuery.refetch(), children: 'Retry labels' }, 'retry')] }) : null
+  ] })
 }
 
 function SingleToolView({ tool, skills, busy, onBack, onToggle, onBulk }) {
@@ -2900,6 +856,13 @@ function SingleToolView({ tool, skills, busy, onBack, onToggle, onBulk }) {
   const query = useDebounced(rawQuery, 200).trim().toLowerCase()
   const [view, setView] = useState('all')
   const [categoryFilter, setCategoryFilter] = useState('all')
+  const [showFilters, setShowFilters] = useState(false)
+  const [designedFor, setDesignedFor] = useState('all')
+  const [sourceFilter, setSourceFilter] = useState('all')
+  const [details, setDetails] = useState(null)
+  const metadataQuery = useQuery({ queryKey: METADATA_KEY, queryFn: () => pluginCtx.rest('/inventory/metadata').then(requireOk), staleTime: 10000 })
+  const metadata = metadataQuery.data && metadataQuery.data.ok ? metadataQuery.data : { skills: {}, classifications: ['Unclassified'] }
+  const sources = Array.from(new Set(skills.map(skill => metadata.skills[skill.id]?.source || 'Existing library')))
   const [collapsed, setCollapsed] = useState(() => new Set())
   const [selected, setSelected] = useState(() => new Set())
   const categories = useMemo(() => Array.from(new Set(skills.map(skill => skill.category))), [skills])
@@ -2907,12 +870,15 @@ function SingleToolView({ tool, skills, busy, onBack, onToggle, onBulk }) {
     const entry = skill.tools && skill.tools[tool.id]
     const stateName = entry ? entry.state : 'missing'
     if (categoryFilter !== 'all' && skill.category !== categoryFilter) return false
+    const fields = metadata.skills[skill.id] || {}
+    if (designedFor !== 'all' && (fields.classification || 'Unclassified') !== designedFor) return false
+    if (sourceFilter !== 'all' && (fields.source || 'Existing library') !== sourceFilter) return false
     if (query && skill.name.toLowerCase().indexOf(query) === -1 && skill.category.toLowerCase().indexOf(query) === -1 && (skill.description || '').toLowerCase().indexOf(query) === -1) return false
     if (view === 'enabled') return stateName === 'enabled'
     if (view === 'issues') return isProblemState(stateName)
     if (view === 'off') return stateName !== 'enabled' && !isProblemState(stateName)
     return true
-  }), [skills, tool.id, categoryFilter, query, view])
+  }), [skills, tool.id, categoryFilter, query, view, designedFor, sourceFilter, metadataQuery.data])
   const groups = useMemo(() => {
     const grouped = new Map()
     for (const skill of visible) {
@@ -2958,19 +924,20 @@ function SingleToolView({ tool, skills, busy, onBack, onToggle, onBulk }) {
         ] }),
         jsx(SearchField, { placeholder: t('searchPlaceholder'), value: rawQuery, onChange: setRawQuery, containerClassName: 'w-full', 'aria-label': t('searchPlaceholder') }),
         jsxs('div', { className: 'flex flex-wrap items-center gap-2', children: [
-          jsx('label', { className: 'text-xs text-muted-foreground', children: t('categoryFilter') }),
-          jsx('select', {
-            'aria-label': t('categoryFilter'), value: categoryFilter,
-            onChange: event => setCategoryFilter(event.target.value),
-            className: 'rounded-md border border-(--ui-stroke-secondary) bg-background px-2 py-1 text-xs',
-            children: [jsx('option', { value: 'all', children: t('allCategories') }, 'all')].concat(categories.map(category => jsx('option', { value: category, children: category }, category)))
-          }),
+          jsx(Button, { variant: 'secondary', size: 'xs', 'aria-expanded': showFilters, onClick: () => setShowFilters(value => !value), children: 'Filters' }),
           jsx(SegmentedControl, {
             options: [{ id: 'all', label: t('viewAll') }, { id: 'enabled', label: t('viewEnabled') }, { id: 'off', label: t('viewOff') }, { id: 'issues', label: t('viewIssues') }],
             value: view,
             onChange: setView
           })
         ] }),
+        showFilters ? jsxs('section', { 'data-more-filters': 'true', className: 'flex min-w-0 flex-col gap-2 rounded-md border border-(--ui-stroke-secondary) p-2 text-xs', children: [
+          jsx('label', { children: ['Category ', jsx('select', { 'aria-label': 'Category', value: categoryFilter, onChange: event => setCategoryFilter(event.target.value), className: 'max-w-full bg-background', children: [jsx('option', { value: 'all', children: 'All categories' }, 'all')].concat(categories.map(category => jsx('option', { value: category, children: category }, category))) }, 'select')] }),
+          jsx('label', { children: ['Designed for ', jsx('select', { 'aria-label': 'Designed for', value: designedFor, onChange: event => setDesignedFor(event.target.value), className: 'max-w-full bg-background', children: [jsx('option', { value: 'all', children: 'Any classification' }, 'all')].concat(metadata.classifications.map(label => jsx('option', { value: label, children: label }, label))) }, 'select')] }),
+          jsx('label', { children: ['Source ', jsx('select', { 'aria-label': 'Source', value: sourceFilter, onChange: event => setSourceFilter(event.target.value), className: 'max-w-full bg-background', children: [jsx('option', { value: 'all', children: 'Any source' }, 'all')].concat(sources.map(source => jsx('option', { value: source, children: source }, source))) }, 'select')] }),
+          jsx(Button, { variant: 'ghost', size: 'xs', onClick: () => { setCategoryFilter('all'); setDesignedFor('all'); setSourceFilter('all') }, children: 'Clear filters' })
+        ] }) : null,
+        details ? jsx(SkillDetails, { skill: details, onClose: () => setDetails(null) }) : null,
         jsxs('label', { className: 'flex items-center gap-2 text-xs', children: [
           jsx('input', { type: 'checkbox', checked: allVisibleSelected, onChange: event => setAllVisible(event.target.checked), 'aria-label': t('selectAllVisible') }),
           t('selectAllVisible'),
@@ -2982,7 +949,7 @@ function SingleToolView({ tool, skills, busy, onBack, onToggle, onBulk }) {
             const isCollapsed = collapsed.has(group.category)
             const ids = group.skills.map(skill => skill.id)
             return jsxs('section', { 'data-tool-category': group.category, children: [
-              jsxs('div', { className: 'sticky top-0 z-10 flex items-center gap-2 bg-background py-1', children: [
+              jsxs('div', { className: 'sticky top-0 z-10 flex flex-wrap items-center gap-2 bg-background py-1', children: [
                 jsx('button', { type: 'button', 'aria-expanded': !isCollapsed, onClick: () => toggleCollapsed(group.category), className: 'font-medium', children: `${isCollapsed ? '▸' : '▾'} ${group.category}` }),
                 jsx(Badge, { variant: 'outline', size: 'xs', children: String(group.skills.length) }),
                 jsxs('span', { className: 'ml-auto flex gap-1', children: [
@@ -2993,12 +960,12 @@ function SingleToolView({ tool, skills, busy, onBack, onToggle, onBulk }) {
               isCollapsed ? null : jsx('div', { children: group.skills.map(skill => {
                 const entry = skill.tools && skill.tools[tool.id]
                 const stateName = entry ? entry.state : 'missing'
-                const locked = stateName === 'foreign-link' || stateName === 'unmanaged-dir'
+                const locked = isProblemState(stateName) && stateName !== 'broken-link'
                 return jsxs('div', { 'data-single-tool-skill': skill.id, className: 'flex items-center gap-2 rounded-md px-2 py-2 hover:bg-(--chrome-action-hover)', children: [
                   jsx('input', { type: 'checkbox', checked: selected.has(skill.id), onChange: () => toggleSelected(skill.id), 'aria-label': t('selectSkill', skill.name) }),
                   jsx(StatusDot, { tone: isProblemState(stateName) ? 'warn' : stateName === 'enabled' ? 'good' : 'muted' }),
                   jsxs('span', { className: 'min-w-0 flex-1', children: [
-                    jsx('span', { className: 'block truncate font-medium', children: skill.name }),
+                    jsx('button', { type: 'button', onClick: () => setDetails(skill), className: 'block max-w-full truncate text-left font-medium', 'aria-label': `Details for ${skill.name}`, children: skill.name }),
                     skill.description ? jsx('span', { className: 'block truncate text-xs text-muted-foreground', children: skill.description }) : null
                   ] }),
                   jsx('span', { className: 'text-xs text-muted-foreground', children: stateName }),
@@ -3008,7 +975,7 @@ function SingleToolView({ tool, skills, busy, onBack, onToggle, onBulk }) {
             ] }, group.category)
           }) })
         : jsx(EmptyState, { title: t('noMatchTitle'), description: t('noMatchDesc') }) }),
-      selectedIds.length ? jsxs('div', { 'data-selection-bar': 'sticky', className: 'sticky bottom-0 flex items-center gap-2 border-t border-(--ui-stroke-secondary) bg-background p-3', children: [
+      selectedIds.length ? jsxs('div', { 'data-selection-bar': 'sticky', className: 'sticky bottom-0 flex flex-wrap items-center gap-2 border-t border-(--ui-stroke-secondary) bg-background p-3', children: [
         jsx('span', { className: 'text-xs font-medium', children: t('selectedCount', selectedIds.length) }),
         jsx(Button, { variant: 'secondary', size: 'xs', disabled: busy, onClick: () => onBulk(selectedIds, true, t('scopeSelected', selectedIds.length)), children: t('enableSelected') }),
         jsx(Button, { variant: 'secondary', size: 'xs', disabled: busy, onClick: () => onBulk(selectedIds, false, t('scopeSelected', selectedIds.length)), children: t('disableSelected') })
@@ -3117,13 +1084,13 @@ function ExpertMatrix({ skills, tools, busy, onToggle }) {
                     tools.map(tool => {
                       const entry = skill.tools && skill.tools[tool.id]
                       const stateName = entry ? entry.state : 'missing'
-                      const locked = stateName === 'foreign-link' || stateName === 'unmanaged-dir'
+                      const locked = isProblemState(stateName) && stateName !== 'broken-link'
                       return jsx('td', {
                         className: 'border-b border-(--ui-stroke-secondary) px-2 py-2 text-center',
                         children: jsx(Switch, {
                           size: 'xs',
                           checked: stateName === 'enabled',
-                          disabled: busy || locked,
+                          disabled: busy || !!tool.read_only || locked,
                           'aria-label': `${skill.name} — ${tool.label}`,
                           onCheckedChange: enabled => onToggle(skill, tool, enabled)
                         })
@@ -3139,20 +1106,456 @@ function ExpertMatrix({ skills, tools, busy, onToggle }) {
   })
 }
 
+// One backend catalog drives discovery, labels, and resolved target paths.
+// The desktop bundle stays a single no-build ESM file for the Hermes loader.
+function ClientLibrary({ onBack }) {
+  const t = usePluginI18n(ID)
+  const qc = useQueryClient()
+  const [scope, setScope] = useState('global')
+  const [search, setSearch] = useState('')
+  const [projectInput, setProjectInput] = useState('')
+  const [projectRoot, setProjectRoot] = useState('')
+  const [revision, setRevision] = useState(0)
+  const [catalog, setCatalog] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [notice, setNotice] = useState('')
+  const [customId, setCustomId] = useState('')
+  const [customLabel, setCustomLabel] = useState('')
+  const [customPath, setCustomPath] = useState('')
+  const searchRef = useRef(null)
+
+  useEffect(() => { searchRef.current?.focus() }, [])
+  useEffect(() => {
+    let active = true
+    setLoading(true)
+    setError('')
+    setCatalog(null)
+    const path = '/clients' + (scope === 'project' && projectRoot ? '?project_root=' + encodeURIComponent(projectRoot) : '')
+    if (scope === 'project' && !projectRoot) {
+      setLoading(false)
+      return () => { active = false }
+    }
+    Promise.resolve().then(() => pluginCtx.rest(path)).then(response => {
+      if (!active) return
+      if (!response || response.ok !== true) throw new Error(response?.error || t('libraryUnavailable'))
+      if (response.catalog_version !== 1 || !Array.isArray(response.clients)) throw new Error(t('libraryVersion'))
+      setCatalog(response)
+    }).catch(reason => { if (active) setError(reason.message || t('libraryUnavailable')) })
+      .finally(() => { if (active) setLoading(false) })
+    return () => { active = false }
+  }, [scope, projectRoot, revision])
+
+  const activate = async (client, candidate) => {
+    setBusy(true)
+    setError('')
+    setNotice('')
+    try {
+      const response = await pluginCtx.rest('/clients/enable', { method: 'POST', body: {
+        client_id: client.id, scope: candidate.scope, candidate: candidate.index,
+        project_root: candidate.project_root || null, expected_dir: candidate.dir
+      } })
+      if (!response || response.ok !== true) throw new Error(response?.error || t('librarySaveFailed'))
+      qc.invalidateQueries({ queryKey: STATE_KEY })
+      setNotice(t('librarySaved', client.label))
+      setRevision(value => value + 1)
+    } catch (reason) { setError(reason.message || t('librarySaveFailed')) }
+    finally { setBusy(false) }
+  }
+  const addCustom = async () => {
+    setBusy(true)
+    setError('')
+    setNotice('')
+    try {
+      const response = await pluginCtx.rest('/config/tools', { method: 'POST', body: {
+        id: customId.trim(), label: customLabel.trim(), dir: customPath.trim()
+      } })
+      if (!response || response.ok !== true) throw new Error(response?.error || t('librarySaveFailed'))
+      qc.invalidateQueries({ queryKey: STATE_KEY })
+      setNotice(t('librarySaved', customLabel.trim()))
+      setCustomId(''); setCustomLabel(''); setCustomPath('')
+      setRevision(value => value + 1)
+    } catch (reason) { setError(reason.message || t('librarySaveFailed')) }
+    finally { setBusy(false) }
+  }
+  const term = search.trim().toLocaleLowerCase()
+  const clients = catalog ? catalog.clients.filter(client => !term || (client.label + ' ' + client.id).toLocaleLowerCase().includes(term)) : []
+  const available = clients.filter(client => client.skills && client.may_create && client.verification === 'documented')
+    .flatMap(client => (client.candidates || []).filter(candidate => candidate.scope === scope).map(candidate => ({ client, candidate })))
+  const renderGroup = (group, rows) => jsxs('section', {
+    'data-client-group': group,
+    className: 'flex min-w-0 flex-col gap-2',
+    children: [jsx('h3', { className: 'font-medium', children: t(group === 'detected' ? 'libraryDetected' : 'libraryAvailable') }),
+      ...rows.map(({ client, candidate }) => jsxs('div', {
+        'data-client-id': client.id, 'data-client-scope': candidate.scope,
+        className: 'flex min-w-0 flex-col gap-2 rounded-md border border-(--ui-stroke-secondary) p-3',
+        children: [
+          jsxs('div', { className: 'flex flex-wrap items-center gap-2', children: [
+            jsx('span', { className: 'font-medium', children: client.label }),
+            jsx(Badge, { size: 'xs', variant: 'outline', children: t(scope === 'global' ? 'globalScope' : 'projectScope') }),
+            jsx(Button, { variant: 'secondary', size: 'xs', className: 'ml-auto',
+              'aria-label': t('libraryConnectLabel', client.label, scope),
+              disabled: busy || !!candidate.error || !!candidate.configured_id || (scope === 'project' && projectInput.trim() !== projectRoot),
+              onClick: () => activate(client, candidate),
+              children: t(candidate.configured_id ? 'libraryConfigured' : 'libraryConnect') })
+          ] }),
+          jsx('code', { 'data-candidate-path': client.id, className: 'whitespace-normal break-words text-xs', children: candidate.dir || candidate.error }),
+          candidate.shared || (candidate.shared_with || []).length > 1 ? jsx('p', { className: 'text-xs text-(--ui-text-warning)', children: t('sharedDirectoryWarning') }) : null,
+          client.notes ? jsx('p', { className: 'text-xs text-muted-foreground', children: client.notes }) : null
+        ]
+      }, client.id + '-' + candidate.index))]
+  })
+  return jsxs('div', { 'data-client-library': scope, className: 'flex h-full min-w-0 flex-col', children: [
+    jsxs('div', { className: 'flex flex-wrap items-center gap-2 border-b border-(--ui-stroke-secondary) p-3', children: [
+      jsx(Button, { variant: 'ghost', size: 'xs', onClick: onBack, disabled: busy, children: t('libraryBack') }),
+      jsx('h2', { className: 'font-medium', children: t('libraryTitle') })
+    ] }),
+    jsx(ScrollArea, { className: 'min-h-0 flex-1', children: jsxs('div', { className: 'flex min-w-0 flex-col gap-4 p-4', children: [
+      jsx('p', { className: 'text-sm text-muted-foreground', children: t('libraryIntro') }),
+      jsx('input', { ref: searchRef, type: 'search', value: search, onChange: event => setSearch(event.target.value),
+        'aria-label': t('librarySearch'), placeholder: t('librarySearch'), className: 'w-full min-w-0 rounded-md border border-(--ui-stroke-secondary) bg-transparent p-2 text-sm' }),
+      jsxs('div', { role: 'group', 'aria-label': t('libraryScope'), className: 'flex flex-wrap gap-2', children: [
+        jsx(Button, { variant: scope === 'global' ? 'primary' : 'secondary', size: 'sm', disabled: busy, 'aria-pressed': scope === 'global', onClick: () => { setScope('global'); setNotice('') }, children: t('globalScope') }),
+        jsx(Button, { variant: scope === 'project' ? 'primary' : 'secondary', size: 'sm', disabled: busy, 'aria-pressed': scope === 'project', onClick: () => { setScope('project'); setNotice('') }, children: t('projectScope') })
+      ] }),
+      jsx('p', { className: 'text-xs text-muted-foreground', children: t(scope === 'global' ? 'globalScopeDesc' : 'projectScopeDesc') }),
+      scope === 'project' ? jsxs('div', { className: 'flex min-w-0 flex-col gap-2', children: [
+        jsx(Input, { value: projectInput, onChange: event => setProjectInput(event.target.value), 'aria-label': t('projectFolder'), placeholder: t('projectFolder'), className: 'min-w-0 flex-1' }),
+        jsx(Button, { variant: 'secondary', size: 'sm', disabled: busy || !projectInput.trim(), onClick: () => { setProjectRoot(projectInput.trim()); setRevision(value => value + 1) }, children: t('reviewProjectFolder') }),
+        projectRoot ? jsx('code', { className: 'break-words text-xs', children: projectRoot }) : null,
+        projectRoot && projectInput.trim() !== projectRoot ? jsx('p', { role: 'status', className: 'text-xs text-muted-foreground', children: t('projectReviewChanged') }) : null
+      ] }) : null,
+      notice ? jsx('div', { role: 'status', className: 'text-sm text-(--ui-text-success)', children: notice }) : null,
+      error ? jsxs('div', { role: 'alert', className: 'flex flex-col gap-2 text-sm text-(--ui-text-warning)', children: [
+        jsx('p', { children: error }), jsx('p', { className: 'text-xs', children: t('libraryRecovery') }),
+        jsx(Button, { variant: 'secondary', size: 'xs', onClick: () => setRevision(value => value + 1), children: t('retry') })
+      ] }) : null,
+      loading ? jsx(Skeleton, { className: 'h-40 w-full' }) : null,
+      !loading && catalog ? renderGroup('detected', available.filter(row => row.candidate.detected || row.candidate.configured_id)) : null,
+      !loading && catalog ? renderGroup('available', available.filter(row => !row.candidate.detected && !row.candidate.configured_id)) : null,
+      !loading && catalog && !available.length ? jsx('p', { className: 'text-sm text-muted-foreground', children: t('libraryNoMatches') }) : null,
+      jsxs('section', { 'data-client-group': 'custom', className: 'flex min-w-0 flex-col gap-2 border-t border-(--ui-stroke-secondary) pt-3', children: [
+        jsx('h3', { className: 'font-medium', children: t('libraryCustom') }),
+        jsx('p', { className: 'text-xs text-muted-foreground', children: t('libraryCustomDesc') }),
+        clients.filter(client => client.verification !== 'documented').map(client => jsx('p', { className: 'text-xs text-muted-foreground', children: client.label + ': ' + client.notes }, client.id)),
+        jsx(Input, { value: customId, onChange: event => setCustomId(event.target.value), 'aria-label': t('customClientId'), placeholder: t('customClientId') }),
+        jsx(Input, { value: customLabel, onChange: event => setCustomLabel(event.target.value), 'aria-label': t('customClientLabel'), placeholder: t('customClientLabel') }),
+        jsx(Input, { value: customPath, onChange: event => setCustomPath(event.target.value), 'aria-label': t('customClientPath'), placeholder: t('customClientPath') }),
+        customPath.trim() ? jsx('code', { className: 'break-words text-xs', children: customPath.trim() }) : null,
+        jsx(Button, { variant: 'secondary', size: 'sm', disabled: busy || !/^[a-z0-9-]{1,32}$/.test(customId.trim()) || customId.trim() === 'hermes' || !customLabel.trim() || !customPath.trim(), onClick: addCustom, children: t('saveCustomClient') })
+      ] })
+    ] }) })
+  ] })
+}
+
+// All activation paths share one reviewed operation and one recoverable undo point.
+const LOADOUTS_KEY = [ID, 'loadouts']
+const OPERATION_KEY = [ID, 'operation']
+const METADATA_KEY = [ID, 'metadata']
+const operationUIAtom = atom({ busy: false, preview: null, response: null, error: null })
+const selectedLoadoutAtom = atom(null)
+let reviewGeneration = 0
+
+function requireOk(response) {
+  if (!response || response.ok !== true) throw new Error(response && response.error || 'The backend could not finish this request. Refresh and try again.')
+  return response
+}
+
+function refreshInventory(qc) {
+  for (const key of [STATE_KEY, DIFF_KEY, DRIFT_KEY, MCP_KEY, OPERATION_KEY, LOADOUTS_KEY, METADATA_KEY]) {
+    qc.invalidateQueries({ queryKey: key })
+  }
+}
+
+function backendReady(state) {
+  return !!(state && state.ok && state.capabilities && state.capabilities.reviewed_operations === 1)
+}
+
+async function reviewOperation(path, body, applyPath = '/operations/apply') {
+  if (operationUIAtom.get().busy) return
+  const generation = ++reviewGeneration
+  const context = pluginCtx
+  operationUIAtom.set({ ...operationUIAtom.get(), busy: true, preview: null, error: null })
+  try {
+    const preview = requireOk(await context.rest(path, { method: 'POST', body: body }))
+    if (!preview.plan_id || !Array.isArray(preview.items)) throw new Error('The backend is an older version. Restart Hermes and retry.')
+    if (generation !== reviewGeneration || context !== pluginCtx) return
+    operationUIAtom.set({ ...operationUIAtom.get(), busy: false, preview: { ...preview, applyPath: applyPath } })
+  } catch (error) {
+    if (generation !== reviewGeneration || context !== pluginCtx) return
+    operationUIAtom.set({ ...operationUIAtom.get(), busy: false, preview: null, error: error.message })
+  }
+}
+
+function reviewSelections(states, label) {
+  return reviewOperation('/operations/plan', { states: states, label: label })
+}
+
+function cancelOperationReview() {
+  if (operationUIAtom.get().busy) return
+  reviewGeneration += 1
+  operationUIAtom.set({ ...operationUIAtom.get(), preview: null })
+}
+
+async function publishOperation(response, qc) {
+  operationUIAtom.set({ busy: false, preview: null, response: response, error: response && response.ok === false ? response.error : null })
+  refreshInventory(qc)
+  try {
+    const latest = requireOk(await pluginCtx.rest('/operations/latest'))
+    qc.setQueryData(OPERATION_KEY, latest)
+  } catch (_) {
+    // Keep the just-returned receipt visible even when a refresh cannot connect.
+  }
+}
+
+async function applyOperation(qc) {
+  const state = operationUIAtom.get()
+  if (state.busy || !state.preview) return
+  const preview = state.preview
+  operationUIAtom.set({ ...state, busy: true, error: null })
+  try {
+    const response = await pluginCtx.rest(preview.applyPath, { method: 'POST', body: { plan_id: preview.plan_id } })
+    await publishOperation(response, qc)
+    if (response && response.ok) haptic('tap')
+  } catch (_) {
+    // A disconnected response is ambiguous, not evidence that no write happened.
+    await publishOperation({ ok: false, error: 'The response was interrupted. Refresh the last change and inspect recovery before retrying.' }, qc)
+  }
+}
+
+function OperationItems({ items, tools }) {
+  const labelFor = app => app === 'library' ? 'Library' : app === 'claude-desktop' ? 'Claude Desktop' : ((tools || []).find(tool => tool.id === app)?.label || app)
+  const labels = { enable: 'Enable', disable: 'Disable', unchanged: 'Unchanged', unavailable: 'Unavailable',
+    conflict: 'Conflict', protected: 'Protected', completed: 'Completed', failed: 'Failed', replace: 'Replace reviewed copy', restore: 'Restore', pending: 'Needs recovery' }
+  return jsx('div', { className: 'flex max-h-64 flex-col gap-2 overflow-y-auto text-xs', children: (items || []).map((item, index) =>
+    jsxs('div', { 'data-operation-item': item.status || 'restore', className: 'min-w-0 rounded-md border border-(--ui-stroke-secondary) p-2', children: [
+      jsx('span', { className: 'block break-words font-medium', children: `${item.id || item.name} · ${labelFor(item.app || item.tool) || 'Library'}` }),
+      jsx('span', { className: 'text-muted-foreground', children: labels[item.status] || item.status || 'Remove broad link' }),
+      item.error || item.reason ? jsx('p', { className: 'mt-1 break-words text-muted-foreground', children: item.error || item.reason }) : null
+    ] }, `${item.kind || 'repair'}-${item.app || item.tool}-${item.id || item.name}-${index}`)) })
+}
+
+function OperationsPanel() {
+  const qc = useQueryClient()
+  const ui = useValue(operationUIAtom)
+  const [expanded, setExpanded] = useState(false)
+  const latestQuery = useQuery({ queryKey: OPERATION_KEY, queryFn: () => pluginCtx.rest('/operations/latest').then(requireOk), staleTime: 0, refetchOnWindowFocus: true, retry: 1 })
+  const stateQuery = useQuery({ queryKey: STATE_KEY, queryFn: () => pluginCtx.rest('/state'), staleTime: 10000 })
+  const latest = latestQuery.data
+  const responseReceipt = ui.response && (ui.response.operation || ui.response.receipt)
+  const receipt = responseReceipt || (latest && latest.receipt)
+  const recovery = (latest && latest.recovery_required) || (ui.response && ui.response.code === 'recovery-required')
+  const undo = latest && latest.receipt && latest.receipt.undo_available && !recovery
+  const preview = ui.preview
+  const actionable = preview && preview.items.some(item => ['enable', 'disable', 'restore', 'replace'].includes(item.status) || item.code === 'catalog-bypass')
+  const refresh = () => {
+    operationUIAtom.set({ ...operationUIAtom.get(), response: null, error: null })
+    refreshInventory(qc)
+    latestQuery.refetch()
+  }
+  return jsxs('div', { 'data-operation-panel': 'true', className: 'shrink-0 border-t border-(--ui-stroke-secondary) bg-background p-3 text-xs', children: [
+    jsxs('div', { className: 'flex flex-wrap items-center gap-2', children: [
+      jsx('span', { role: 'status', className: 'min-w-0 flex-1 break-words', children: ui.busy ? 'Working…' : recovery ? 'An interrupted change needs recovery.' : receipt ? `${receipt.label}: ${receipt.changed || 0} completed, ${receipt.skipped || 0} unchanged, ${receipt.failed || 0} not completed.` : 'No change to undo yet.' }),
+      receipt ? jsx(Button, { variant: 'ghost', size: 'xs', 'aria-expanded': expanded, onClick: () => setExpanded(value => !value), children: expanded ? 'Hide receipt' : 'Show receipt' }) : null,
+      jsx(Button, { variant: 'secondary', size: 'xs', disabled: ui.busy || !undo, onClick: () => reviewOperation('/operations/undo-plan', {}, '/operations/undo'), children: 'Undo last change' }),
+      jsx(Button, { variant: 'ghost', size: 'xs', disabled: ui.busy, onClick: refresh, children: 'Refresh last change' })
+    ] }),
+    jsx('p', { className: 'mt-1 text-muted-foreground', children: 'The next successful activation, import, repair, or restore replaces this undo point. Previewing or saving a loadout does not.' }),
+    ui.error ? jsx('p', { role: 'alert', className: 'mt-2 break-words text-(--ui-text-danger)', children: ui.error }) : null,
+    latestQuery.isError ? jsx('p', { role: 'alert', className: 'mt-2 text-(--ui-text-warning)', children: 'Recovery is unavailable. Fully restart Hermes after updating the backend, then refresh.' }) : null,
+    recovery ? jsx('p', { role: 'alert', className: 'mt-2 break-words text-(--ui-text-warning)', children: 'Stop changing these files. Preserve data/hermes-loadout/pending-operation.json and backups in the active Hermes profile. Inspect the affected entries before manual recovery, then refresh. Do not delete a pending record just to retry.' }) : null,
+    expanded && receipt ? jsx(OperationItems, { items: receipt.items, tools: stateQuery.data && stateQuery.data.tools }) : null,
+    jsx(ConfirmDialog, { open: !!preview, title: preview ? preview.label || 'Repair catalog bypass' : '',
+      description: preview ? jsxs('div', { className: 'flex min-w-0 flex-col gap-3', children: [
+        jsx('p', { className: 'text-sm', children: preview.description || 'Only the listed selections will change. Other applications and unlisted capabilities remain unchanged.' }),
+        jsx(OperationItems, { items: preview.items, tools: stateQuery.data && stateQuery.data.tools }),
+        jsx('p', { className: 'text-xs text-muted-foreground', children: actionable ? 'Refresh the affected application or start a new session afterward. Entries changed since this preview will be protected.' : 'Nothing in this preview can change safely. Close it and resolve the listed issues.' })
+      ] }) : null,
+      onClose: cancelOperationReview,
+      onConfirm: () => { if (!ui.busy) actionable ? applyOperation(qc) : cancelOperationReview() },
+      confirmLabel: ui.busy ? 'Working…' : actionable ? 'Apply reviewed changes' : 'Close preview' })
+  ] })
+}
+
+function useSavedLoadouts() {
+  return useQuery({ queryKey: LOADOUTS_KEY, queryFn: () => pluginCtx.rest('/loadouts').then(requireOk), staleTime: 10000, retry: 1 })
+}
+
+function selectLoadout(id) {
+  selectedLoadoutAtom.set(id || null)
+  storeSet('selectedLoadout', id || null)
+}
+
+function LoadoutPicker() {
+  const controlId = useId()
+  const query = useSavedLoadouts()
+  const active = useValue(selectedLoadoutAtom) || ''
+  const operation = useValue(operationUIAtom)
+  const rows = query.data && query.data.ok && Array.isArray(query.data.loadouts) ? query.data.loadouts : []
+  const selected = rows.some(row => row.id === active) ? active : ''
+  return jsxs('div', { 'data-loadout-picker': 'true', className: 'flex min-w-0 flex-wrap items-center gap-2', children: [
+    jsx('label', { htmlFor: controlId, className: 'text-xs text-muted-foreground', children: 'Loadout' }),
+    jsx('select', { id: controlId, 'aria-label': 'Saved loadout', value: selected, disabled: query.isPending || operation.busy,
+      className: 'min-w-0 max-w-full flex-1 rounded-md border border-(--ui-stroke-secondary) bg-background px-2 py-1 text-xs',
+      onChange: event => selectLoadout(event.target.value), children: [jsx('option', { value: '', children: query.isError ? 'Unavailable, retry in Loadouts' : rows.length ? 'Choose a saved loadout' : 'No saved loadouts yet' }, 'none')].concat(rows.map(row => jsx('option', { value: row.id, children: row.name }, row.id))) }),
+    jsx(Button, { variant: 'secondary', size: 'xs', disabled: !selected || operation.busy, onClick: () => reviewOperation('/loadouts/plan', { loadout_id: selected }), children: 'Review loadout' }),
+    jsx(Button, { variant: 'ghost', size: 'xs', onClick: () => ccSectionAtom.set('loadouts'), children: 'Manage loadouts' })
+  ] })
+}
+
+const selectionKey = row => `${row.kind}\u0000${row.app}\u0000${row.id}`
+
+function LoadoutManager() {
+  const editorId = useId()
+  const editingSelection = useRef(undefined)
+  const query = useSavedLoadouts()
+  const qc = useQueryClient()
+  const operation = useValue(operationUIAtom)
+  const selected = useValue(selectedLoadoutAtom) || ''
+  const [draft, setDraft] = useState(null)
+  const [apps, setApps] = useState([])
+  const [editingApp, setEditingApp] = useState('hermes')
+  const [search, setSearch] = useState('')
+  const [editingCapabilities, setEditingCapabilities] = useState(false)
+  const [working, setWorking] = useState(false)
+  const [error, setError] = useState(null)
+  const [notice, setNotice] = useState(null)
+  const [deleting, setDeleting] = useState(false)
+  const stateQuery = useQuery({ queryKey: STATE_KEY, queryFn: () => pluginCtx.rest('/state').then(requireOk), staleTime: 10000 })
+  const mcpQuery = useQuery({ queryKey: MCP_KEY, queryFn: () => pluginCtx.rest('/mcp/state').then(requireOk), staleTime: 10000 })
+  const state = stateQuery.data
+  const list = query.data && Array.isArray(query.data.loadouts) ? query.data.loadouts : []
+  const record = list.find(row => row.id === selected)
+  const availableApps = state && state.ok ? state.tools.map(tool => ({ id: tool.id, label: tool.label })) : []
+  for (const app of [{ id: 'hermes', label: 'Hermes' }, { id: 'codex', label: 'Codex' }, { id: 'claude-desktop', label: 'Claude Desktop' }]) {
+    if (!availableApps.some(row => row.id === app.id)) availableApps.push(app)
+  }
+  for (const row of draft && draft.states || []) {
+    if (!availableApps.some(app => app.id === row.app)) availableApps.push({ id: row.app, label: `${row.app} (unavailable)` })
+  }
+  const beginEdit = row => {
+    setDraft({ id: row.id || null, name: row.name, states: row.states.map(item => ({ ...item })) })
+    const ids = Array.from(new Set(row.states.map(item => item.app)))
+    setApps(ids.length ? ids : ['hermes'])
+    setEditingApp(ids[0] || 'hermes')
+    setError(null); setNotice(null); setEditingCapabilities(false)
+  }
+  // Hydrate when selection changes, not on background refreshes that could
+  // erase unsaved edits. An explicit New draft has no saved selection.
+  useEffect(() => {
+    if (editingSelection.current === selected || (selected && !record)) return
+    editingSelection.current = selected
+    if (record) beginEdit(record)
+    else setDraft(null)
+  }, [selected, record])
+  const updateRecord = async (path, body) => {
+    if (working) return
+    setWorking(true); setError(null); setNotice(null)
+    try {
+      const result = requireOk(await pluginCtx.rest(path, { method: 'POST', body: body }))
+      const data = requireOk(await pluginCtx.rest('/loadouts'))
+      qc.setQueryData(LOADOUTS_KEY, data)
+      if (body.action === 'delete') { selectLoadout(''); setDraft(null) }
+      else { editingSelection.current = result.loadout.id; selectLoadout(result.loadout.id); beginEdit(result.loadout) }
+      setNotice(body.action === 'delete' ? 'Loadout deleted. Application activation was not changed.' : 'Loadout saved. Application activation was not changed.')
+    } catch (caught) { setError(caught.message) }
+    finally { setWorking(false); setDeleting(false) }
+  }
+  const capture = async () => {
+    if (working || !apps.length) return
+    setWorking(true); setError(null)
+    try {
+      const data = requireOk(await pluginCtx.rest('/loadouts/capture', { method: 'POST', body: { apps: apps } }))
+      setDraft(previous => ({ ...previous, states: data.states }))
+      setNotice(`${data.states.length} current selections captured into this draft. ${(data.excluded || []).length} protected or unavailable selections were not captured. Nothing was activated.`)
+      setEditingCapabilities(true)
+    } catch (caught) { setError(caught.message) }
+    finally { setWorking(false) }
+  }
+  const changeApp = (app, checked) => {
+    setApps(previous => checked ? [...previous, app] : previous.filter(id => id !== app))
+    if (!checked) setDraft(previous => ({ ...previous, states: previous.states.filter(row => row.app !== app) }))
+    if (checked) setEditingApp(app)
+  }
+  const setDesired = (row, value) => setDraft(previous => {
+    const rest = previous.states.filter(item => selectionKey(item) !== selectionKey(row))
+    return { ...previous, states: value === 'ignore' ? rest : rest.concat({ kind: row.kind, app: row.app, id: row.id, enabled: value === 'on' }) }
+  })
+  const capabilities = []
+  if (apps.includes(editingApp) && state && state.ok && state.tools.some(tool => tool.id === editingApp)) {
+    for (const skill of state.skills) capabilities.push({ kind: 'skill', app: editingApp, id: skill.id, label: skill.name })
+  }
+  if (apps.includes(editingApp) && ['hermes', 'codex', 'claude-desktop'].includes(editingApp) && mcpQuery.data && mcpQuery.data.ok) {
+    for (const server of mcpQuery.data.rows) capabilities.push({ kind: 'mcp', app: editingApp, id: server.name, label: server.name })
+  }
+  for (const row of draft && draft.states || []) {
+    if (row.app === editingApp && !capabilities.some(item => selectionKey(item) === selectionKey(row))) capabilities.push({ ...row, label: row.id, unavailable: true })
+  }
+  const filtered = capabilities.filter(row => `${row.label} ${row.kind}`.toLowerCase().includes(search.toLowerCase()))
+  const dirty = draft && (!record || draft.name !== record.name || JSON.stringify(draft.states) !== JSON.stringify(record.states))
+  const busy = working || operation.busy || !!operation.preview || !backendReady(state)
+  if (query.isPending) return jsx(Skeleton, { className: 'm-3 h-32' })
+  if (query.isError || !query.data || query.data.ok !== true) return jsx(ErrorState, { title: 'Loadouts unavailable', description: 'Restart the updated backend or correct its saved records, then retry.', children: jsx(Button, { onClick: () => query.refetch(), children: 'Retry' }) })
+  return jsx(ScrollArea, { className: 'h-full', children: jsxs('div', { 'data-loadout-manager': 'true', className: 'flex min-w-0 flex-col gap-3 p-3', children: [
+    jsxs('div', { className: 'flex flex-wrap items-center gap-2', children: [jsx('h2', { className: 'font-medium', children: 'Named loadouts' }), jsx(Button, { variant: 'primary', size: 'xs', disabled: busy, onClick: () => { editingSelection.current = ''; selectLoadout(''); beginEdit({ name: '', states: [] }) }, children: 'New loadout' })] }),
+    jsx('p', { className: 'text-xs text-muted-foreground', children: 'Save desired skill and MCP states for selected applications. Saving never applies them. Unlisted capabilities remain unchanged when you apply.' }),
+    jsx(LoadoutPicker, {}),
+    notice ? jsx('p', { role: 'status', className: 'text-xs text-muted-foreground', children: notice }) : null,
+    error ? jsx('p', { role: 'alert', className: 'break-words text-xs text-(--ui-text-danger)', children: error }) : null,
+    !draft ? jsx(EmptyState, { title: 'Choose or create a loadout', description: 'Start empty, or capture your current choices. No starter activates capabilities for you.' }) : jsxs('div', { className: 'flex min-w-0 flex-col gap-3', children: [
+      jsx('label', { htmlFor: `${editorId}-name`, className: 'text-xs', children: 'Name' }),
+      jsx(Input, { id: `${editorId}-name`, 'aria-label': 'Loadout name', maxLength: 64, value: draft.name, onChange: event => setDraft(previous => ({ ...previous, name: event.target.value })), placeholder: 'For example, Research', disabled: busy }),
+      jsx('fieldset', { className: 'min-w-0', children: [jsx('legend', { className: 'mb-2 text-xs', children: 'Applications in this loadout' }, 'legend'), jsx('div', { className: 'flex flex-wrap gap-3', children: availableApps.map(app => jsxs('label', { className: 'flex items-center gap-1.5 text-xs', children: [jsx('input', { type: 'checkbox', checked: apps.includes(app.id), disabled: busy, 'aria-label': `Include ${app.label}`, onChange: event => changeApp(app.id, event.target.checked) }), app.label] }, app.id)) }, 'choices')] }),
+      jsxs('div', { className: 'flex flex-wrap items-center gap-2', children: [
+        jsx(Button, { variant: 'secondary', size: 'xs', disabled: busy || !apps.length || !backendReady(state), onClick: capture, children: 'Capture current selections' }),
+        jsx(Button, { variant: 'ghost', size: 'xs', 'aria-expanded': editingCapabilities, onClick: () => setEditingCapabilities(value => !value), children: editingCapabilities ? 'Hide capability choices' : 'Edit capabilities' }),
+        jsx('span', { className: 'text-xs text-muted-foreground', children: `${draft.states.length} explicit selections` })
+      ] }),
+      editingCapabilities ? jsxs('section', { className: 'flex min-w-0 flex-col gap-2 rounded-md border border-(--ui-stroke-secondary) p-3', children: [
+        jsx('label', { htmlFor: `${editorId}-app`, className: 'text-xs', children: 'Edit one application' }),
+        jsx('select', { id: `${editorId}-app`, 'aria-label': 'Edit application', value: editingApp, onChange: event => setEditingApp(event.target.value), className: 'max-w-full rounded-md border border-(--ui-stroke-secondary) bg-background p-1 text-xs', children: availableApps.filter(app => apps.includes(app.id)).map(app => jsx('option', { value: app.id, children: app.label }, app.id)) }),
+        jsx(SearchField, { 'aria-label': 'Find a capability', placeholder: 'Find a skill or MCP server', value: search, onChange: setSearch }),
+        jsx('p', { className: 'text-xs text-muted-foreground', children: 'Leave unchanged excludes an entry from this loadout. On and Off are explicit desired states, not live switches.' }),
+        filtered.slice(0, 100).map(row => {
+          const desired = draft.states.find(item => selectionKey(item) === selectionKey(row))
+          return jsxs('label', { className: 'flex min-w-0 flex-wrap items-center gap-2 text-xs', children: [
+            jsx('span', { className: 'min-w-0 flex-1 break-words', children: `${row.label} (${row.kind === 'mcp' ? 'MCP' : 'Skill'}${row.unavailable ? ', unavailable' : ''})` }),
+            jsx('select', { 'aria-label': `Desired ${row.kind} ${row.label} in ${editingApp}`, value: desired ? desired.enabled ? 'on' : 'off' : 'ignore', disabled: busy,
+              className: 'max-w-full rounded-md border border-(--ui-stroke-secondary) bg-background p-1', onChange: event => setDesired(row, event.target.value), children: [jsx('option', { value: 'ignore', children: 'Leave unchanged' }, 'ignore'), jsx('option', { value: 'on', children: 'On' }, 'on'), jsx('option', { value: 'off', children: 'Off' }, 'off')] })
+          ] }, selectionKey(row))
+        }),
+        filtered.length > 100 ? jsx('p', { className: 'text-xs text-muted-foreground', children: `Showing 100 of ${filtered.length}. Refine the search to edit the rest; all saved selections are retained.` }) : null
+      ] }) : null,
+      jsxs('div', { className: 'flex flex-wrap gap-2', children: [
+        jsx(Button, { variant: 'primary', size: 'xs', disabled: busy || !draft.name.trim(), onClick: () => updateRecord('/loadouts/save', { name: draft.name, states: draft.states, ...(draft.id ? { loadout_id: draft.id } : {}) }), children: 'Save loadout' }),
+        jsx(Button, { variant: 'secondary', size: 'xs', disabled: busy || !draft.id || dirty, onClick: () => reviewOperation('/loadouts/plan', { loadout_id: draft.id }), children: 'Review saved loadout' }),
+        jsx(Button, { variant: 'ghost', size: 'xs', disabled: busy || !draft.id, onClick: () => updateRecord('/loadouts/edit', { loadout_id: draft.id, action: 'duplicate' }), children: 'Duplicate' }),
+        jsx(Button, { variant: 'ghost', size: 'xs', disabled: busy || !draft.id, onClick: () => setDeleting(true), children: 'Delete loadout' })
+      ] }),
+      dirty ? jsx('p', { className: 'text-xs text-muted-foreground', children: 'Save your edits before applying this loadout.' }) : null
+    ] }),
+    jsx(ConfirmDialog, { open: deleting, title: 'Delete this saved loadout?', description: 'This removes the saved selection only. No application or skill files will change.', confirmLabel: 'Delete loadout', onClose: () => setDeleting(false), onConfirm: () => draft && updateRecord('/loadouts/edit', { loadout_id: draft.id, action: 'delete' }) })
+  ] }) })
+}
+
+function ArrivalBanner({ arrivals, onDismiss }) {
+  return jsxs('aside', { 'data-arrivals': 'true', className: 'm-3 flex flex-wrap items-center gap-2 rounded-md border border-(--ui-stroke-secondary) p-3 text-xs', children: [
+    jsx('p', { className: 'min-w-0 flex-1', children: `${arrivals.length} newly observed skills. Discovery does not enable them.` }),
+    jsx(Button, { variant: 'ghost', size: 'xs', onClick: onDismiss, children: 'Dismiss' })
+  ] })
+}
+
 function ToolsOverview({ layout }) {
   const t = usePluginI18n(ID)
   const qc = useQueryClient()
   const onboarding = storeGet(ONBOARDING_KEY, { version: ONBOARDING_VERSION, complete: false })
   const onboardingComplete = onboarding && onboarding.version === ONBOARDING_VERSION && onboarding.complete === true
   const [selectedTool, setSelectedTool] = useState(null)
+  const [showLibrary, setShowLibrary] = useState(false)
   const [viewMode, setViewMode] = useState('cards')
-  const [confirm, setConfirm] = useState(null)
-  const [undo, setUndo] = useState(null)
-  const [receipt, setReceipt] = useState(null)
-  const [taskBusy, setTaskBusy] = useState(false)
+  const operation = useValue(operationUIAtom)
   const arrivals = useValue(arrivalsAtom)
-  const [autoLink, setAutoLinkState] = useState(() => getAutoLinkPrefs())
-  const [arrivalBusy, setArrivalBusy] = useState(false)
   const stateQuery = useQuery({
     queryKey: STATE_KEY,
     queryFn: () => (pluginCtx ? pluginCtx.rest('/state') : Promise.reject(new Error('no backend'))),
@@ -3186,13 +1589,7 @@ function ToolsOverview({ layout }) {
     : null
   const tools = [hermes || { id: 'hermes', label: 'Hermes', special: 'config' }, ...linkTools]
   const problemTotals = summaryProblemTotals(diffQuery.data, driftQuery.data)
-  const overviewProblems = problemTotals.broken + problemTotals.foreign + problemTotals.unmanaged
-
-  useEffect(() => {
-    if (!undo) return undefined
-    const timer = setTimeout(() => setUndo(null), Math.max(0, undo.expires - Date.now()))
-    return () => clearTimeout(timer)
-  }, [undo])
+  const overviewIssues = problemTotals.broken + problemTotals.drifted + problemTotals.bypasses
 
   useEffect(() => {
     if (layout !== 'wide') setViewMode('cards')
@@ -3210,155 +1607,34 @@ function ToolsOverview({ layout }) {
     return { enabled: enabledByTool.get(toolId) || 0, total: skills.length, off: off, problem: problem }
   }
 
-  const applyMutation = useMutation({
-    mutationFn: vars => pluginCtx.rest('/bulk/apply', {
-      method: 'POST', body: { skills: vars.skillIds, tool: vars.tool.id, enabled: vars.enabled, receipt_id: vars.receiptId }
-    }),
-    onSuccess: (data, vars) => {
-      if (!data || data.ok !== true) {
-        host.notify({ kind: 'error', message: t('bulkFailed') })
-        return
-      }
-      const resultReceipt = data.receipt || {}
-      const undoActions = (Array.isArray(resultReceipt.undone_by) ? resultReceipt.undone_by : [])
-        .map(item => ({ skill: item.skill, tool: vars.tool.id, enabled: item.enabled }))
-      if (undoActions.length) {
-        setUndo({ actions: undoActions, count: undoActions.length, expires: Date.now() + 30000 })
-      }
-      setReceipt({ tool: vars.tool, results: Array.isArray(data.results) ? data.results : [], receipt: resultReceipt })
-      haptic('tap')
-      host.notify({ kind: resultReceipt.failed ? 'error' : 'success', message: t('toastBulk', resultReceipt.changed || 0, resultReceipt.failed || 0) })
-    },
-    onError: err => host.notifyError(err, t('bulkFailed')),
-    onSettled: () => {
-      qc.invalidateQueries({ queryKey: STATE_KEY })
-      qc.invalidateQueries({ queryKey: DIFF_KEY })
-      qc.invalidateQueries({ queryKey: DRIFT_KEY })
-    }
+  const busy = operation.busy || !!operation.preview || !backendReady(state)
+  const openBulkPlan = (tool, enabled, skillIds) => reviewSelections(
+    skillIds.map(id => ({ kind: 'skill', app: tool.id, id: id, enabled: enabled })),
+    `${enabled ? 'Enable' : 'Disable'} skills in ${tool.label}`)
+  const onToggle = (skill, tool, enabled) => reviewSelections(
+    [{ kind: 'skill', app: tool.id, id: skill.id, enabled: enabled }],
+    `${enabled ? 'Enable' : 'Disable'} ${skill.name}`)
+  const onArrivalDismiss = () => { markSkillsSeen(arrivals); arrivalsAtom.set([]) }
+
+  if (state && (!state.ok || !backendReady(state))) return jsx(ErrorState, {
+    title: 'Backend update required', description: state.error || 'Fully restart Hermes after updating Loadout. Activation stays unavailable until the matching backend responds.',
+    children: jsx(Button, { variant: 'secondary', size: 'xs', onClick: () => stateQuery.refetch(), children: 'Retry' })
   })
-
-  const planMutation = useMutation({
-    mutationFn: vars => pluginCtx.rest('/bulk/plan', { method: 'POST', body: { skills: vars.skillIds, tool: vars.tool.id, enabled: vars.enabled } }),
-    onSuccess: (plan, vars) => {
-      if (!plan || plan.ok !== true) {
-        host.notify({ kind: 'error', message: t('bulkPlanFailed') })
-        return
-      }
-      const exactIds = Array.isArray(plan.would_change) ? plan.would_change.slice() : []
-      setConfirm({
-        title: vars.enabled ? t('bulkOnScopeTitle', vars.scope, vars.tool.label) : t('bulkOffScopeTitle', vars.scope, vars.tool.label),
-        description: jsx(BulkPlanPreview, { plan: plan }),
-        confirmLabel: vars.enabled ? t('confirmEnable') : t('confirmDisable'),
-        destructive: !vars.enabled,
-        action: () => {
-          setConfirm(null)
-          applyMutation.mutate({ skillIds: exactIds, tool: vars.tool, enabled: vars.enabled })
-        }
-      })
-    },
-    onError: err => host.notifyError(err, t('bulkPlanFailed'))
-  })
-
-  const openBulkPlan = (tool, enabled, skillIds, scope) => {
-    planMutation.mutate({ tool: tool, enabled: enabled, skillIds: skillIds.slice(), scope: scope || t('scopeAll') })
-  }
-
-  const toggleMutation = useMutation({
-    mutationFn: vars => pluginCtx.rest('/toggle', { method: 'POST', body: { skill: vars.skill.id, tool: vars.tool.id, enabled: vars.enabled } }),
-    onSuccess: data => {
-      if (!data || data.ok !== true) host.notify({ kind: 'error', message: data && data.error ? data.error : t('toggleFailed') })
-      else haptic('tap')
-    },
-    onError: err => host.notifyError(err, t('toggleFailed')),
-    onSettled: () => {
-      qc.invalidateQueries({ queryKey: STATE_KEY })
-      qc.invalidateQueries({ queryKey: DIFF_KEY })
-      qc.invalidateQueries({ queryKey: DRIFT_KEY })
-    }
-  })
-
-  const onUndo = useCallback(() => {
-    if (!undo) return
-    const byEnabled = new Map()
-    for (const action of undo.actions) {
-      const entry = byEnabled.get(action.enabled) || []
-      entry.push(action.skill)
-      byEnabled.set(action.enabled, entry)
-    }
-    setUndo(null)
-    setTaskBusy(true)
-    Promise.all(Array.from(byEnabled.entries()).map(([enabled, skillIds]) =>
-      pluginCtx.rest('/bulk/apply', {
-        method: 'POST', body: { skills: skillIds, tool: undo.actions[0].tool, enabled: enabled }
-      })
-    )).then(responses => {
-      const response = responses[responses.length - 1]
-      if (response && response.receipt) {
-        const tool = tools.find(item => item.id === response.receipt.tool) || { id: response.receipt.tool, label: response.receipt.tool }
-        setReceipt({ tool: tool, results: response.results || [], receipt: response.receipt })
-      }
-      host.notify({ kind: 'success', message: t('toastBulkDone', undo.count) })
-    }).catch(err => host.notifyError(err, t('undoFailed'))).finally(() => {
-      setTaskBusy(false)
-      qc.invalidateQueries({ queryKey: STATE_KEY })
-      qc.invalidateQueries({ queryKey: DIFF_KEY })
-      qc.invalidateQueries({ queryKey: DRIFT_KEY })
-    })
-  }, [undo, qc, t])
-
-  const busy = taskBusy || planMutation.isPending || applyMutation.isPending || toggleMutation.isPending
-  const onArrivalLink = toolIds => {
-    if (!arrivals.length || !toolIds.length) return
-    setArrivalBusy(true)
-    Promise.all(toolIds.map(tool => pluginCtx.rest('/toggle-bulk', {
-      method: 'POST', body: { skills: arrivals.slice(), tool: tool, enabled: true }
-    }))).then(() => {
-      markSkillsSeen(arrivals)
-      arrivalsAtom.set([])
-      host.notify({ kind: 'success', message: t('toastAutoLinked', arrivals.length) })
-    }).catch(err => host.notifyError(err, t('bulkFailed'))).finally(() => {
-      setArrivalBusy(false)
-      qc.invalidateQueries({ queryKey: STATE_KEY })
-      qc.invalidateQueries({ queryKey: DIFF_KEY })
-    })
-  }
-  const onArrivalDismiss = () => {
-    markSkillsSeen(arrivals)
-    arrivalsAtom.set([])
-  }
-  const onToggleAutoLink = toolId => {
-    const prefs = getAutoLinkPrefs()
-    if (prefs[toolId]) delete prefs[toolId]
-    else prefs[toolId] = true
-    setAutoLinkPrefs(prefs)
-    setAutoLinkState({ ...prefs })
-  }
-  const sharedConfirm = jsx(ConfirmDialog, {
-    open: !!confirm,
-    onClose: () => setConfirm(null),
-    onConfirm: confirm ? confirm.action : () => undefined,
-    title: confirm ? confirm.title : '',
-    description: confirm ? confirm.description : undefined,
-    confirmLabel: confirm ? confirm.confirmLabel : undefined,
-    destructive: confirm ? confirm.destructive : false
-  })
-
+  if (showLibrary) return jsx(ClientLibrary, { onBack: () => setShowLibrary(false) })
   if (selectedTool) {
+    const currentTool = tools.find(tool => tool.id === selectedTool.id) || selectedTool
     return jsxs('div', {
       'data-single-tool-layout': 'true',
       className: 'flex h-full min-w-0 flex-col',
       children: [
         jsx('div', { 'data-single-tool-shell': 'true', className: 'min-h-0 min-w-0 flex-1', children: jsx(SingleToolView, {
-          tool: selectedTool,
+          tool: currentTool,
           skills: skills,
-          busy: busy,
+          busy: busy || !!currentTool.read_only,
           onBack: () => setSelectedTool(null),
-          onToggle: (skill, enabled) => toggleMutation.mutate({ skill: skill, tool: selectedTool, enabled: enabled }),
+          onToggle: (skill, enabled) => onToggle(skill, currentTool, enabled),
           onBulk: (skillIds, enabled, scope) => openBulkPlan(selectedTool, enabled, skillIds, scope)
-        }) }),
-        receipt ? jsx(BulkReceipt, { receipt: receipt, tool: receipt.tool }) : null,
-        jsx(UndoBanner, { undo: undo, onUndo: onUndo, busy: busy }),
-        sharedConfirm
+        }) })
       ]
     })
   }
@@ -3366,19 +1642,19 @@ function ToolsOverview({ layout }) {
   let body
   if (stateQuery.isPending || (stateQuery.isLoading && !state)) {
     body = jsx('div', { className: 'grid grid-cols-1 gap-3 p-4', children: [0, 1, 2].map(index => jsx(Skeleton, { className: 'h-40 w-full' }, `tool-card-${index}`)) })
-  } else if (stateQuery.isError) {
+  } else if (stateQuery.isError || (state && state.ok === false)) {
     body = jsx(ErrorState, {
-      title: t('errorTitle'), description: t('errorDesc'),
+      title: t('errorTitle'), description: state?.error || t('errorDesc'),
       children: jsx(Button, { variant: 'secondary', size: 'xs', onClick: () => stateQuery.refetch(), children: t('retry') })
     })
   } else if (state && state.ok && !state.skills_root_exists) {
-    body = jsx(EmptyState, { title: t('noRootTitle'), description: t('noRootDesc') })
+    body = jsx(EmptyState, { title: t('noRootTitle'), description: t('noRootDesc'), children: jsx(Button, { variant: 'secondary', size: 'xs', onClick: () => stateQuery.refetch(), children: t('retry') }) })
   } else if (layout === 'wide' && viewMode === 'matrix') {
     body = jsx(ExpertMatrix, {
       skills: skills,
       tools: tools,
       busy: busy,
-      onToggle: (skill, tool, enabled) => toggleMutation.mutate({ skill: skill, tool: tool, enabled: enabled })
+      onToggle: onToggle
     })
   } else {
     body = jsx('div', {
@@ -3402,7 +1678,7 @@ function ToolsOverview({ layout }) {
         children: [
           jsx('h2', { className: 'font-medium', children: t('ccTools') }),
           jsx(Badge, { variant: 'outline', size: 'xs', children: t('skillsCount', skills.length) }),
-          overviewProblems ? jsx(Badge, { variant: 'warn', size: 'xs', children: t('overviewProblems', overviewProblems) }) : null,
+          overviewIssues ? jsx(Badge, { variant: 'warn', size: 'xs', children: t('overviewProblems', overviewIssues) }) : null,
           layout === 'wide'
             ? jsx(Button, {
                 variant: 'secondary', size: 'xs', className: 'ml-auto',
@@ -3412,7 +1688,7 @@ function ToolsOverview({ layout }) {
               })
             : null,
           jsx(Button, { variant: 'secondary', size: 'xs', className: layout === 'wide' ? undefined : 'ml-auto', onClick: () => ccSectionAtom.set('onboarding'), children: t('scanAndImport') }),
-          jsx(Button, { variant: 'secondary', size: 'xs', onClick: () => ccSectionAtom.set('advanced'), children: t('addToolAction') })
+          jsx(Button, { variant: 'secondary', size: 'xs', onClick: () => setShowLibrary(true), children: t('addToolAction') })
         ]
       }),
       !onboardingComplete
@@ -3428,21 +1704,15 @@ function ToolsOverview({ layout }) {
             ]
           })
         : null,
-      arrivals.length && !Object.values(autoLink).some(Boolean)
+      arrivals.length
         ? jsx(ArrivalBanner, {
             arrivals: arrivals,
             tools: tools,
-            autoLink: autoLink,
-            onLink: onArrivalLink,
             onDismiss: onArrivalDismiss,
-            onAutoLink: onToggleAutoLink,
-            busy: busy || arrivalBusy
+            busy: busy
           })
         : null,
-      jsx(ScrollArea, { className: 'min-h-0 flex-1', children: body }),
-      receipt ? jsx(BulkReceipt, { receipt: receipt, tool: receipt.tool }) : null,
-      jsx(UndoBanner, { undo: undo, onUndo: onUndo, busy: busy }),
-      sharedConfirm
+      jsx(ScrollArea, { className: 'min-h-0 flex-1', children: body })
     ]
   })
 }
@@ -3508,7 +1778,9 @@ function ImportReceipt({ response, undoResults }) {
         results.map(row => jsx('div', {
           'data-import-result': row.name,
           className: row.ok ? 'text-xs text-muted-foreground' : 'text-xs text-(--ui-text-danger)',
-          children: t('wizardResultLine', row.name, row.ok ? t('wizardAdopted') : row.error || row.code || t('bulkFailed'))
+          children: t('wizardResultLine', row.name, row.ok
+            ? t(row.tool == null ? 'wizardAddedToLibrary' : 'wizardSourceKeptActive')
+            : row.error || row.code || t('bulkFailed'))
         }, `${row.source}-${row.name}`))
       ] }),
       jsxs('div', { className: 'rounded-md border border-(--ui-stroke-secondary) p-3', children: [
@@ -3551,10 +1823,10 @@ function FirstRunWizard() {
   })
   const state = stateQuery.data
   const knownToolIds = state && state.ok && Array.isArray(state.tools)
-    ? state.tools.filter(tool => tool.id !== 'hermes' && tool.special !== 'config').map(tool => tool.id)
+    ? state.tools.filter(tool => tool.id !== 'hermes' && tool.special !== 'config' && !tool.read_only).map(tool => tool.id)
     : []
   const detectedTools = state && state.ok && Array.isArray(state.tools)
-    ? state.tools.filter(tool => tool.id !== 'hermes' && tool.special !== 'config' && tool.present)
+    ? state.tools.filter(tool => tool.id !== 'hermes' && tool.special !== 'config' && tool.present && !tool.read_only)
     : []
 
   useEffect(() => {
@@ -3614,11 +1886,12 @@ function FirstRunWizard() {
     mutationFn: vars => pluginCtx.rest('/import/apply-plan', { method: 'POST', body: vars }),
     onSuccess: data => {
       if (!data || data.ok !== true) {
-        host.notify({ kind: 'error', message: t('wizardApplyFailed') })
-        setStep('preview')
+        publishOperation(data || { ok: false, error: 'Import returned no receipt. Refresh recovery before retrying.' }, qc)
+        setStep('sources')
         return
       }
       setReceipt(data)
+      publishOperation(data, qc)
       setStep('receipt')
       qc.invalidateQueries({ queryKey: STATE_KEY })
       qc.invalidateQueries({ queryKey: DIFF_KEY })
@@ -3626,9 +1899,9 @@ function FirstRunWizard() {
       const details = data.receipt || {}
       host.notify({ kind: details.failed || details.refused ? 'error' : 'success', message: t('wizardApplied', details.adopted || 0, details.failed || 0, details.refused || 0) })
     },
-    onError: err => {
-      host.notifyError(err, t('wizardApplyFailed'))
-      setStep('preview')
+    onError: () => {
+      publishOperation({ ok: false, error: 'The import response was interrupted. Refresh recovery before another import.' }, qc)
+      setStep('sources')
     }
   })
 
@@ -3652,8 +1925,8 @@ function FirstRunWizard() {
     setFolderInput('')
   }
   const runScan = () => {
-    const tools = selectedTools.size ? Array.from(selectedTools) : knownToolIds.slice(0, 1)
-    if (!tools.length) return
+    const tools = Array.from(selectedTools)
+    if (!tools.length && !scanRoots.length) return
     saveProgress('scanning')
     scanMutation.mutate({ tools: tools, scan_roots: scanRoots.slice(), category: category })
   }
@@ -3664,31 +1937,10 @@ function FirstRunWizard() {
     action: () => {
       setConfirm(null)
       setStep('apply')
-      applyMutation.mutate({ entries: chosen.map(row => ({ name: row.name, source: row.source, tool: row.tool == null ? null : row.tool })), category: category })
+      applyMutation.mutate({ plan_id: plan.plan_id, entries: chosen.map(row => ({ name: row.name, source: row.source, tool: row.tool == null ? null : row.tool })), category: category })
     }
   })
-  const undoAdoption = () => {
-    const details = receipt && receipt.receipt ? receipt.receipt : {}
-    const undo = Array.isArray(details.undo) ? details.undo : []
-    const results = receipt && Array.isArray(receipt.results) ? receipt.results : []
-    const requests = undo.filter(row => row.kind === 'restore-tool-entry' && row.backup).map(action => {
-      const adopted = results.find(row => row.ok && row.tool && (row.backup === action.backup || action.path === `${row.source}/${row.name}`))
-      if (!adopted) return Promise.resolve({ ok: false, error: t('wizardUndoMatchFailed') })
-      return pluginCtx.rest('/conflict/revert-adopt', {
-        method: 'POST', body: { tool: adopted.tool, name: adopted.name, tool_backup: action.backup, skill: adopted.skill }
-      }).catch(error => ({ ok: false, error: error && error.message ? error.message : String(error) }))
-    })
-    if (!requests.length) {
-      setUndoResults([{ ok: false, error: t('wizardManualRestore') }])
-      return
-    }
-    Promise.all(requests).then(rows => {
-      setUndoResults(rows)
-      qc.invalidateQueries({ queryKey: STATE_KEY })
-      qc.invalidateQueries({ queryKey: DIFF_KEY })
-      qc.invalidateQueries({ queryKey: DRIFT_KEY })
-    })
-  }
+  const undoAdoption = () => reviewOperation('/operations/undo-plan', {}, '/operations/undo')
   const finish = () => {
     storeSet(ONBOARDING_KEY, {
       version: ONBOARDING_VERSION, complete: true, step: 'welcome',
@@ -3716,11 +1968,11 @@ function FirstRunWizard() {
         className: 'flex items-start gap-2 rounded-md border border-(--ui-stroke-secondary) p-2',
         children: [
           jsx('input', { type: 'checkbox', checked: selectedTools.has(tool.id), onChange: () => toggleTool(tool.id), 'aria-label': t('wizardSelectTool', tool.label) }),
-          jsxs('span', { children: [jsx('span', { className: 'block font-medium', children: tool.label }), jsx('span', { className: 'block break-words text-xs text-muted-foreground', children: tool.dir })] })
+          jsxs('span', { children: [jsx('span', { className: 'block font-medium', children: tool.label }), jsx('span', { className: 'block break-words text-xs text-muted-foreground', children: (tool.scope === 'project' ? t('projectScope') : t('globalScope')) + ': ' + tool.dir })] })
         ]
       }, tool.id)),
       jsxs('div', { className: 'flex gap-2', children: [
-        jsx(Input, { value: folderInput, onChange: setFolderInput, placeholder: t('wizardFolderPlaceholder'), className: 'flex-1' }),
+        jsx(Input, { value: folderInput, onChange: event => setFolderInput(event.target.value), placeholder: t('wizardFolderPlaceholder'), className: 'flex-1' }),
         jsx(Button, { variant: 'secondary', size: 'sm', disabled: !folderInput.trim(), onClick: addFolder, children: t('wizardAddFolder') })
       ] }),
       scanRoots.map(root => jsxs('div', { 'data-scan-root': root, className: 'flex items-center gap-2 text-xs text-muted-foreground', children: [
@@ -3729,7 +1981,7 @@ function FirstRunWizard() {
       ] }, root)),
       jsxs('div', { className: 'flex gap-2', children: [
         jsx(Button, { variant: 'secondary', size: 'sm', onClick: () => saveProgress('welcome'), children: t('back') }),
-        jsx(Button, { variant: 'primary', size: 'sm', disabled: !selectedTools.size && (!scanRoots.length || !knownToolIds.length), onClick: runScan, children: t('wizardRunScan') })
+        jsx(Button, { variant: 'primary', size: 'sm', disabled: !selectedTools.size && !scanRoots.length, onClick: runScan, children: t('wizardRunScan') })
       ] })
     ] })
   } else if (step === 'scanning') {
@@ -3841,32 +2093,17 @@ function SectionPlaceholder({ title, hint }) {
 }
 
 function PrimaryNav({ sections, active, onSelect, layout }) {
-  const horizontal = layout === 'narrow'
-  return jsx('nav', {
-    'aria-label': 'Switchboard sections',
-    className: horizontal
-      ? 'w-full shrink-0 overflow-x-auto border-b border-(--ui-stroke-secondary)'
-      : 'w-[180px] shrink-0 border-r border-(--ui-stroke-secondary)',
-    children: jsx('div', {
-      className: horizontal ? 'flex min-w-max gap-1 p-2' : 'flex flex-col gap-1 p-3',
-      children: sections.map(section =>
-        jsx('button', {
-          type: 'button',
-          'aria-label': section.label,
-          'aria-current': active === section.id ? 'page' : undefined,
-          onClick: () => onSelect(section.id),
-          className: cn(
-            'rounded-md px-2 py-1.5 text-left text-xs transition-colors',
-            horizontal && 'shrink-0',
-            active === section.id
-              ? 'bg-primary/10 font-medium text-primary'
-              : 'text-muted-foreground hover:bg-(--chrome-action-hover) hover:text-foreground'
-          ),
-          children: section.label
-        }, section.id)
-      )
-    })
-  })
+  if (layout === 'narrow') return jsxs('nav', { 'aria-label': 'Loadout sections', className: 'flex w-full min-w-0 items-center gap-2 border-b border-(--ui-stroke-secondary) p-2', children: [
+    jsx('label', { htmlFor: 'loadout-section', className: 'text-xs text-muted-foreground', children: 'Section' }),
+    jsx('select', { id: 'loadout-section', 'aria-label': 'Loadout section', value: sections.some(section => section.id === active) ? active : 'tools',
+      onChange: event => onSelect(event.target.value), className: 'min-w-0 flex-1 rounded-md border border-(--ui-stroke-secondary) bg-background px-2 py-1 text-sm',
+      children: sections.map(section => jsx('option', { value: section.id, children: section.label }, section.id)) })
+  ] })
+  return jsx('nav', { 'aria-label': 'Loadout sections', className: 'w-[140px] shrink-0 border-r border-(--ui-stroke-secondary)', children:
+    jsx('div', { className: 'flex flex-col gap-1 p-2', children: sections.map(section => jsx('button', {
+      type: 'button', 'aria-label': section.label, 'aria-current': active === section.id ? 'page' : undefined,
+      onClick: () => onSelect(section.id), className: cn('rounded-md px-2 py-1.5 text-left text-xs transition-colors', active === section.id ? 'bg-primary/10 font-medium text-primary' : 'text-muted-foreground hover:bg-(--chrome-action-hover) hover:text-foreground'), children: section.label
+    }, section.id)) }) })
 }
 
 function ControlCenter() {
@@ -3877,7 +2114,7 @@ function ControlCenter() {
   const active = useValue(ccSectionAtom)
   const sections = [
     { id: 'tools', label: t('ccTools') },
-    { id: 'sets', label: t('ccSets') },
+    { id: 'loadouts', label: 'Loadouts' },
     { id: 'problems', label: t('ccProblems') },
     { id: 'mcp', label: t('ccMcp') },
     { id: 'advanced', label: t('ccAdvanced') }
@@ -3885,26 +2122,26 @@ function ControlCenter() {
   const bodies = {
     tools: () => jsx(ToolsOverview, { layout: layout }),
     onboarding: () => jsx(FirstRunWizard, {}),
-    sets: () => jsx(SkillsPane, { section: 'sets' }),
-    problems: () => jsx(SkillsPane, { section: 'problems' }),
+    loadouts: () => jsx(LoadoutManager, {}),
+    problems: () => jsx(MaintenancePane, { section: 'problems' }),
     mcp: () => jsx(McpPane, {}),
-    advanced: () => jsx(SkillsPane, { section: 'advanced' })
+    advanced: () => jsx(MaintenancePane, { section: 'advanced' })
   }
   const renderBody = bodies[active] || (() => jsx(SectionPlaceholder, { title: t('ccTools'), hint: t('toolsLandingHint') }))
   return jsxs('div', {
     ref: rootRef,
     'data-layout': layout,
-    'data-hermes-switchboard-root': 'true',
+    'data-hermes-loadout-root': 'true',
     'data-reduced-motion': reducedMotion ? 'true' : 'false',
     className: 'flex h-full min-w-0 flex-col text-sm',
     children: [
       jsx(ReducedMotionGuard, { active: reducedMotion }),
       jsx(BackgroundHost, {}),
       jsxs('div', {
-        className: 'flex items-center gap-2 border-b border-(--ui-stroke-secondary) px-3 py-2',
+        className: 'flex flex-col gap-2 border-b border-(--ui-stroke-secondary) px-3 py-2',
         children: [
           jsx('span', { className: 'font-medium', children: t('ccTitle') }),
-          jsx('span', { className: 'text-xs text-muted-foreground', children: t('toolsLandingHint') })
+          jsx(LoadoutPicker, {})
         ]
       }),
       jsxs('div', {
@@ -3913,7 +2150,9 @@ function ControlCenter() {
           jsx(PrimaryNav, { sections: sections, active: active, onSelect: next => ccSectionAtom.set(next), layout: layout }),
           jsx('main', { className: 'min-h-0 min-w-0 flex-1', children: renderBody() })
         ]
-      })
+      }),
+      jsx(OperationsPanel, {}),
+      jsx('style', { children: '[data-hermes-loadout-root="true"] :is(button,input,select,summary):focus-visible{outline:2px solid currentColor;outline-offset:2px}' })
     ]
   })
 }
@@ -3924,36 +2163,37 @@ function ControlCenter() {
 
 export default {
   id: ID, // must match the folder name
-  name: 'Hermes Switchboard',
+  name: 'Loadout for Hermes',
   defaultEnabled: false, // unified-package desktop halves ship opt-in
   register(ctx) {
     pluginCtx = ctx
+    reviewGeneration += 1
+    operationUIAtom.set({ busy: false, preview: null, response: null, error: null })
+    selectedLoadoutAtom.set(storeGet('selectedLoadout', null))
 
     ctx.i18n.register({
       en: {
-        paneTitle: 'Skills',
-        toolAll: 'All',
+        paneTitle: 'Loadout',
         viewAll: 'All',
         viewIssues: 'Issues',
         viewOff: 'Off',
         searchPlaceholder: 'Search skills…',
         refresh: 'Refresh',
         retry: 'Retry',
-        ccTitle: 'Hermes Switchboard',
+        ccTitle: 'Loadout for Hermes',
         matrixToggle: 'Matrix',
         matrixTitle: 'Expert matrix',
         showDescriptions: 'Show descriptions',
-        ccTools: 'Tools',
-        ccSets: 'Sets',
-        ccProblems: 'Problems',
+        ccTools: 'Applications',
+        ccProblems: 'Issues',
         ccMcp: 'MCP',
         ccAdvanced: 'Advanced',
-        openControlCenter: 'Open Switchboard',
+        openControlCenter: 'Open Loadout',
         scan: 'Scan',
-        problemsAction: n => `Problems (${n})`,
+        problemsAction: n => `Issues (${n})`,
         enabledOn: n => `${n} on`,
         summaryLine: (skills, tools) => `${skills} skill${skills === 1 ? '' : 's'} · ${tools} tool${tools === 1 ? '' : 's'}`,
-        problemLine: (broken, drifted, foreign, unlinked) => `${broken} broken · ${drifted} drift · ${foreign} foreign · ${unlinked} unlinked`,
+        problemLine: (broken, drift, foreign, bypasses) => `${broken} broken · ${drift} conflicts · ${foreign} protected · ${bypasses} bypasses`,
         toolsLandingHint: 'Manage daily skill availability by tool.',
         toolPathUnknown: 'Path not detected',
         manageTool: 'Manage',
@@ -3963,8 +2203,40 @@ export default {
         problemLabel: 'problems',
         enableAll: 'Enable all',
         disableAll: 'Disable all',
-        overviewProblems: n => `${n} problems`,
+        overviewProblems: n => `${n} issue${n === 1 ? '' : 's'}`,
         addToolAction: 'Add Tool',
+        libraryTitle: 'Client library',
+        libraryBack: 'Back to Applications',
+        libraryIntro: 'Choose a client and review its path. Adding it saves a mapping, not skills. Daily Tools shows only detected or configured targets.',
+        librarySearch: 'Search clients',
+        libraryScope: 'Client scope',
+        globalScope: 'Global',
+        projectScope: 'Project',
+        globalScopeDesc: 'Use the client location in your user account. Client-specific permissions and precedence still apply.',
+        projectScopeDesc: 'Choose one existing project folder. Loadout checks only supported paths inside it, never searches your computer for projects.',
+        projectFolder: 'Absolute project folder path',
+        reviewProjectFolder: 'Review project folder',
+        projectReviewChanged: 'Review the edited project folder before using a path.',
+        libraryDetected: 'Detected',
+        libraryAvailable: 'Available',
+        libraryCustom: 'Custom',
+        libraryConnect: 'Use this path',
+        libraryConfigured: 'Configured',
+        libraryConnectLabel: (label, scope) => `Use ${scope} path for ${label}`,
+        librarySaved: label => `${label} is configured. Return to Applications to choose its skills. No skill files were changed.`,
+        librarySaveFailed: 'Could not save this client. Nothing was confirmed.',
+        libraryUnavailable: 'The client library is unavailable.',
+        libraryVersion: 'The desktop and backend catalog versions differ. Fully quit and reopen Hermes after updating both plugin halves.',
+        libraryRecovery: 'Repair the reported path or settings, then retry. A missing route requires a full Hermes restart, not just Reload desktop plugins.',
+        libraryNoMatches: 'No verified clients match this search and scope. Change the search or scope, or use an explicitly reviewed Custom path.',
+        libraryCustomDesc: 'Use a Custom path only after checking the client reads compatible skill folders. This is an explicit exception to Global and Project boundaries, not a compatibility claim.',
+        libraryReviewCustom: 'This client is unverified. Review and save its path as Custom in Add Tool before changing skills.',
+        customClientId: 'Custom client ID (lowercase letters, numbers, hyphens)',
+        customClientLabel: 'Custom client display name',
+        customClientPath: 'Custom skills directory (absolute path)',
+        saveCustomClient: 'Save reviewed Custom path',
+        sharedDirectoryWarning: 'Shared folder: changes here affect every client that reads this directory, not only this card.',
+
         scanAndImport: 'Scan & import',
         onboardingEntryTitle: 'Bring existing skills into Hermes',
         onboardingEntryDesc: 'Scan detected tools, review every copy, and choose what Hermes should manage.',
@@ -3976,7 +2248,7 @@ export default {
         wizardBackupPromise: 'When you adopt from a detected tool, the original is moved to a timestamped backup and replaced with a managed link. Originals are never deleted.',
         wizardGetStarted: 'Get started',
         wizardSourcesTitle: 'Choose where to scan',
-        wizardSourcesDesc: 'Detected skill folders are ready automatically. Add another folder only when a source is outside a known tool.',
+        wizardSourcesDesc: 'Detected folders are preselected. Global folders serve your user account; Project folders belong to a project you added in Tools. Add another read-only source only when needed.',
         wizardSelectTool: label => `Scan ${label}`,
         wizardManageTool: label => `Manage ${label}`,
         wizardFolderPlaceholder: '/path/to/another/skills folder',
@@ -4016,43 +2288,25 @@ export default {
         wizardConfirmApply: 'Confirm adoption',
         wizardApplyingTitle: 'Applying reviewed plan…',
         wizardApplyingDesc: 'Each entry is rolled back independently if its copy or link swap fails.',
-        wizardApplyFailed: 'Adoption failed; original state was restored where a mutation was interrupted',
         wizardApplied: (adopted, failed, refused) => `Adopted ${adopted}; ${failed} failed; ${refused} refused`,
         wizardReceiptTitle: 'Adoption receipt',
         wizardReceiptCounts: (adopted, failed, refused) => `${adopted} adopted · ${failed} failed · ${refused} refused`,
         wizardResultLine: (name, result) => `${name} — ${result}`,
-        wizardAdopted: 'Adopted and linked',
+        wizardAddedToLibrary: 'Added to the library; not activated',
+        wizardSourceKeptActive: 'Added to the library; source application kept active',
         wizardUndoTitle: 'Undo / restore path',
         wizardUndoDesc: 'Keep this receipt ID and these paths. Detected-tool adoptions can be undone here; added-folder copies include the canonical path for manual restore review.',
         wizardUndoLine: (kind, path, backup) => `${kind}: ${path} · backup: ${backup}`,
         wizardUndoResult: (restored, failed) => `${restored} restored · ${failed} need manual review`,
-        wizardUndoMatchFailed: 'Could not match the restore action to its receipt item',
-        wizardManualRestore: 'This receipt contains only added-folder copies; review the listed canonical paths before removing anything.',
         wizardViewTools: 'View Tools',
         remove: 'Remove',
         back: 'Back',
         continue: 'Continue',
-        toolBulkPreview: (changed, already, refused) => `${changed} will change · ${already} already set · ${refused} protected/refused`,
-        bulkSampleTitle: 'Sample changes',
-        bulkSampleLine: (name, category, current, next) => `${name} (${category}): ${current} → ${next}`,
-        bulkRefusedTitle: 'Protected or refused',
-        bulkRefusedLine: (skill, code, reason) => `${skill} [${code}] — ${reason}`,
-        bulkPlanFailed: 'Could not prepare the bulk preview',
-        confirmEnable: 'Confirm enable',
-        confirmDisable: 'Confirm disable',
-        bulkOnScopeTitle: (scope, tool) => `Enable ${scope} for ${tool}?`,
-        bulkOffScopeTitle: (scope, tool) => `Disable ${scope} for ${tool}?`,
         scopeAll: 'all skills',
         scopeCategory: category => `${category} category`,
         scopeSelected: n => `${n} selected skill(s)`,
-        backToTools: 'Back to Tools',
-        bulkReceiptTitle: (tool, changed, failed, refused) => `${tool}: ${changed} changed, ${failed} failed, ${refused} refused`,
+        backToTools: 'Back to Applications',
         bulkReceiptId: id => `Receipt ${id}`,
-        bulkResultLine: (skill, result) => `${skill} — ${result}`,
-        bulkResultOk: state => `OK — ${state}`,
-        bulkResultFailed: reason => `Failed — ${reason}`,
-        categoryFilter: 'Category',
-        allCategories: 'All categories',
         viewEnabled: 'Enabled',
         selectAllVisible: 'Select all visible',
         visibleCount: n => `${n} visible`,
@@ -4063,14 +2317,6 @@ export default {
         enableCategory: 'Enable category',
         disableCategory: 'Disable category',
         skillsCount: n => `${n} skill${n === 1 ? '' : 's'}`,
-        brokenCount: n => `${n} broken`,
-        unlinkedCount: n => `${n} unlinked`,
-        totalTip: 'Total skills discovered under the Hermes skills root',
-        brokenTip: 'Symlinks pointing at nothing — repair them',
-        unlinkedTip: 'Skills not linked into any coding tool',
-        unlinkedTitle: n => `${n} unlinked skill${n === 1 ? '' : 's'}`,
-        unlinkedEmpty: 'No unlinked skills',
-        unlinkedDesc: 'These skills remain in Hermes but are not enabled for any coding tool.',
         protectedTitle: n => `${n} protected tool entr${n === 1 ? 'y' : 'ies'}`,
         protectedEmpty: 'No protected tool entries',
         protectedDesc: 'Foreign links and real skill directories are shown for review and are never changed automatically.',
@@ -4080,171 +2326,22 @@ export default {
         brokenDesc: 'Broken skill links can be recreated from the Hermes source.',
         repair: 'Repair',
         repairAll: 'Repair all',
-        repairAllTitle: 'Repair all broken links?',
-        repairAllDesc:
-          'Every symlink that points into the skills tree but no longer resolves is re-pointed at the matching skill. Foreign links and real directories are left untouched.',
-        bulkOn: 'Link all',
-        bulkOff: 'Unlink all',
-        bulkOnTip: 'Link every skill in this category for the selected tool',
-        bulkOffTip: 'Unlink every skill in this category for the selected tool',
-        bulkOnTitle: tool => `Link all for ${tool}?`,
-        bulkOffTitle: tool => `Unlink all for ${tool}?`,
-        bulkDesc: (n, tool) => `${n} skills will be toggled for ${tool}. You can undo this by toggling back.`,
-        toastLinked: tool => `Linked for ${tool}`,
-        toastUnlinked: tool => `Unlinked for ${tool}`,
-        toastConfig: enabled => (enabled ? 'Skill enabled for Hermes' : 'Skill disabled for Hermes'),
-        toastRepaired: 'Link repaired',
-        toastRepairedAll: (fixed, unfixable) => `Repaired ${fixed} link(s), ${unfixable} left alone`,
-        toastBulk: (changed, failed) => `Toggled ${changed} skill(s), ${failed} failed`,
-        toastBulkDone: n => `Applied ${n} change(s)`,
-        toggleFailed: 'Toggle failed — change rolled back',
-        repairFailed: 'Repair failed',
         bulkFailed: 'Bulk toggle failed',
         errorTitle: 'Skills backend unavailable',
-        errorDesc: 'The plugin backend did not answer. Check that hermes-switchboard is in `plugins.enabled` in config.yaml, then retry.',
-        errorNeedsRestart: "The gateway mounts this plugin's backend only at startup — it looks like the gateway started before hermes-switchboard was enabled. Run `hermes gateway restart` (or restart from Settings), then Retry.",
+        errorDesc: 'The plugin backend did not answer. Check that hermes-loadout is in `plugins.enabled` in config.yaml, then retry.',
+        errorNeedsRestart: "The gateway mounts this plugin's backend only at startup — it looks like the gateway started before hermes-loadout was enabled. Run `hermes gateway restart` (or restart from Settings), then Retry.",
         noRootTitle: 'No skills root found',
         noRootDesc: 'The Hermes skills directory does not exist yet. Create skills and reload.',
         emptyTitle: 'No skills yet',
-        emptyDesc: 'Skills added under ~/.hermes/skills/<category>/<name>/ appear here automatically.',
         noMatchTitle: 'No skills match',
         noMatchDesc: 'Try a different search, or switch the tool filter back to All.',
-        hermesOnTip: 'Enabled for Hermes (not in skills.disabled)',
-        hermesOffTip: 'Toggle membership in skills.disabled (Hermes itself)',
-        hermesOffBadge: 'hermes off',
-        linkedTip: 'Linked into this tool — switch off to remove the symlink',
-        unlinkTip: 'Not linked — switch on to create the symlink',
-        dirAbsentTip: 'This tool directory does not exist yet — switching on creates it and links',
-        repairTip: 'Repair this link into the skills tree',
-        fix: 'fix',
-        brokenLinkTip: 'Symlink points at nothing — fix it or toggle to recreate',
-        foreignLinkTip: 'Symlink points outside the skills tree — resolve it manually (never touched automatically)',
-        unmanagedDirTip: 'A real directory sits here (not a symlink) — never touched automatically',
-        setup: 'Setup',
-        close: 'Close',
-        setupTitle: 'Set up your tools',
-        setupDesc: 'Create skills folders for each coding tool so skills can be linked into them. Nothing is linked until you flip a switch.',
-        setupNudge: 'No tool skills folders found yet — set up tools to start linking.',
-        createDir: 'Create',
-        present: 'ready',
-        addTool: 'Add a custom tool (writes hermes-switchboard.json)',
-        toolLabel: 'Label',
-        toolDir: '~/path/to/skills',
-        add: 'Add',
-        toolAdded: label => `${label} added`,
-        toolAddFailed: 'Could not save the tool',
-        dirCreated: label => `Created skills folder for ${label}`,
-        autoLinkDesc: 'Auto-link: new skills are linked automatically (opt-in per tool; optional category regex)',
-        autoLinkPattern: 'category regex…',
-        adoptScan: 'Find copies to adopt',
-        adoptCounts: (a, d) => `${a} adoptable copies, ${d} drifted`,
-        adoptAll: 'Adopt…',
-        adoptConfirmTitle: 'Adopt copies into Hermes?',
-        adoptConfirmDesc: (n, sample) => `Copies each skill into ~/.hermes/skills/imported/, keeps the original as a timestamped backup, and replaces it with a symlink. ${n} candidate(s), e.g. ${sample}`,
-        adoptDone: n => `Adopted ${n} skill(s)`,
-        adoptFailed: 'Adoption scan failed',
-        arrivalsTitle: n => `${n} new skill(s) found`,
-        dismiss: 'Ignore',
-        alwaysAuto: 'Auto-link new skills for this tool (opt-in)',
-        linkChecked: n => `Link ${n} skill(s)`,
-        toastAutoLinked: n => `Auto-linked ${n} new skill(s)`,
-        undoAvail: n => `${n} change(s) applied`,
         undo: 'Undo',
-        presets: 'Presets',
-        presetApplyTitle: name => `Apply preset "${name}"?`,
-        presetApplyDesc: (n, m, sample) => `Enables ${n} skills across ${m} tool(s) — additive only, nothing is turned off. Examples: ${sample}…`,
-        presetImportDesc: (n, m, skipped, sample) => `Enables ${n} known skills across ${m} tool(s) (${skipped} unknown skipped). Examples: ${sample}…`,
-        presetNoop: 'Nothing to apply for this preset',
-        applyPreset: 'Apply',
-        minimalTitle: 'Unlink every tool?',
-        minimalDesc: n => `Removes ${n} consumer link(s). Sources stay in Hermes; Undo restores them for 30 seconds.`,
-        presetImport: 'Import…',
-        downloadPreset: 'Download',
-        downloaded: 'Preset file downloaded',
-        importFile: 'Open file…',
-        pasteHint: 'Paste a shared preset JSON:',
-        copyPreset: 'Copy current',
-        copied: 'Preset JSON copied to clipboard',
-        copyFailed: 'Clipboard unavailable in this context',
-        invalidPreset: 'Invalid preset JSON (need version 1, skills array)',
-        rowAll: 'all',
-        rowNone: 'none',
-        skillsTab: 'Skills',
-        mcpTab: 'MCP',
-        mcpTitle: 'MCP servers',
-        mcpCount: n => `${n} in Hermes`,
-        mcpEmpty: 'No MCP servers in Hermes',
-        mcpEmptyDesc: 'Servers configured under mcp_servers in config.yaml appear here and can be mirrored into supported clients.',
-        mcpWriterLine: (label, absent) => `${label} — ${absent ? absent : 'config found'}`,
-        mcpForeignNote: n => `${n} server(s) in Claude Desktop are not in the Hermes catalog (never touched)`,
-        mcpForeignTip: 'Foreign entries are managed outside Hermes and are left alone',
-        mcpDrifted: 'drifted',
-        mcpDisabledHermes: 'hermes off',
-        mcpSync: 'sync',
-        mcpOn: name => `${name} enabled for Hermes`,
-        mcpOff: name => `${name} disabled for Hermes`,
-        mcpSynced: (name, writer) => `${name} synced to ${writer || 'client'}`,
-        mcpRemoved: (name, writer) => `${name} removed from ${writer || 'client'}`,
-        mcpSyncTitle: (name, writer) => `Overwrite the ${writer || 'client'} copy of "${name}"?`,
-        mcpOverwriteDesc: 'Its current config differs from the Hermes catalog. The old copy is kept in a timestamped backup next to the config file.',
-        mcpRemoveTitle: (name, writer) => `Remove "${name}" from ${writer || 'client'}?`,
-        mcpRemoveForceDesc: 'Its config differs from the Hermes catalog. The old copy is kept in a timestamped backup next to the config file.',
-        mcpRemoveForce: 'Remove anyway',
-        mcpFailed: 'MCP change failed',
-        watchDesc: 'Watch mode — notify me when skills or links change (only when the app is in the background)',
-        watchOn: 'watching',
-        watchOff: 'Watch: off',
-        watchArrivals: 'new skills',
-        watchBroken: 'broken links',
-        watchDrift: 'drift',
         watchBrokenTitle: 'Skills: broken links detected',
         watchBrokenBody: n => `${n} broken link(s) — open the Skills pane to repair`,
         watchDriftTitle: 'Skills: drift detected',
         watchDriftBody: n => `${n} drifted skill(s) — open the Skills pane to resolve`,
         watchArrivalsTitle: 'Skills: new skills found',
         watchArrivalsBody: n => `${n} new skill(s) — open the Skills pane to enable`,
-        blueprintDesc: 'Machine blueprint — export the full link map, apply it on another machine (additive only: nothing is removed).',
-        blueprintExport: 'Export blueprint',
-        blueprintOpen: 'Open blueprint…',
-        blueprintPreview: (l, d, r) => `Will create ${l} link(s) and disable ${d} skill(s) for Hermes (${r} refused).`,
-        blueprintApply: 'Apply blueprint',
-        blueprintApplyTitle: 'Apply this machine blueprint?',
-        blueprintApplyDesc: (l, d) => `Creates ${l} link(s) and disables ${d} skill(s) in Hermes. Additive only — existing links are never removed.`,
-        blueprintApplied: (l, d, f) => `Blueprint applied: ${l} link(s), ${d} hermes-off, ${f} failed`,
-        blueprintExported: 'Blueprint downloaded',
-        blueprintFailed: 'Blueprint operation failed',
-        blueprintInvalid: 'Invalid blueprint file (need version 2)',
-        backupList: 'List backups',
-        backupCount: n => `${n} backup(s) found`,
-        backupRestore: 'Restore',
-        backupRestoreTitle: 'Restore this backup?',
-        backupRestoreDesc: name => `"${name}" will be restored. The current state is backed up first.`,
-        backupRestored: name => `"${name}" restored`,
-        backupScanFailed: 'Backup scan failed',
-        rowAllTip: 'Link this skill into every tool',
-        rowNoneTip: 'Unlink this skill from every tool',
-        viewDrift: 'Drift',
-        driftEmpty: 'No drift detected',
-        driftDesc: 'Same-name skills whose tool copy differs from the Hermes source. "Use Hermes" backs up the tool copy and swaps in the canonical symlink — the original is never deleted.',
-        useHermes: 'Use Hermes',
-        useToolCopy: 'Use tool copy',
-        useToolCopyTip: 'Make the tool copy the canonical Hermes source (originals backed up)',
-        useToolCopyTitle: (name, tool) => `Use the tool copy of "${name}" (${tool})?`,
-        useToolCopyDesc: 'The Hermes source is backed up (dotted, inside its category), the tool copy becomes canonical, and the tool links to it.',
-        pullDone: name => `"${name}" replaced by the tool copy`,
-        keepBoth: 'Keep both',
-        keepBothTip: 'Adopt the tool copy under a separate name',
-        keepBothTitle: name => `Keep both copies of "${name}"?`,
-        keepBothDesc: 'The tool copy is adopted into the skills tree under its own name and the tool links to it. Nothing is overwritten.',
-        keepBothDone: name => `"${name}" kept as a separate skill`,
-        undoFailed: 'Part of the undo failed — check the Setup panel backups',
-        useHermesTip: 'Back up the tool copy and link the Hermes version',
-        useHermesTitle: name => 'Use the Hermes copy of "' + name + '"?',
-        useHermesDesc: tool => 'The ' + tool + ' copy is moved aside to a timestamped backup and replaced with a symlink to the Hermes source.',
-        pushDone: name => '"' + name + '" now links to the Hermes source',
-        pushFailed: 'Drift push failed — the original was restored',
-        adoptToolCount: (a, d) => a + ' adoptable, ' + d + ' drifted',
-        adoptNone: 'No adoptable copies or drift found.'
       }
     })
 
@@ -4252,23 +2349,23 @@ export default {
       {
         id: 'pane',
         area: PANES_AREA,
-        title: 'skills',
+        title: 'Loadout',
         data: { placement: 'right', width: '320px' },
         render: () => jsx(CompactSummaryPane, {})
       },
       {
         id: 'page',
         area: ROUTES_AREA,
-        data: { path: '/hermes-switchboard' },
+        data: { path: '/hermes-loadout' },
         render: () => jsx(ControlCenter, {})
       },
       {
         id: 'open',
         area: PALETTE_AREA,
         data: {
-          id: 'hermes-switchboard.open',
-          label: 'Skills: toggle…',
-          keywords: ['skills', 'toggle', 'sync', 'claude', 'codex', 'opencode', 'grok', 'zcode'],
+          id: 'hermes-loadout.open',
+          label: 'Loadout: Open',
+          keywords: ['loadout', 'hermes', 'skills', 'toggle', 'sync', 'claude', 'codex', 'opencode', 'grok', 'zcode'],
           detail: () => 'Enable or disable skills per tool',
           run: () => openControlCenter('tools')
         }
@@ -4277,9 +2374,9 @@ export default {
         id: 'mcp',
         area: PALETTE_AREA,
         data: {
-          id: 'hermes-switchboard.mcp',
-          label: 'MCP: toggle…',
-          keywords: ['mcp', 'servers', 'claude desktop', 'toggle'],
+          id: 'hermes-loadout.mcp',
+          label: 'Loadout: MCP connections',
+          keywords: ['loadout', 'hermes', 'mcp', 'servers', 'claude desktop', 'toggle'],
           detail: () => 'Enable or disable MCP servers per app',
           run: () => openControlCenter('mcp')
         }
@@ -4288,9 +2385,9 @@ export default {
         id: 'report',
         area: PALETTE_AREA,
         data: {
-          id: 'hermes-switchboard.report',
-          label: 'Skills: health report',
-          keywords: ['skills', 'health', 'broken', 'diff', 'repair'],
+          id: 'hermes-loadout.report',
+          label: 'Loadout: Health report',
+          keywords: ['loadout', 'hermes', 'skills', 'health', 'broken', 'diff', 'repair'],
           detail: () => 'Broken links, unlinked skills, drift',
           run: () => openControlCenter('problems')
         }

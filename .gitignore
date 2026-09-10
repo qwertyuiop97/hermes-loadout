@@ -33,19 +33,11 @@ Thumbs.db
 desktop.ini
 *~
 
-# --- maintainer workbench (kept locally for Hermes/agent continuity) ---
+# Local verification and maintainer-only context
+.ci-hermes-sdk/
+.validation/
+.private/
 AGENTS.md
-BACKLOG.md
-BRIEF-DRAFT.md
-BRIEF-v2.md
-DECISIONS.md
-HERMES_IMPLEMENTATION_PROMPT.md
-IMPLEMENTATION_PLAN.md
-PRODUCT_DIRECTION.md
-PROPOSAL-v3.md
-QUESTIONS_FOR_HERMES.md
-docs/current-behavior-inventory.md
-docs/dogfood-record.md
-docs/live-host-acceptance.md
-docs/shell-design.md
-docs/skills-dash-inventory.md
+*HANDOFF*.md
+*IMPLEMENTATION_PROMPT*.md
+*.bak.hermes-loadout.*

@@ -1,4 +1,4 @@
-"""MCP switchboard tests — catalog parse, hermes toggle, Claude Desktop writer.
+"""MCP loadout tests — catalog parse, hermes toggle, Claude Desktop writer.
 
 Fixtures only; no real config files are touched.
 """
@@ -15,7 +15,7 @@ sys.path.insert(0, str(_REPO / "tests"))
 from test_plugin_api import Fixture, pa  # noqa: E402
 
 McpCore = pa.McpCore
-SkillsToggleError = pa.SkillsToggleError
+LoadoutError = pa.LoadoutError
 
 CONFIG = """# header comment
 model:
@@ -62,7 +62,9 @@ class McpFixture(Fixture):
         self.claude = self.tmp / "claude" / "claude_desktop_config.json"
         self.claude.parent.mkdir(parents=True, exist_ok=True)
         self.claude.write_text(json.dumps(CLAUDE_CONFIG, indent=2), encoding="utf-8")
-        self.mcp = McpCore(self.home, claude_desktop_config=self.claude, log_path=self.tmp / "data" / "m.log")
+        self.codex_config = self.tmp / "codex" / "config.toml"
+        self.mcp = McpCore(self.home, claude_desktop_config=self.claude,
+                           codex_config=self.codex_config, log_path=self.tmp / "data" / "m.log")
 
 
 class ParseTests(unittest.TestCase):
@@ -201,7 +203,7 @@ class CodexWriterTests(unittest.TestCase):
         self.assertIn("[desktop]", text)
         self.assertIn("max_depth = 2", text)
         self.assertIn("# codex config", text)
-        self.assertTrue(list(self.codex.parent.glob("config.toml.bak.hermes-switchboard.*")))
+        self.assertTrue(list(self.codex.parent.glob("config.toml.bak.hermes-loadout.*")))
 
     def test_sync_update_replaces_block(self) -> None:
         r = self.mcp.sync_to_codex("docs")
@@ -218,7 +220,7 @@ class CodexWriterTests(unittest.TestCase):
         try:
             self.mcp.remove_from_codex("node_repl")
             self.fail("expected error")
-        except SkillsToggleError as exc:
+        except LoadoutError as exc:
             self.assertEqual(exc.code, "unknown-server")
         self.assertIn("[mcp_servers.node_repl]", self.codex.read_text())
         # remove docs (managed) -> block gone, rest intact
@@ -264,7 +266,7 @@ class McpCoreTests(unittest.TestCase):
         r = self.mcp.toggle_hermes("weather", True)
         self.assertEqual(r["action"], "config-updated")
         self.assertTrue(pa.parse_mcp_servers((self.fx.home / "config.yaml").read_text())["weather"]["enabled"])
-        backups = list(self.fx.home.glob("config.yaml.bak.hermes-switchboard.*"))
+        backups = list(self.fx.home.glob("config.yaml.bak.hermes-loadout.*"))
         self.assertEqual(len(backups), 1)
         self.assertIn("# header comment", (self.fx.home / "config.yaml").read_text())
         # idempotent
@@ -273,7 +275,7 @@ class McpCoreTests(unittest.TestCase):
         try:
             self.mcp.toggle_hermes("ghost", True)
             self.fail("expected error")
-        except SkillsToggleError as exc:
+        except LoadoutError as exc:
             self.assertEqual(exc.code, "unknown-server")
 
     def test_sync_creates_and_preserves_other_keys(self) -> None:
@@ -285,7 +287,7 @@ class McpCoreTests(unittest.TestCase):
         self.assertNotIn("enabled", servers["weather"])  # hermes-only key stripped
         doc = json.loads(self.fx.claude.read_text())
         self.assertEqual(doc["preferences"], {"theme": "dark"})  # untouched
-        self.assertTrue(list(self.fx.claude.parent.glob("claude_desktop_config.json.bak.hermes-switchboard.*")))
+        self.assertTrue(list(self.fx.claude.parent.glob("claude_desktop_config.json.bak.hermes-loadout.*")))
         # re-sync is an update, idempotent content
         r = self.mcp.sync_to_claude("weather")
         self.assertEqual(r["action"], "updated")
@@ -298,7 +300,7 @@ class McpCoreTests(unittest.TestCase):
         try:
             self.mcp.remove_from_claude("docs")
             self.fail("expected error")
-        except SkillsToggleError as exc:
+        except LoadoutError as exc:
             self.assertEqual(exc.code, "drifted")
         self.assertIn("docs", self._claude_servers())
         # force removes only that entry
@@ -312,7 +314,7 @@ class McpCoreTests(unittest.TestCase):
         try:
             self.mcp.remove_from_claude("drifted-server")
             self.fail("expected error")
-        except SkillsToggleError as exc:
+        except LoadoutError as exc:
             self.assertEqual(exc.code, "unknown-server")
         # unknown to both -> noop (nothing to remove)
         self.assertEqual(self.mcp.remove_from_claude("totally-foreign")["action"], "noop")
@@ -323,7 +325,7 @@ class McpCoreTests(unittest.TestCase):
         try:
             self.mcp.sync_to_claude("ghost")
             self.fail("expected error")
-        except SkillsToggleError as exc:
+        except LoadoutError as exc:
             self.assertEqual(exc.code, "unknown-server")
 
     def test_env_values_redacted_in_state(self) -> None:
