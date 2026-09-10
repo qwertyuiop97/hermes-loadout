@@ -187,16 +187,18 @@ or OAuth setup are invented. Refresh or restart clients as needed.
 ## Install and first use
 
 Use a Hermes Desktop version supporting [unified desktop plugins](https://hermes-agent.nousresearch.com/docs/developer-guide/desktop-plugin-sdk).
-Review the revision first. No Loadout release has been published yet; cloning the
-default branch installs the latest reviewed source rather than a versioned release.
+Start with the newest reviewed prerelease on the
+[Releases page](https://github.com/qwertyuiop97/hermes-loadout/releases). The default
+branch may contain changes intended for a later release.
 
 Clone the repository you are reading into the active profile's plugin directory,
 using its **Code → clone URL**. The package directory and plugin ID must be
 `hermes-loadout`.
 
 ```bash
-git clone <repository-clone-url> ~/.hermes/plugins/hermes-loadout
-# In that clone, select the reviewed revision before enabling it.
+git clone --branch v0.1.0-alpha.1 --depth 1 \
+  https://github.com/qwertyuiop97/hermes-loadout.git \
+  ~/.hermes/plugins/hermes-loadout
 hermes plugins enable hermes-loadout
 ```
 
