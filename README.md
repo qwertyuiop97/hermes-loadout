@@ -13,6 +13,15 @@ Save those choices as a **loadout**, such as Research or Coding. Review what wil
 
 ![Research loadout in Hermes Desktop](docs/images/loadout-for-hermes.png)
 
+<details>
+<summary>MCP connections and change review</summary>
+
+![MCP connections](docs/images/mcp-connections.png)
+
+![Review a loadout](docs/images/review-loadout.png)
+
+</details>
+
 [Get started](#get-started) · [Save a loadout](#save-a-loadout) · [Supported apps and connections](#supported-apps-and-connections) · [Safety and recovery](#safety-and-recovery)
 
 ## Get started
