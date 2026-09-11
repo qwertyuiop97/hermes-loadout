@@ -11,9 +11,7 @@ Save those choices as a **loadout**, such as Research or Coding. Review what wil
 
 > **Early alpha.** Best suited to people using multiple agents or a growing collection of skills and connections. Supported paths are not a guarantee that every client/version works end to end. Loadout does not install agents, set up credentials, or manage your conversations.
 
-![Loadout for Hermes showing a saved Research loadout with explicit skill and MCP selections](docs/images/loadout-for-hermes.png)
-
-*Loadouts view in Hermes Desktop. This is a real capture of the plugin running in a disposable profile with synthetic skills; the toolbar and window chrome are part of the host app.*
+![Research loadout in Hermes Desktop](docs/images/loadout-for-hermes.png)
 
 [Get started](#get-started) · [Save a loadout](#save-a-loadout) · [Supported apps and connections](#supported-apps-and-connections) · [Safety and recovery](#safety-and-recovery)
 
