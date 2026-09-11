@@ -510,6 +510,10 @@ class LoadoutError(Exception):
         self.code = code
 
 
+def _config_read_error(path: Path, exc: BaseException) -> LoadoutError:
+    return LoadoutError(f"cannot read {path}: {exc}", "config-unreadable")
+
+
 
 def _atomic_write_text(path: Path, text: str) -> None:
     """Replace a complete file, preserving an existing symlink and permissions.
@@ -707,8 +711,8 @@ class HermesLoadoutCore:
     def _disabled_set(self) -> set[str]:
         try:
             text = self.config_path.read_text(encoding="utf-8") if self.config_path.is_file() else ""
-        except OSError:
-            return set()
+        except (OSError, UnicodeError) as exc:
+            raise _config_read_error(self.config_path, exc) from exc
         return parse_disabled(text)
 
     def tool_dir(self, tool_id: str) -> Path | None:
@@ -729,17 +733,19 @@ class HermesLoadoutCore:
         except (LoadoutError, OSError, ValueError):
             return None  # state() supplies a visible path_error and recovery action
 
-    def _tool_states(self, skill: dict, disabled: set[str]) -> dict:
+    def _tool_states(self, skill: dict, disabled: set[str], hermes_error=None) -> dict:
         states: dict[str, dict] = {}
         for tool_id in self.tools:
             try:
-                states[tool_id] = self._one_state(skill, tool_id, disabled)
+                states[tool_id] = self._one_state(skill, tool_id, disabled, hermes_error)
             except (LoadoutError, OSError, ValueError):
                 states[tool_id] = {"state": "scope-error"}
         return states
 
-    def _one_state(self, skill: dict, tool_id: str, disabled: set[str]) -> dict:
+    def _one_state(self, skill: dict, tool_id: str, disabled: set[str], hermes_error=None) -> dict:
         if tool_id == "hermes":
+            if hermes_error is not None:
+                return {"state": hermes_error.code, "code": hermes_error.code, "error": str(hermes_error)}
             return {"state": "disabled" if skill["name"] in disabled else "enabled"}
         tool_dir = self.tool_dir(tool_id)
         if tool_dir is None:
@@ -831,7 +837,14 @@ class HermesLoadoutCore:
                 return self._cache
 
             skills = self._scan_skills()
-            disabled = self._disabled_set()
+            config_status = {"ok": True}
+            try:
+                disabled = self._disabled_set()
+                hermes_error = None
+            except LoadoutError as exc:
+                disabled = set()
+                hermes_error = exc
+                config_status = {"ok": False, "code": exc.code, "error": str(exc), "path": str(self.config_path)}
             tools_meta = []
             for tool_id, tool in self.tools.items():
                 path_error = None
@@ -869,7 +882,7 @@ class HermesLoadoutCore:
             payload_skills = []
             unlinked = 0
             for sid, skill in sorted(skills.items()):
-                states = self._tool_states(skill, disabled)
+                states = self._tool_states(skill, disabled, hermes_error)
                 # "unlinked" is about consumer symlinks — hermes' config state
                 # is a separate axis and must not mask a missing link.
                 linked_any = any(v["state"] == "enabled" for tid, v in states.items() if tid != "hermes")
@@ -897,6 +910,7 @@ class HermesLoadoutCore:
                 "tools": tools_meta,
                 "skills": payload_skills,
                 "counts": {"skills": len(payload_skills), "unlinked": unlinked},
+                "config": config_status,
                 "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             }
             self._cache = payload
@@ -914,7 +928,13 @@ class HermesLoadoutCore:
             markdown = skill_md.read_text(encoding="utf-8", errors="replace")
         except OSError:
             pass
-        states = self._tool_states(skill, self._disabled_set())
+        try:
+            disabled = self._disabled_set()
+            hermes_error = None
+        except LoadoutError as exc:
+            disabled = set()
+            hermes_error = exc
+        states = self._tool_states(skill, disabled, hermes_error)
         return {
             "ok": True,
             "skill": skill_id,
@@ -928,7 +948,6 @@ class HermesLoadoutCore:
 
     def diff(self) -> dict:
         payload = self.state()
-        disabled = self._disabled_set()
         skills = self._scan_skills()
         unlinked = []
         for entry in payload["skills"]:
@@ -1233,17 +1252,24 @@ class HermesLoadoutCore:
         with self._lock:
             ordered, tool_id, enabled = self._bulk_inputs(skill_ids, tool_id, enabled)
             skills = self._scan_skills()
-            disabled = self._disabled_set()
+            try:
+                disabled = self._disabled_set()
+            except LoadoutError as exc:
+                if tool_id != "hermes":
+                    raise
+                disabled = set()
+                initial_hermes_read_error = exc
+            else:
+                initial_hermes_read_error = None
             hermes_text = ""
-            hermes_read_error = None
+            hermes_read_error = initial_hermes_read_error
             if tool_id == "hermes" and self.config_path.is_file():
                 try:
                     hermes_text = self.config_path.read_text(encoding="utf-8")
                     disabled = parse_disabled(hermes_text)
-                except OSError as exc:
-                    hermes_read_error = LoadoutError(
-                        f"cannot read {self.config_path}: {exc}", "config-unreadable"
-                    )
+                    hermes_read_error = None
+                except (OSError, UnicodeError) as exc:
+                    hermes_read_error = _config_read_error(self.config_path, exc)
             would_change = []
             already_satisfied = []
             refused = []
@@ -3220,6 +3246,41 @@ CLAUDE_DESKTOP_CONFIG_CANDIDATES = [
 _MCP_UNIVERSAL_KEYS = ("command", "args", "env", "url", "headers")
 
 
+def _load_yaml_mapping(text: str):
+    try:
+        import yaml  # type: ignore
+    except ImportError:
+        return None
+
+    class UniqueKeyLoader(yaml.SafeLoader):
+        pass
+
+    def construct_mapping(loader, node, deep=False):
+        mapping = {}
+        for key_node, value_node in node.value:
+            key = loader.construct_object(key_node, deep=deep)
+            if key in mapping:
+                raise LoadoutError("Duplicate YAML keys are not safe to interpret", "config-invalid")
+            mapping[key] = loader.construct_object(value_node, deep=deep)
+        return mapping
+
+    UniqueKeyLoader.add_constructor(
+        yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+        construct_mapping,
+    )
+    try:
+        data = yaml.load(text, Loader=UniqueKeyLoader)
+    except LoadoutError:
+        raise
+    except Exception as exc:
+        raise LoadoutError("config.yaml cannot be parsed safely", "config-invalid") from exc
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise LoadoutError("config.yaml must be a mapping", "config-invalid")
+    return data
+
+
 def _coerce_scalar(value: str):
     v = _yaml_unquote(value)
     if v in ("true", "True"):
@@ -3237,6 +3298,32 @@ def parse_mcp_servers(text: str) -> dict:
     definition keeps the universal MCP keys (command, args, env, url, headers)
     plus any other scalars found; enabled defaults to True (hermes treats a
     missing flag as enabled)."""
+    loaded = _load_yaml_mapping(text)
+    if loaded is not None:
+        servers = loaded.get("mcp_servers", {})
+        if servers is None:
+            return {}
+        if not isinstance(servers, dict):
+            raise LoadoutError("mcp_servers must be a mapping", "config-invalid")
+        out: dict = {}
+        for raw_name, raw_entry in servers.items():
+            if not isinstance(raw_name, str) or not raw_name.strip():
+                raise LoadoutError("MCP server names must be strings", "config-invalid")
+            if raw_entry is None:
+                raw_entry = {}
+            if not isinstance(raw_entry, dict):
+                raise LoadoutError("MCP server definitions must be mappings", "config-invalid")
+            enabled = raw_entry.get("enabled", True)
+            if not isinstance(enabled, bool):
+                raise LoadoutError("MCP enabled flags must be booleans", "config-invalid")
+            definition = {key: copy.deepcopy(value) for key, value in raw_entry.items() if key != "enabled"}
+            if definition or not enabled:
+                out[raw_name] = {"enabled": enabled, "definition": definition}
+        return out
+
+    if re.search(r"(?m)^mcp_servers\s*:", text):
+        raise LoadoutError("PyYAML is required to interpret MCP YAML safely", "config-parser-required")
+
     lines = text.splitlines()
     start = None
     for i, ln in enumerate(lines):
@@ -3315,6 +3402,7 @@ def set_mcp_server_enabled(text: str, name: str, enabled: bool) -> str:
     entry_start = None
     entry_end = len(lines)
     enabled_line = None
+    entry_child_indent = None
     for j in range(start + 1, len(lines)):
         ln = lines[j]
         if ln[:1].strip() and not ln.startswith((" ", "\t")):
@@ -3333,11 +3421,14 @@ def set_mcp_server_enabled(text: str, name: str, enabled: bool) -> str:
                 entry_end = j
                 break
             continue
-        if entry_start is not None and indent == base_indent + 2 and ln.strip().startswith("enabled:"):
-            enabled_line = j
+        if entry_start is not None and indent > base_indent:
+            if entry_child_indent is None:
+                entry_child_indent = indent
+            if indent == entry_child_indent and ln.strip().startswith("enabled:"):
+                enabled_line = j
     if entry_start is None:
         raise ConfigEditError(f"no mcp_servers entry named {name!r}")
-    pad = " " * (base_indent + 2)
+    pad = " " * (entry_child_indent if entry_child_indent is not None else base_indent + 2)
     flag = "true" if enabled else "false"
     if enabled_line is not None:
         lines[enabled_line] = re.sub(r"enabled:\s*.*$", f"enabled: {flag}", lines[enabled_line])
@@ -3458,8 +3549,8 @@ class McpCore:
     def catalog(self) -> dict:
         try:
             text = self.config_path.read_text(encoding="utf-8") if self.config_path.is_file() else ""
-        except OSError:
-            text = ""
+        except (OSError, UnicodeError) as exc:
+            raise _config_read_error(self.config_path, exc) from exc
         parsed = parse_mcp_servers(text)
         catalog = []
         for name in sorted(parsed):
@@ -3548,7 +3639,12 @@ class McpCore:
             return self._write_codex(name, create=False, force=force)
 
     def mcp_state(self) -> dict:
-        cat = self.catalog()
+        catalog_error = None
+        try:
+            cat = self.catalog()
+        except LoadoutError as exc:
+            catalog_error = {"code": exc.code, "error": str(exc), "path": str(self.config_path)}
+            cat = {"ok": False, "catalog": [], "count": 0}
         writers = {
             "claude": {"label": "Claude Desktop", "path": str(self.claude_config) if self.claude_config else None,
                        "present": bool(self.claude_config and self.claude_config.is_file()), "available": True},
@@ -3595,7 +3691,8 @@ class McpCore:
                          "definition": _redact_env(c["definition"]), "writers": states})
         return {"ok": True, "rows": rows, "foreign": foreign,
                 "counts": {"catalog": len(rows), "foreign": len(foreign)}, "writers": writers,
-                "partial_failure": any(not writer["available"] for writer in writers.values())}
+                "partial_failure": catalog_error is not None or any(not writer["available"] for writer in writers.values()),
+                **({"catalog_error": catalog_error} if catalog_error is not None else {})}
 
     def toggle_hermes(self, name: object, enabled: object) -> dict:
         with self._lock:
@@ -3607,8 +3704,8 @@ class McpCore:
                 raise LoadoutError("config.yaml not found", "config-unreadable")
             try:
                 text = self.config_path.read_text(encoding="utf-8")
-            except OSError as exc:
-                raise LoadoutError(f"cannot read {self.config_path}: {exc}", "config-unreadable") from exc
+            except (OSError, UnicodeError) as exc:
+                raise _config_read_error(self.config_path, exc) from exc
             current = parse_mcp_servers(text)
             if name not in current:
                 raise LoadoutError(f"unknown MCP server {name!r} in the catalog", "unknown-server")

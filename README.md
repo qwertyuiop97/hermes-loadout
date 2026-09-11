@@ -1,88 +1,117 @@
 # Loadout for Hermes
 
-Keep a skill library without making every skill available to every agent.
+**Choose the skills and tool connections your agents can use—from one place in Hermes Desktop.**
 
-Loadout runs inside Hermes Desktop. It shows the skills you already have, lets
-you choose what each application can discover, and saves those choices as named
-loadouts. It also manages supported MCP connections. Every capability change is
-reviewed before it is applied, with a receipt and a previewed undo.
+Loadout helps you manage two parts of an agent's setup:
 
-This is for people who use several coding agents or maintain more skills than
-they want active at once. One application with a small skill collection may not
-need it. This is a pre-release alpha, not a certification of every client.
+- **Skills:** reusable instructions that teach an agent how to do a task. Keep one library and choose which skills each supported app can access.
+- **MCP connections:** connections to external tools and services. Choose which existing, supported connections are available in Hermes, Claude Desktop, or Codex.
 
-![Loadout for Hermes showing per-application skill controls](docs/images/loadout-for-hermes.png)
+Save those choices as a **loadout**, such as Research or Coding. Review what will change, apply it, and inspect the result. You don't have to maintain a separate copy of every skill for every agent.
 
-_Applications view in Hermes Desktop, captured with a disposable profile and
-synthetic skills._
+> **Early alpha.** Best suited to people using multiple agents or a growing collection of skills and connections. Supported paths are not a guarantee that every client/version works end to end. Loadout does not install agents, set up credentials, or manage your conversations.
 
-## Library, import, and activation
+![Loadout for Hermes showing a saved Research loadout with explicit skill and MCP selections](docs/images/loadout-for-hermes.png)
 
-The library lives in `<hermes_home>/skills/<category>/<name>/SKILL.md`. The default
-Hermes home is `~/.hermes`. A skill can be stored there and **off everywhere**.
+*Loadouts view in Hermes Desktop. This is a real capture of the plugin running in a disposable profile with synthetic skills; the toolbar and window chrome are part of the host app.*
 
-**Scan** reads supported locations and folders you select. It does not install
-applications, create links, change settings, or activate anything.
+[Get started](#get-started) · [Save a loadout](#save-a-loadout) · [Supported apps and connections](#supported-apps-and-connections) · [Safety and recovery](#safety-and-recovery)
 
-**Import** adds a reviewed copy to the library. A new skill from an ordinary
-folder starts off in Hermes and receives no application links. A skill already
-active in a source application keeps that application's access; other applications
-and existing Hermes selections are unchanged. The original application copy is
-preserved outside its discoverable skills folder. Import is not “enable all.”
+## Get started
 
-**On / Off** controls activation. For Hermes it changes `skills.disabled` using
-Hermes's supported configuration format. For other clients, On creates the
-reviewed individual skill link; Off removes that managed link without deleting
-the library copy. Refresh the client or start a new session to refresh its catalog.
-Loadout does not control a client's cached session or alternate discovery paths.
+You need Hermes Desktop with [unified desktop plugin support](https://hermes-agent.nousresearch.com/docs/developer-guide/desktop-plugin-sdk). Start with a reviewed [prerelease](https://github.com/qwertyuiop97/hermes-loadout/releases), not an arbitrary development checkout. This project does not yet publish a tested minimum Desktop version.
 
-Applications that read the same folder share its activation state. Loadout shows
-that warning and deduplicates the path, rather than pretending two controls can
-independently govern the same directory.
+For the **default local Hermes profile**, install the published alpha:
 
-## Named loadouts
+```bash
+git clone --branch v0.1.0-alpha.1 --depth 1 \
+  https://github.com/qwertyuiop97/hermes-loadout.git \
+  ~/.hermes/plugins/hermes-loadout
+hermes plugins enable hermes-loadout
+```
 
-A loadout is a name plus explicit desired skill and MCP On/Off states for one or
-more applications. **Leave unchanged** means the capability is outside the
-loadout's scope. New skills and unrelated settings are not implicitly included.
+Then:
 
-Use **Loadouts** to create, rename, duplicate, or delete a selection. Choose the
-applications, search capabilities, or capture their current safe On/Off states.
-Saving or classifying a skill never applies a change. Unavailable or protected
-entries are reported rather than guessed. No starter preset enables anything.
+1. Enable **Loadout for Hermes** in **Settings → Plugins** in Desktop.
+2. Fully quit and reopen Hermes so the matching backend loads.
+3. Open **Loadout**. Its compact pane summarizes your setup; **Open Loadout** opens the full workspace.
 
-The compact selector opens an apply preview showing enables, disables, unchanged
-items, unavailable capabilities, conflicts, and protected entries. Confirming
-applies only that server-owned plan. A changed or expired plan requires review
-again. Partial failure stays visible, not a success toast that hides skipped work.
+Both plugin halves must be enabled. There is no frontend build step.
 
-Loadouts contain identifiers and booleans, not credentials, environment values,
-server definitions, or copied skill contents.
+**Other profiles or a remote backend?** The example above is only for the default local profile. Use the active profile's plugin directory and enable the backend in that same profile. `HERMES_HOME` takes precedence over `HERMES_PROFILE`; otherwise the home is `~/.hermes`. The installation directory must be named `hermes-loadout`. With a remote backend, displayed paths are on that machine—not your desktop—and the desktop half must also be installed locally. See the [official plugin guide](https://hermes-agent.nousresearch.com/docs/developer-guide/desktop-plugin-sdk) for host setup.
 
-## Finding your way around
+### Make your first change
 
-The compact **Loadout** pane is a status summary and launcher. In the workspace,
-**Applications** shows only detected or configured targets, with Manage, Enable
-all, and Disable all. A single-application view keeps one switch per skill.
-**Issues** explains broken links, conflicting copies, protected entries, and
-catalog bypasses. **MCP** handles supported server connections. **Advanced** holds
-setup, imports, notification preferences, and backup recovery.
+1. **Inspect what you have.** Open **Applications** for skills, or **MCP** for connections already defined in Hermes.
+2. **Bring in skills if needed.** **Scan & import** reads the folders you select. Review the results, then choose what to import. Scanning does not change files or turn anything on.
+3. **Choose one change.** Open an application's **Manage** view and change one skill, or choose a supported MCP connection.
+4. **Review and apply.** Check the application, requested changes, and any protected entries before confirming.
+5. **Read the receipt.** Check what completed and what did not. Refresh the affected client or start a new session before expecting its available skills/connections to change.
 
-Search and All / Enabled / Off / Issues are immediately available. One **Filters**
-control contains category, source, and “Designed for.” Classification defaults
-to Unclassified. Portable or application-specific labels are informational,
-user-reviewed labels, not compatibility certificates or activation rules.
+Try **Undo last change** to preview a reversal. It is available only while the affected state can still be safely restored; it is not unlimited history.
 
-Narrow workspaces use a section selector instead of an overflowing tab row.
-The expert matrix is optional and wide-only; its application columns scroll
-explicitly. Core controls wrap without needing a wide desktop window.
+## Save a loadout
 
-## Clients and scopes
+A loadout is a named set of desired **On**, **Off**, or **Leave unchanged** choices for selected apps. It can include both skills and MCP connections.
 
-[The catalog](dashboard/client_catalog.json) is the maintained source for candidate
-paths, documentation, platform constraints, and separate skill/MCP capabilities.
-The following locations are documented candidates, not evidence that every
-client has been exercised end to end on each operating system.
+For example, a **Research** loadout could turn on your research skills and an existing supported reference-search connection in Codex. A **Coding** loadout could choose a different set. These are examples, not bundled presets or newly installed services.
+
+1. Open **Loadouts → New loadout** and give it a name.
+2. Choose the applications it covers.
+3. **Capture current selections**, or edit the skill and MCP choices yourself.
+4. **Save loadout**. Saving does not change any application's setup.
+5. Select it and **Review loadout** when you want to apply its saved choices.
+
+**Leave unchanged** excludes an item from the loadout; it does not mean Off. New skills and unlisted connections stay untouched. Protected or unavailable entries are reported, not guessed. You can rename, duplicate, or delete a saved loadout without changing live application settings.
+
+Loadout files contain names, identifiers and On/Off choices—not credentials, server definitions, or copied skill contents.
+
+## How skills and connections are managed
+
+| Action | What it does | What it does not do |
+|---|---|---|
+| Scan | Reads selected skill folders and reports what it finds. | Install apps, import skills, or enable anything. |
+| Import | Adds a reviewed skill copy to the Hermes library. | Enable it in every agent. |
+| Skill On / Off | Changes Hermes's disabled-skill setting, or creates/removes an individual managed link for another app. | Delete the library copy or override a client's trust rules. |
+| MCP On / Off | Updates a supported connection's availability for the selected app. | Create credentials, complete OAuth, or prove the service is running. |
+| Save loadout | Stores the choices you want to reuse. | Apply those choices. |
+
+The skill library lives at `<hermes_home>/skills/<category>/<name>/SKILL.md`. A skill can stay in the library while being off everywhere.
+
+A skill imported from an ordinary folder starts **off in Hermes** and gets no application links. A skill already active in a source application keeps that application's access; other applications and existing Hermes selections are unchanged. The original application copy is preserved outside its discoverable skills folder.
+
+**Apps that share a skills folder share its settings.** Loadout warns about this rather than pretending their switches are independent. A client can also read skills from other locations or retain an old session's catalog; Loadout cannot override that behavior.
+
+## Supported apps and connections
+
+Skill support and MCP support are separate:
+
+| Capability | Supported setup |
+|---|---|
+| Hermes skills | The active profile's library and `skills.disabled` setting. |
+| Other apps' skills | Documented Global/Project locations from the client catalog, plus explicit Custom mappings. |
+| Hermes MCP | Existing server definitions in Hermes `config.yaml`, with independent enabled state. |
+| Claude Desktop MCP | Supported local-command connections (stdio). |
+| Codex MCP | Supported local-command and HTTP connections. |
+
+Claude Code skill support does **not** imply a Claude Desktop skill directory. A client listed for skills does **not** automatically have an MCP writer.
+
+MCP changes preserve unrelated settings and client-only connections. A conflicting definition needs manual resolution; Loadout does not force an overwrite. Client trust, permissions, transport support and refresh requirements still apply.
+
+### Add an application
+
+Open **Applications → Add Tool** and review its path before **Use this path**. This saves a mapping, not an enabled skill set. A later reviewed change may create the skills folder. Finding a folder does not prove the client is installed or has loaded it.
+
+- **Global:** a location within your user home.
+- **Project:** a supported location inside an existing project folder you explicitly choose. Loadout does not search your computer for projects.
+- **Custom:** a path you review yourself—not certification of an unknown client's format.
+
+Moved or redirected project paths remain read-only until reviewed. Current Codex targets use `.agents/skills`; saved Custom paths are not silently redirected.
+
+<details>
+<summary>Documented skill locations</summary>
+
+These are documented candidates, not a claim of end-to-end testing for every client and operating system. The [client catalog](dashboard/client_catalog.json) records sources, platforms and limitations.
 
 <!-- client-catalog:start -->
 | Client | Global path | Project path |
@@ -103,151 +132,76 @@ client has been exercised end to end on each operating system.
 | [OpenClaw](https://docs.openclaw.ai/tools/skills) | `~/.openclaw/skills` | Not offered |
 <!-- client-catalog:end -->
 
-**Global** targets stay within your user home. **Project** checks the supported
-relative directory inside an existing project folder you explicitly select.
-Loadout does not search the whole computer for repositories. Saved roots and
-resolved targets are checked again before use. Missing or redirected projects
-remain read-only. **Custom** is an explicit reviewed path, not an endorsement of
-an unknown client's format.
+</details>
 
-Open **Applications → Add Tool** for the searchable Detected / Available / Custom
-library. Review the scope and resolved path before Use this path. Adding an
-application saves a mapping only; a later explicit enable may create its skills
-folder. A folder's presence is not proof the client is installed or loaded it.
+Grok, ZCode, Kimi, pi, and Roo Code remain unverified candidates. Agent Skills targets need valid frontmatter, a supported name matching the folder, and a description. OpenClaw's project path is not offered because Loadout does not relax its external-link trust settings. Local links to a Hermes library are not portable team or cloud-agent packages.
 
-Grok, ZCode, Kimi, pi, and Roo Code remain unverified candidates. No guessed path
-is automatically promoted to a writable integration. Current Codex targets use
-`.agents/skills`. Explicit custom paths are not silently redirected.
+## Find your way around
 
-Agent Skills targets require valid frontmatter, a matching supported skill name,
-and a description. Trust settings, native extensions, path precedence, and client
-refresh requirements still apply. OpenClaw's project path is not offered because
-Loadout does not relax its external-link trust settings. Local links into a
-Hermes home are not portable team or cloud-agent packages.
+| View | Use it to… |
+|---|---|
+| Applications | Manage skills for detected or configured targets. Search and filter by state, category, source, or informational “Designed for” labels. |
+| Loadouts | Save, edit and review reusable skill/MCP choices. |
+| Issues | Inspect broken links, conflicting copies and protected entries. |
+| MCP | Manage supported connections already defined in Hermes. |
+| Advanced | Access setup, imports, notifications and recognized backups. |
 
-## Safety, receipts, and undo
+“Portable” and application-specific skill labels are your organizational labels, not compatibility guarantees. The optional matrix is for wide workspaces; narrow workspaces use a section selector.
 
-A real directory, foreign link, or user-managed file is protected. Conflicting
-skill copies have an explicit preview: keep the library version, or use the
-application's copy as the library version. Originals are preserved. Loadout does
-not automatically merge or rename conflicting content.
+## Safety and recovery
 
-A broad link such as `skills/shared` pointing at the whole library is a **Catalog
-bypass**. Individual Off switches cannot hide skills still reachable through it.
-Loadout reports the bypass and blocks misleading mutations. Its previewed repair
-removes only the exact verified broad link. Real directories, changed links, and
-ambiguous targets are refused; repair is never automatic.
+**You review capability changes before they are applied.** If a plan expires or its inputs change, review it again. A receipt distinguishes completed changes from unchanged, unavailable or protected entries.
 
-Import previews are bound to the selected entries and their content fingerprints.
-Destination containment is checked during preview, apply, and cleanup. A changed
-source or a category redirected outside the library is refused before copying.
+- Real directories, foreign links and user-managed files are protected. Conflicting skill copies require an explicit choice; Loadout does not automatically merge or rename them.
+- A link exposing the whole library can bypass individual Off switches. **Issues** identifies this “catalog bypass.” A reviewed repair removes only the verified broad link, not its library contents.
+- Imports recheck selected contents and destination boundaries before copying. Changed sources and redirected destinations are refused.
+- **Undo last change** previews what can still be restored. External edits and changed backups are preserved. A new successful operation replaces the previous undo point; previews, refusals and no-ops do not.
+- **Advanced** lists recognized backups and previews whole-file or skill-copy restores. A configuration restore restores that file's saved settings, not just one toggle. Full Hermes YAML-backup restore requires PyYAML in the backend and rejects malformed or duplicate-key documents.
 
-The most recent successful operation is available in **Last change**. **Review
-undo** shows what can safely be restored before you confirm. It restores only
-managed state that still matches its receipt. External edits and changed backups
-are left alone. A new successful operation replaces the previous undo point;
-previews, refusals, and no-ops do not create a fake undo point. This is not
-unlimited history.
+**An interrupted change is not the same as no change.** Stop retrying, refresh the result, and preserve the pending record and referenced backups. Do not delete a journal to dismiss the warning. Follow the [recovery triage guide](docs/development.md#recovery-triage) on disposable copies, or ask for help through a private channel.
 
-An interrupted operation leaves a recovery record and blocks further mutations.
-Refresh to inspect the status; preserve the record and its referenced backups
-for manual recovery. Do not delete the journal merely to dismiss the warning.
-Windows directory-link replacement uses rename-aside and rollback, not an atomic
-multi-file transaction. Creating links may require Developer Mode or privileges.
+> **Backups may contain credentials and are not encrypted.** Receipts avoid secret configuration snapshots, but paths and server names can still be sensitive. Never attach raw backups, configurations or receipts to public issues. See [Security](SECURITY.md).
 
-Configuration backups are exclusive private files named
-`<filename>.bak.hermes-loadout.<timestamp>`. Preserved skill copies live outside
-client discovery folders. Advanced lists recognized backups and previews a
-whole-file or copy restore, preserving the replaced version for undo. Full
-Hermes YAML-backup restore requires the backend's PyYAML parser and refuses
-malformed or duplicate-key documents; without that parser this one action is
-unavailable, rather than accepting an unvalidated configuration.
+These protections are for ordinary local operations, not hostile processes with your filesystem privileges. Multi-file changes are not one atomic transaction. On Windows, creating directory links may require Developer Mode or privileges.
 
-Receipts store hashes, identifiers, paths, and references, not secret configuration
-snapshots. **Original configuration backups can still contain credentials.** They
-are not encrypted. Paths and server names can also be sensitive. Review any
-report before sharing it. These checks protect ordinary desktop operations, not
-against an actively hostile process running with your own filesystem privileges.
+## Troubleshooting
 
-## MCP connections
+| Symptom | Next step |
+|---|---|
+| Missing backend or version mismatch | Enable the matching backend in the intended profile, fully restart Hermes, and retry. |
+| A path is missing or moved | Review the application/project path; do not strip its scope metadata. |
+| A scan cannot read a source | Check the selected path and permissions, then rescan. Do not treat a failed scan as an empty folder. |
+| A change is refused | Read the item reason, correct the underlying issue, and create a new preview. |
+| The client still shows old skills/connections | Refresh it or start a new session; check its trust rules and other discovery locations. |
+| An operation needs recovery | Preserve the journal/originals and use [read-only recovery triage](docs/development.md#recovery-triage). |
 
-Hermes `config.yaml` supplies the server inventory. Hermes has independent enabled
-state. Claude Desktop supports validated local stdio projections; Codex supports
-validated stdio and HTTP projections. Claude Code skill support does not imply a
-Claude Desktop skill directory, and catalog skill support does not imply an MCP
-writer for every application.
+For a reproducible bug, use the [alpha feedback template](.github/ISSUE_TEMPLATE/alpha-feedback.md). Include revisions and sanitized steps, not personal configuration files.
 
-MCP changes and loadout entries use the same preview and receipt flow. Native
-policies, timeouts, unrelated definitions, and client-only servers are preserved.
-A conflicting client definition requires separate manual resolution before an
-activation change; the UI does not force an overwrite. Unsupported transports,
-malformed configurations, and unavailable writers have diagnostics. No credentials
-or OAuth setup are invented. Refresh or restart clients as needed.
+## Update, roll back, or uninstall
 
-## Install and first use
+### Update a pinned installation
 
-Use a Hermes Desktop version supporting [unified desktop plugins](https://hermes-agent.nousresearch.com/docs/developer-guide/desktop-plugin-sdk).
-Start with the newest reviewed prerelease on the
-[Releases page](https://github.com/qwertyuiop97/hermes-loadout/releases). The default
-branch may contain changes intended for a later release.
+The install command above checks out a **tag**, not a tracking branch. Do not use `git pull` as a pinned-release upgrade procedure.
 
-Clone the repository you are reading into the active profile's plugin directory,
-using its **Code → clone URL**. The package directory and plugin ID must be
-`hermes-loadout`.
+1. In the plugin checkout, run `git status --short`. Preserve local changes before proceeding; do not overwrite them.
+2. Choose a reviewed tag from [Releases](https://github.com/qwertyuiop97/hermes-loadout/releases). Note your current revision with `git rev-parse HEAD`.
+3. Fetch that exact tag with `git fetch --depth 1 origin tag TAG`, replacing `TAG` with the selected release tag.
+4. Review the release notes and changes, then use `git switch --detach TAG`.
+5. Fully restart Hermes. Verify both plugin halves and inspect your setup before applying changes.
 
-```bash
-git clone --branch v0.1.0-alpha.1 --depth 1 \
-  https://github.com/qwertyuiop97/hermes-loadout.git \
-  ~/.hermes/plugins/hermes-loadout
-hermes plugins enable hermes-loadout
-```
+To roll back the **plugin code**, switch back to the recorded revision or fetch/switch to its release tag. This does not undo prior skill or MCP changes and does not guarantee that newer saved data works with an older version. Review compatibility and retain data/backups first. Backend and manifest edits require a full restart; Desktop-only edits can use **Reload desktop plugins**.
 
-Enable **Loadout for Hermes** in **Settings → Plugins**, fully quit and reopen
-Hermes, then open Loadout. Both plugin halves are opt-in. Backend or manifest
-changes require a full restart; a desktop-only file edit can use Reload desktop
-plugins. There is no frontend build step.
+### Uninstall
 
-Start with Scan & import. Review the discovered copies, then explicitly enable
-only the capabilities you need. Nothing is activated just because it was found.
-For a Git checkout, review updates before `git pull --ff-only`; do not overwrite
-local changes or silently move a pinned revision.
+First review removal of any unwanted managed links or MCP entries. Then disable `hermes-loadout` in the CLI and Desktop settings and remove only its installation folder. Uninstalling does not reverse previous operations. The library, saved loadouts, settings and backups remain until you deliberately remove them. **Never delete the Hermes skill library just to uninstall Loadout.**
 
-`HERMES_HOME` takes precedence over `HERMES_PROFILE`, then `~/.hermes` is the default.
-All displayed filesystem paths belong to the active backend, which can be a
-remote machine. Loadout does not give that backend access to desktop-local files.
-The desktop half must also be installed locally for Hermes Desktop to load it.
-
-Settings use `<hermes_home>/hermes-loadout.json`. This is an accepted clean
-pre-release identity reset: earlier development IDs and settings names are not
-loaded or migrated. Existing personal development settings require separate
-manual review. The plugin never rewrites them automatically.
-
-## Limitations and recovery
-
-A switch cannot override a client's trust rules, alternate skill directory, or
-old session catalog. A supported path is not an end-to-end client certification.
-Filesystem/HTTP tests and SDK-export checks are not native desktop verification.
-
-For a missing backend or version mismatch, enable the matching backend, fully
-restart Hermes, and Retry. For a moved project, review a corrected target rather
-than stripping its scope metadata. For a refusal, read the item reason instead
-of repeatedly applying the same plan. For interrupted recovery, keep the originals
-and receipt, and use disposable copies when diagnosing the failure.
-
-Uninstalling does not undo past operations. First review removal of unwanted
-links and MCP entries, then disable `hermes-loadout` in the CLI and desktop
-settings. Remove only this plugin's installation folder. The library, settings,
-loadouts, backups, and receipts remain until deliberately removed. Never delete
-the Hermes skill library just to uninstall Loadout.
+Settings live at `<hermes_home>/hermes-loadout.json`. Earlier development IDs/settings are not loaded or automatically migrated; review any old personal development setup separately.
 
 ## Development
 
-See [development and validation](docs/development.md), [contributing](CONTRIBUTING.md),
-and [security](SECURITY.md). The Python core runs on 3.9+ without installation of
-third-party packages; a pinned TOML reader is [bundled with its license](dashboard/_vendor/README.md).
-HTTP tests use pinned test dependencies. Full YAML-backup validation uses the
-host's optional PyYAML parser. No telemetry, provider switching, marketplace,
-cloud synchronization, or session management is included.
+See [development and validation](docs/development.md), [contributing](CONTRIBUTING.md), and [security](SECURITY.md). Core adapters remain importable on Python 3.9+; a [licensed TOML reader](dashboard/_vendor/README.md) is bundled. HTTP tests use pinned dependencies, and some YAML operations require the backend's PyYAML parser.
+
+Filesystem tests, React/SDK-substitute harnesses and SDK export checks are not native Desktop verification. Follow the documented disposable-profile acceptance checks before claiming a supported release. Loadout includes no telemetry, provider switching, marketplace, cloud synchronization or session management.
 
 ## License
 

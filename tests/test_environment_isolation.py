@@ -12,12 +12,13 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from isolation import disposable_root, isolated_user_home, run_isolated_python, bind_test_cores
 from test_plugin_api import Fixture, pa
-from test_mcp_backend import McpFixture
+from test_mcp_backend import McpFixture, needs_yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class ConfigurationIsolationTests(unittest.TestCase):
+    @needs_yaml
     def test_ambient_configs_cannot_influence_fixture_or_receive_writes(self):
         # This home is deliberately OUTSIDE McpFixture's own temporary tree.
         # Use ordinary production parsers and writers, not mocked server lists.

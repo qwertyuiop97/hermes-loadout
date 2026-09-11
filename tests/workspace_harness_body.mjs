@@ -14,6 +14,11 @@ state.capabilities = { reviewed_operations: 1, named_loadouts: 1 }
 const scanPlan = JSON.parse(readFileSync(new URL('./fixtures/first-run-scan-plan.json', import.meta.url), 'utf8'))
 scanPlan.plan_id = 'reviewed-import-token'
 scanPlan.adoptable[0].tool = null
+let nextScanPlan = scanPlan
+const refusedEmptyPlan = { ok: true, plan_id: 'refused-empty-token', entries: [], adoptable: [], duplicate_groups: [], refused: [
+  { root: '/fixture/missing-skills', code: 'not-dir' },
+  { root: '/fixture/private-skills', code: 'unreadable' }
+], totals: { sources: 2, entries: 0, adoptable: 0, conflicts: 0, refused: 2 } }
 const channel = { mode: 'ready', state, bundle: {}, notifications: [], registry: [], restCalls: [], navigations: [], workspaces: [], invalidated: [],
   operation: { ok: true, receipt: null, recovery_required: false }, loadouts: { ok: true, loadouts: [] },
   diff: { ok: true, unlinked: ['research/deep-research'], broken: [{ tool: 'claude', name: 'broken-skill', target: '/missing' }], foreign: [{ tool: 'opencode', name: 'foreign-skill', target: '/team/source' }], unmanaged: [{ tool: 'grok', name: 'real-skill-dir' }], counts: { broken: 1, foreign: 1, unmanaged: 1, unlinked: 1 }, catalog_bypasses: [] },
@@ -54,7 +59,7 @@ plugin.register({ source: 'plugin:hermes-loadout', os: {}, socket: () => () => {
       channel.operation = { ok: true, receipt }
       return { ok: true, receipt, changed: receipt.changed }
     }
-    if (path === '/import/plan') return holdScan ? new Promise(resolve => { resolveScan = resolve }) : scanPlan
+    if (path === '/import/plan') return holdScan ? new Promise(resolve => { resolveScan = resolve }) : nextScanPlan
     if (path === '/import/apply-plan') {
       assert.equal(body.plan_id, scanPlan.plan_id)
       const response = { ok: true, adopted: 1, failed: body.entries.length - 1, refused: 0,
@@ -164,6 +169,14 @@ assert.equal(tree.root.findAllByType('input').filter(node => node.props.type ===
 const folder = tree.root.findAllByType('input').find(node => node.props.placeholder === '/path/to/another/skills folder')
 await act(async () => folder.props.onChange({ target: { value: '/fixture/team/skills' } }))
 await clicks(tree, 'Add folder')
+nextScanPlan = refusedEmptyPlan
+await clicks(tree, 'Run scan')
+assert(tree.root.findByProps({ 'data-first-run-wizard': 'review' }))
+assert(text(tree).includes('/fixture/missing-skills') && text(tree).includes('not-dir'))
+assert(text(tree).includes('/fixture/private-skills') && text(tree).includes('unreadable'))
+assert(text(tree).includes('2 refused'))
+await clicks(tree, 'Change sources')
+nextScanPlan = scanPlan
 holdScan = true
 await clicks(tree, 'Run scan')
 assert(tree.root.findByProps({ 'data-wizard-scanning': 'true' }))
@@ -173,6 +186,14 @@ assert(tree.root.findByProps({ 'data-first-run-wizard': 'review' }))
 for (const kind of ['managed','unmanaged-skill','identical-duplicate','drifted','name-conflict','broken-link','foreign-link','unmanaged-dir']) assert(tree.root.findByProps({ 'data-classification': kind }))
 await clicks(tree, 'Continue')
 assert.equal(tree.root.findAll(node => node.props['data-adopt-entry']).length, 2)
+const importSearch = tree.root.findByProps({ 'aria-label': 'Find import entries' })
+await act(async () => importSearch.props.onChange({ target: { value: 'solo' } }))
+await clicks(tree, 'Select none')
+assert.equal(button(tree, 'Review dry run').props.disabled, true)
+await clicks(tree, 'Select visible')
+assert.equal(button(tree, 'Review dry run').props.disabled, false)
+await act(async () => importSearch.props.onChange({ target: { value: '' } }))
+await clicks(tree, 'Select visible')
 await clicks(tree, 'Review dry run')
 await clicks(tree, 'Apply plan…')
 assert(tree.root.findByProps({ role: 'dialog' }))

@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_plugin_api import Fixture, pa
-from test_mcp_backend import McpFixture
+from test_mcp_backend import McpFixture, needs_yaml
 
 
 class LinkSafetyTests(unittest.TestCase):
@@ -79,6 +79,7 @@ class ConfigSafetyTests(unittest.TestCase):
 
 
 
+@needs_yaml
 class McpSafetyTests(unittest.TestCase):
     def setUp(self):
         self.fx = McpFixture()

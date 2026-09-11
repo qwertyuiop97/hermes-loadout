@@ -40,9 +40,12 @@ subprocess, with every candidate inside its disposable home. The ambient-config
 regression seeds a separate fake home and verifies that it neither influences
 the fixture nor receives writes.
 
-The separate Python 3.9 gate installs no dependencies. Optional HTTP tests are
-not executed there; the three-OS HTTP matrix exercises them. Whole-YAML backup
-restore must refuse without PyYAML, and this refusal is tested instead of skipped.
+The separate Python 3.9 gate installs no dependencies. Optional HTTP tests and
+MCP YAML interpretation tests are not executed there; the three-OS dependency
+matrix exercises them. MCP catalog interpretation and whole-YAML backup restore
+require PyYAML at runtime and must refuse with explicit parser-required errors
+when it is unavailable. That refusal is tested instead of silently falling back
+to a partial handwritten YAML parser.
 The shipped plugin has no build step or declared type-check pipeline. Python
 syntax/import tests, ESM syntax, SDK import constraints, and focused behavior
 tests are the applicable gates, not a fictional successful production build.
@@ -83,6 +86,46 @@ Restore validates every relevant current target and preserved original before
 writing. A partial or interrupted restore must retain its journal and originals,
 not erase the warning. Recover it manually after inspecting all referenced
 paths; there is intentionally no “discard evidence and retry” button.
+
+## Recovery triage
+
+Use this procedure when Loadout reports an interrupted change. It is a read-only
+triage process, not permission to force a restore or delete a journal.
+
+1. **Stop writers.** Do not retry Apply/Undo, move skill folders, or edit the
+   affected client configuration while diagnosing it. A lost response does not
+   establish whether the last write happened.
+2. **Identify the right backend.** Record the plugin revision, Hermes version,
+   active profile, operation type and visible item statuses. With a remote
+   backend, inspect that machine's paths, not similarly named local files.
+3. **Preserve evidence privately.** Keep `data/hermes-loadout/pending-operation.json`,
+   `last-operation.json` if present, and every referenced original/backup. Work
+   from private disposable copies; configurations can contain credentials.
+4. **Classify each affected item.** Compare the current entry with the journal's
+   before/after identity and backup references. Do not infer success from a
+   filename alone. A `pending` item may have changed before the response or
+   journal update was interrupted.
+5. **Choose the case below.** Record what is known, what is uncertain and the
+   intended final state before attempting any repair with maintainer guidance.
+
+| Case | Inspect without changing originals |
+|---|---|
+| Activation interrupted | The specific skill link or MCP entry, its recorded before/after state, and any configuration backup. Do not restore an entire configuration merely to reverse one entry. |
+| Import interrupted | Source copy, preserved original, canonical destination and Hermes disabled state. Check each separately; a visible destination does not prove all steps completed. |
+| Undo interrupted | Which entries were restored, which remained unchanged, and which are uncertain. Do not apply the original operation again as a substitute for finishing undo. |
+| Backup restore interrupted | The selected backup, replacement target and pre-restore original. Compare contents/identities before deciding which copy is authoritative. |
+| Journal or backup unreadable/changed | Preserve everything. Resolve the read problem or seek private assistance; do not recreate a plausible record from memory. |
+
+There is no general-purpose "mark recovered" endpoint or safe universal sequence
+of shell commands for these cases. A maintainer-assisted reconciliation must
+account for every affected item and retain originals before changing recovery
+state. Restarting invalidates previews but does not resolve a persisted journal.
+A warning disappearing by itself is not proof of a correct final configuration.
+
+For assistance, share a sanitized description of the error, revision, operation
+kind and statuses through the process in [Security](../SECURITY.md). Do not attach
+raw journals or backup files to a public issue. Reproduce the case in isolated
+fixtures before proposing a recovery change.
 
 ## Adding a client
 

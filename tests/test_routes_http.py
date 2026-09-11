@@ -181,6 +181,30 @@ class RouteRoundTrip(unittest.TestCase):
         self.assertTrue(self.post('/loadouts/edit', loadout_id=record['id'], action='delete')['ok'])
         self.assertEqual(len(self.get('/loadouts')['loadouts']), 1)
 
+    def test_unreadable_hermes_config_is_visible_over_http(self):
+        self.fx.core.config_path.write_text(CONFIG, encoding='utf-8')
+        original_open = Path.open
+        target = self.fx.core.config_path
+
+        def denied(path, mode='r', *args, **kwargs):
+            if path == target and 'r' in mode:
+                raise PermissionError('fixture read permission denied')
+            return original_open(path, mode, *args, **kwargs)
+
+        from unittest.mock import patch
+        with patch.object(Path, 'open', denied):
+            state = self.get('/state')
+            self.assertTrue(state['ok'], state)
+            self.assertEqual(state['config']['code'], 'config-unreadable')
+            self.assertEqual(state['skills'][0]['tools']['hermes']['state'], 'config-unreadable')
+            mcp = self.get('/mcp/state')
+            self.assertTrue(mcp['partial_failure'], mcp)
+            self.assertEqual(mcp['catalog_error']['code'], 'config-unreadable')
+            captured = self.post('/loadouts/capture', apps=['hermes'])
+            self.assertTrue(captured['ok'], captured)
+            self.assertFalse(captured['states'])
+            self.assertTrue(captured['excluded'])
+
     def test_bypass_conflict_and_backup_preview_apply_undo_over_http(self):
         link = self.fx.codex / 'shared'
         link.symlink_to(self.fx.core.skills_root, target_is_directory=True)

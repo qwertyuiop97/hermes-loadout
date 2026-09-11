@@ -11,7 +11,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_plugin_api import Fixture, pa, SKILL_MD_TEMPLATE
 from isolation import bind_test_cores
-from test_mcp_backend import CONFIG
+from test_mcp_backend import CONFIG, needs_yaml
 
 spec = importlib.util.spec_from_file_location('loadout_service_tests', Path(__file__).resolve().parents[1] / 'dashboard/loadout_service.py')
 module = importlib.util.module_from_spec(spec)
@@ -22,6 +22,7 @@ def selection(kind='skill', app='codex', identity='apple/apple-notes', enabled=T
     return {'kind': kind, 'app': app, 'id': identity, 'enabled': enabled}
 
 
+@needs_yaml
 class LoadoutTests(unittest.TestCase):
     def setUp(self):
         self.fx = Fixture()
@@ -192,6 +193,62 @@ class LoadoutTests(unittest.TestCase):
         self.fx.core.tools['hermes']['scope'] = 'global'
         result = self.apply([selection('skill', 'hermes', 'apple/apple-notes', False)])
         self.assertEqual(result['changed'], 1, result)
+
+    def test_unreadable_hermes_config_blocks_fabricated_skill_and_mcp_states(self):
+        original_open = Path.open
+        target = self.fx.core.config_path
+
+        def denied(path, mode='r', *args, **kwargs):
+            if path == target and 'r' in mode:
+                raise PermissionError('fixture read permission denied')
+            return original_open(path, mode, *args, **kwargs)
+
+        with patch.object(Path, 'open', denied):
+            state = self.fx.core.state()
+            hermes = state['skills'][0]['tools']['hermes']
+            self.assertEqual(hermes['state'], 'config-unreadable')
+            captured = self.service.capture(['hermes'])
+            self.assertFalse(captured['states'])
+            self.assertTrue(captured['excluded'])
+            plan = self.service.plan([selection('skill', 'hermes', 'apple/apple-notes', False)])
+            self.assertEqual(plan['counts']['unavailable'], 1, plan)
+            mcp_plan = self.service.plan([selection('mcp', 'hermes', 'weather', True)])
+            self.assertEqual(mcp_plan['counts']['unavailable'], 1, mcp_plan)
+
+    def test_hermes_config_decoding_errors_block_fabricated_states(self):
+        self.fx.core.config_path.write_bytes(b'\xff\xfe\x00not utf8')
+        state = self.fx.core.state()
+        self.assertEqual(state['config']['code'], 'config-unreadable')
+        self.assertEqual(state['skills'][0]['tools']['hermes']['state'], 'config-unreadable')
+        captured = self.service.capture(['hermes'])
+        self.assertFalse(captured['states'])
+        self.assertTrue(captured['excluded'])
+        mcp_state = self.mcp.mcp_state()
+        self.assertTrue(mcp_state['partial_failure'])
+        self.assertEqual(mcp_state['catalog_error']['code'], 'config-unreadable')
+
+    def test_generated_operation_label_accepts_long_valid_skill_name(self):
+        long_name = 'a' * 60
+        skill_dir = self.fx.home / 'skills' / 'long' / long_name
+        skill_dir.mkdir(parents=True)
+        (skill_dir / 'SKILL.md').write_text(
+            SKILL_MD_TEMPLATE.format(name=long_name, desc='Long but valid for client validation'),
+            encoding='utf-8',
+        )
+        self.fx.core.invalidate()
+        long_id = f'long/{long_name}'
+        enable_label = 'Enable ' + long_name
+        disable_label = 'Disable ' + long_name
+        self.assertGreater(len(enable_label), 64)
+        enabled_plan = self.service.plan([selection('skill', 'codex', long_id, True)], label=enable_label)
+        self.assertTrue(enabled_plan['ok'])
+        result = self.service.apply(enabled_plan['plan_id'])
+        self.assertEqual(result['changed'], 1, result)
+        disabled_plan = self.service.plan([selection('skill', 'codex', long_id, False)], label=disable_label)
+        self.assertTrue(disabled_plan['ok'])
+        self.assertEqual(self.service.apply(disabled_plan['plan_id'])['changed'], 1)
+        with self.assertRaises(pa.LoadoutError):
+            self.service.save_loadout('x' * 65, [])
 
     def test_undo_scope_cannot_grow_after_preview(self):
         states = [selection(), selection('skill', 'codex', 'media/orphan-skill')]

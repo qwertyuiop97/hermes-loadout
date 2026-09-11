@@ -42,8 +42,10 @@ const DRIFT_KEY = [ID, 'drift']
 const MCP_KEY = [ID, 'mcp']
 const ONBOARDING_KEY = 'onboarding'
 const ONBOARDING_VERSION = 1
+const LOADOUT_DRAFTS_KEY = 'loadoutDrafts'
 const ccSectionAtom = atom('tools')
 const arrivalsAtom = atom([])
+const loadoutDraftGuardAtom = atom({ dirty: false })
 const watchPrefsEpochAtom = atom(0)
 const WORKSPACE_ID = 'hermes-loadout.control-center'
 let workspaceDispose = null
@@ -67,6 +69,27 @@ function storeSet(key, value) {
   } catch (_err) {
     /* storage is best-effort persistence for view preferences */
   }
+}
+
+function storedLoadoutDrafts() {
+  const drafts = storeGet(LOADOUT_DRAFTS_KEY, {})
+  return drafts && typeof drafts === 'object' && !Array.isArray(drafts) ? drafts : {}
+}
+
+function loadoutDraftKey(id) {
+  return id || '__new'
+}
+
+function persistLoadoutDraft(key, value) {
+  storeSet(LOADOUT_DRAFTS_KEY, { ...storedLoadoutDrafts(), [key]: value })
+}
+
+function clearPersistedLoadoutDraft(key) {
+  const drafts = storedLoadoutDrafts()
+  if (!(key in drafts)) return
+  const next = { ...drafts }
+  delete next[key]
+  storeSet(LOADOUT_DRAFTS_KEY, next)
 }
 
 // ---------------------------------------------------------------------------
@@ -124,6 +147,16 @@ function openControlCenter(section = 'tools') {
     return
   }
   host.navigate('/hermes-loadout')
+}
+
+function requestLoadoutTransition(action) {
+  const guard = loadoutDraftGuardAtom.get()
+  if (guard && guard.dirty && typeof guard.confirm === 'function') {
+    guard.confirm(action)
+    return false
+  }
+  action()
+  return true
 }
 
 function closeControlCenter() {
@@ -718,14 +751,21 @@ function McpPane() {
   const busy = ui.busy || !!ui.preview || !backendReady(inventory.data)
   const review = (servers, writer, enabled) => reviewSelections(servers.map(row => ({ kind: 'mcp', app: writer.app, id: row.name, enabled: enabled })), `${enabled ? 'Enable' : 'Disable'} MCP in ${writer.label}`)
   const filtered = rows.filter(row => row.name.toLowerCase().includes(search.toLowerCase()))
+  const config = state && state.config
+  const configLabel = config && (config.label || config.name || config.path)
+  const catalogDiagnostic = state && (state.catalog_error || state.catalog_unavailable || state.error_detail)
+  const catalogError = typeof catalogDiagnostic === 'string' ? catalogDiagnostic
+    : catalogDiagnostic ? String(catalogDiagnostic.error || catalogDiagnostic.code || 'MCP catalog unavailable') : null
   const names = { missing: 'Not configured', disabled: 'Off', enabled: 'On', drifted: 'Conflict', unsupported: 'Unsupported', unavailable: 'Unavailable' }
   const refresh = () => { refreshInventory(qc); query.refetch() }
   if (query.isPending) return jsx('div', { className: 'p-3', children: jsx(Skeleton, { className: 'h-32 w-full' }) })
   if (query.isError || !state || !state.ok) return jsx(ErrorState, { title: 'MCP inventory unavailable', description: 'Check the Hermes server configuration, then refresh. No server settings were changed.', children: jsx(Button, { onClick: refresh, children: 'Retry' }) })
   return jsxs('div', { className: 'flex h-full min-w-0 flex-col text-sm', children: [
     jsxs('header', { className: 'flex min-w-0 flex-col gap-2 border-b border-(--ui-stroke-secondary) p-3', children: [
-      jsxs('div', { className: 'flex flex-wrap items-center gap-2', children: [jsx('h2', { className: 'font-medium', children: 'MCP connections' }), jsx(Badge, { variant: 'outline', size: 'xs', children: `${rows.length} servers` }), jsx(Button, { variant: 'ghost', size: 'xs', onClick: refresh, children: 'Refresh' })] }),
+      jsxs('div', { className: 'flex flex-wrap items-center gap-2', children: [jsx('h2', { className: 'font-medium', children: 'MCP connections' }), jsx(Badge, { variant: 'outline', size: 'xs', children: `${rows.length} server${rows.length === 1 ? '' : 's'}` }), jsx(Button, { variant: 'ghost', size: 'xs', onClick: refresh, children: 'Refresh' })] }),
       jsx('p', { className: 'text-xs text-muted-foreground', children: 'Hermes supplies server definitions. Each application has its own activation. Credentials stay in the original configurations, never in a loadout.' }),
+      configLabel ? jsx('p', { className: 'break-words text-xs text-muted-foreground', children: `Catalog source: ${configLabel}${config && config.path && config.path !== configLabel ? ` · ${config.path}` : ''}` }) : null,
+      catalogError ? jsx('p', { role: 'alert', className: 'break-words text-xs text-(--ui-text-warning)', children: catalogError }) : null,
       state.partial_failure ? jsx('p', { role: 'alert', className: 'text-xs text-(--ui-text-warning)', children: 'One client configuration is unavailable. Other supported clients remain usable. Check the client settings, then refresh.' }) : null,
       state.counts && state.counts.foreign ? jsx('p', { className: 'text-xs text-muted-foreground', children: `${state.counts.foreign} client-only servers are protected and not controlled by these switches.` }) : null,
       !backendReady(inventory.data) ? jsx('p', { role: 'alert', className: 'text-xs text-(--ui-text-warning)', children: 'Fully restart Hermes to load the matching backend before changing activation.' }) : null,
@@ -750,12 +790,13 @@ function McpPane() {
             blocked ? jsx('p', { className: 'w-full text-muted-foreground', children: current === 'drifted' ? 'This client has a different definition. Resolve it in the client configuration; applying a loadout will not overwrite it.' : current === 'unsupported' ? 'This client does not support the configured transport or fields.' : 'This client configuration could not be read safely. Correct it and refresh.' }) : null
           ] }, writer.app)
         }) })
-      ] }, row.name)) }) : jsx(EmptyState, { title: rows.length ? 'No matching servers' : 'No MCP servers configured', description: 'Configure a server in Hermes first, then refresh here. Loadout never invents credentials.' }) })
+      ] }, row.name)) }) : jsx(EmptyState, { title: rows.length ? 'No matching servers' : catalogError ? 'MCP catalog unavailable' : 'No MCP servers configured', description: catalogError ? 'Fix the reported Hermes configuration issue, then refresh. Loadout did not change any server settings.' : 'Configure a server in Hermes first, then refresh here. Loadout never invents credentials.' }) })
   ] })
 }
 
 function ToolCard({ tool, counts, busy, onManage, onEnableAll, onDisableAll }) {
   const t = usePluginI18n(ID)
+  const pathLabel = tool.special === 'config' ? t('toolConfigBacked') : tool.dir || t('toolPathUnknown')
   return jsxs('section', {
     'data-tool-card': tool.id,
     className: 'flex min-w-0 flex-col gap-3 rounded-lg border border-(--ui-stroke-secondary) p-3',
@@ -772,7 +813,7 @@ function ToolCard({ tool, counts, busy, onManage, onEnableAll, onDisableAll }) {
               jsx('div', {
                 'data-tool-path': tool.id,
                 className: 'whitespace-normal break-words text-xs text-muted-foreground',
-                children: tool.dir || t('toolPathUnknown')
+                children: pathLabel
               })
             ]
           }),
@@ -1336,21 +1377,80 @@ function OperationItems({ items, tools }) {
     ] }, `${item.kind || 'repair'}-${item.app || item.tool}-${item.id || item.name}-${index}`)) })
 }
 
-function operationPreviewDescription(preview, tools, actionable) {
-  const labelFor = app => app === 'library' ? 'Library' : app === 'claude-desktop' ? 'Claude Desktop' : ((tools || []).find(tool => tool.id === app)?.label || app)
-  const labels = { enable: 'Enable', disable: 'Disable', unchanged: 'Unchanged', unavailable: 'Unavailable',
-    conflict: 'Conflict', protected: 'Protected', completed: 'Completed', failed: 'Failed', replace: 'Replace reviewed copy', restore: 'Restore', pending: 'Needs recovery' }
-  const intro = preview.description || 'Only the listed selections will change. Other applications and unlisted capabilities remain unchanged.'
-  const items = (preview.items || []).map(item => {
-    const target = labelFor(item.app || item.tool) || 'Library'
-    const action = labels[item.status] || item.status || 'Remove broad link'
-    const detail = item.error || item.reason
-    return `${item.id || item.name} · ${target}: ${action}${detail ? ` — ${detail}` : ''}`
-  }).join('; ')
-  const ending = actionable
-    ? 'Refresh the affected application or start a new session afterward. Entries changed since this preview will be protected.'
-    : 'Nothing in this preview can change safely. Close it and resolve the listed issues.'
-  return [intro, items, ending].filter(Boolean).join(' ')
+function focusableDialogNodes(node) {
+  if (!node || typeof node.querySelectorAll !== 'function') return []
+  return Array.from(node.querySelectorAll('button,[href],input,select,textarea,[tabindex]:not([tabindex="-1"])'))
+    .filter(item => !item.disabled && item.getAttribute?.('aria-hidden') !== 'true')
+}
+
+function AccessibleDialog({ title, children, className, onClose, dataProps = {} }) {
+  const titleId = useId()
+  const ref = useRef(null)
+  const restoreRef = useRef(null)
+  useEffect(() => {
+    if (typeof document === 'undefined') return undefined
+    restoreRef.current = document.activeElement
+    const nodes = focusableDialogNodes(ref.current)
+    ;(nodes[0] || ref.current)?.focus?.()
+    return () => restoreRef.current?.focus?.()
+  }, [])
+  const onKeyDown = event => {
+    if (event.key === 'Escape') {
+      event.preventDefault?.()
+      onClose?.()
+      return
+    }
+    if (event.key !== 'Tab' || typeof document === 'undefined') return
+    const nodes = focusableDialogNodes(ref.current)
+    if (!nodes.length) return
+    const first = nodes[0]
+    const last = nodes[nodes.length - 1]
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault?.()
+      last.focus?.()
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault?.()
+      first.focus?.()
+    }
+  }
+  return jsxs('div', { ...dataProps, ref: ref, role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': titleId, tabIndex: -1, onKeyDown: onKeyDown, className: className, children: [
+    jsx('div', { id: titleId, className: 'font-medium', children: title }, 'title'),
+    jsx('div', { className: 'contents', children: children }, 'body')
+  ] })
+}
+
+function OperationReviewDialog({ preview, tools, busy, actionable, onClose, onConfirm }) {
+  if (!preview) return null
+  const applying = (preview.items || []).filter(item => ['enable', 'disable', 'restore', 'replace'].includes(item.status) || item.code === 'catalog-bypass')
+  const protectedItems = (preview.items || []).filter(item => ['protected', 'conflict', 'unavailable', 'failed'].includes(item.status) || item.error)
+  return jsx(AccessibleDialog, { title: preview.label || 'Repair catalog bypass', onClose: onClose, dataProps: { 'data-operation-review': 'true' }, className: 'm-2 flex max-h-96 flex-col gap-3 rounded-md border border-(--ui-stroke-secondary) bg-background p-3 text-xs', children: [
+    jsx('p', { className: 'text-muted-foreground', children: preview.description || 'Only the listed selections will change. Other applications and unlisted capabilities remain unchanged.' }, 'description'),
+    jsxs('div', { className: 'flex flex-wrap gap-2', children: [
+      jsx(Badge, { variant: 'outline', size: 'xs', children: `${applying.length} to apply` }),
+      jsx(Badge, { variant: protectedItems.length ? 'warn' : 'outline', size: 'xs', children: `${protectedItems.length} protected or blocked` }),
+      jsx(Badge, { variant: 'outline', size: 'xs', children: `${(preview.items || []).length} reviewed items` })
+    ] }, 'totals'),
+    jsx(OperationItems, { items: preview.items, tools: tools }, 'items'),
+    jsx('p', { className: actionable ? 'text-muted-foreground' : 'text-(--ui-text-warning)', children: actionable
+      ? 'Refresh the affected application or start a new session afterward. Entries changed since this preview will be protected.'
+      : 'Nothing in this preview can change safely. Close it and resolve the listed issues.' }, 'safety'),
+    jsxs('div', { className: 'flex flex-wrap gap-2', children: [
+      jsx(Button, { variant: 'ghost', size: 'xs', disabled: busy, onClick: onClose, children: 'Cancel' }),
+      jsx(Button, { variant: actionable ? 'primary' : 'secondary', size: 'xs', disabled: busy, onClick: onConfirm, children: busy ? 'Working…' : actionable ? 'Apply reviewed changes' : 'Close preview' })
+    ] }, 'actions')
+  ] })
+}
+
+function RecoveryInspector({ latest, receipt }) {
+  const recoveryItems = latest && Array.isArray(latest.recovery_items) ? latest.recovery_items
+    : receipt && Array.isArray(receipt.items) ? receipt.items.filter(item => item.status === 'pending' || item.status === 'failed' || item.error) : []
+  const pendingPath = latest && (latest.pending_path || latest.journal_path || latest.recovery_path)
+  return jsxs('section', { 'data-recovery-inspector': 'true', className: 'mt-2 flex flex-col gap-2 rounded-md border border-(--ui-stroke-secondary) p-2 text-xs', children: [
+    jsx('div', { className: 'font-medium', children: 'Recovery inspector' }),
+    jsx('p', { className: 'text-muted-foreground', children: 'Read-only evidence from the last backend response. Use it to identify affected entries before manual recovery.' }),
+    jsx('div', { className: 'break-all text-muted-foreground', children: pendingPath || 'Journal: data/hermes-loadout/pending-operation.json in the active Hermes profile' }),
+    recoveryItems.length ? jsx(OperationItems, { items: recoveryItems, tools: latest && latest.tools }) : jsx('p', { className: 'text-muted-foreground', children: 'No per-item recovery details were returned. Preserve the journal and refresh after inspecting the active profile backups.' })
+  ] })
 }
 
 function OperationsPanel() {
@@ -1382,12 +1482,11 @@ function OperationsPanel() {
     ui.error ? jsx('p', { role: 'alert', className: 'mt-2 break-words text-(--ui-text-danger)', children: ui.error }) : null,
     latestQuery.isError ? jsx('p', { role: 'alert', className: 'mt-2 text-(--ui-text-warning)', children: 'Recovery is unavailable. Fully restart Hermes after updating the backend, then refresh.' }) : null,
     recovery ? jsx('p', { role: 'alert', className: 'mt-2 break-words text-(--ui-text-warning)', children: 'Stop changing these files. Preserve data/hermes-loadout/pending-operation.json and backups in the active Hermes profile. Inspect the affected entries before manual recovery, then refresh. Do not delete a pending record just to retry.' }) : null,
+    recovery ? jsx(RecoveryInspector, { latest: latest, receipt: receipt }) : null,
     expanded && receipt ? jsx(OperationItems, { items: receipt.items, tools: stateQuery.data && stateQuery.data.tools }) : null,
-    jsx(ConfirmDialog, { open: !!preview, title: preview ? preview.label || 'Repair catalog bypass' : '',
-      description: preview ? operationPreviewDescription(preview, stateQuery.data && stateQuery.data.tools, actionable) : null,
+    jsx(OperationReviewDialog, { preview: preview, tools: stateQuery.data && stateQuery.data.tools, busy: ui.busy, actionable: actionable,
       onClose: cancelOperationReview,
-      onConfirm: () => { if (!ui.busy) actionable ? applyOperation(qc) : cancelOperationReview() },
-      confirmLabel: ui.busy ? 'Working…' : actionable ? 'Apply reviewed changes' : 'Close preview' })
+      onConfirm: () => { if (!ui.busy) actionable ? applyOperation(qc) : cancelOperationReview() } })
   ] })
 }
 
@@ -1396,8 +1495,10 @@ function useSavedLoadouts() {
 }
 
 function selectLoadout(id) {
-  selectedLoadoutAtom.set(id || null)
-  storeSet('selectedLoadout', id || null)
+  requestLoadoutTransition(() => {
+    selectedLoadoutAtom.set(id || null)
+    storeSet('selectedLoadout', id || null)
+  })
 }
 
 function LoadoutPicker() {
@@ -1435,6 +1536,7 @@ function LoadoutManager() {
   const [error, setError] = useState(null)
   const [notice, setNotice] = useState(null)
   const [deleting, setDeleting] = useState(false)
+  const [pendingTransition, setPendingTransition] = useState(null)
   const stateQuery = useQuery({ queryKey: STATE_KEY, queryFn: () => pluginCtx.rest('/state').then(requireOk), staleTime: 10000 })
   const mcpQuery = useQuery({ queryKey: MCP_KEY, queryFn: () => pluginCtx.rest('/mcp/state').then(requireOk), staleTime: 10000 })
   const state = stateQuery.data
@@ -1447,12 +1549,15 @@ function LoadoutManager() {
   for (const row of draft && draft.states || []) {
     if (!availableApps.some(app => app.id === row.app)) availableApps.push({ id: row.app, label: `${row.app} (unavailable)` })
   }
-  const beginEdit = row => {
-    setDraft({ id: row.id || null, name: row.name, states: row.states.map(item => ({ ...item })) })
-    const ids = Array.from(new Set(row.states.map(item => item.app)))
+  const beginEdit = (row, options = {}) => {
+    const saved = options.persisted === false ? null : storedLoadoutDrafts()[loadoutDraftKey(row.id)]
+    const nextDraft = saved && saved.draft ? saved.draft : { id: row.id || null, name: row.name, states: row.states.map(item => ({ ...item })) }
+    setDraft({ ...nextDraft, states: (nextDraft.states || []).map(item => ({ ...item })) })
+    const ids = saved && Array.isArray(saved.apps) ? saved.apps : Array.from(new Set((nextDraft.states || []).map(item => item.app)))
     setApps(ids.length ? ids : ['hermes'])
-    setEditingApp(ids[0] || 'hermes')
-    setError(null); setNotice(null); setEditingCapabilities(false)
+    setEditingApp(saved && saved.editingApp ? saved.editingApp : ids[0] || 'hermes')
+    setSearch(saved && typeof saved.search === 'string' ? saved.search : '')
+    setError(null); setNotice(saved ? 'Unsaved draft restored. Save or discard it before leaving.' : null); setEditingCapabilities(saved ? saved.editingCapabilities === true : false)
   }
   // Hydrate when selection changes, not on background refreshes that could
   // erase unsaved edits. An explicit New draft has no saved selection.
@@ -1469,11 +1574,35 @@ function LoadoutManager() {
       const result = requireOk(await pluginCtx.rest(path, { method: 'POST', body: body }))
       const data = requireOk(await pluginCtx.rest('/loadouts'))
       qc.setQueryData(LOADOUTS_KEY, data)
-      if (body.action === 'delete') { selectLoadout(''); setDraft(null) }
-      else { editingSelection.current = result.loadout.id; selectLoadout(result.loadout.id); beginEdit(result.loadout) }
+      if (body.action === 'delete') { clearPersistedLoadoutDraft(loadoutDraftKey(body.loadout_id)); selectedLoadoutAtom.set(null); storeSet('selectedLoadout', null); setDraft(null) }
+      else { clearPersistedLoadoutDraft(loadoutDraftKey(body.loadout_id)); editingSelection.current = result.loadout.id; selectedLoadoutAtom.set(result.loadout.id); storeSet('selectedLoadout', result.loadout.id); beginEdit(result.loadout, { persisted: false }) }
       setNotice(body.action === 'delete' ? 'Loadout deleted. Application activation was not changed.' : 'Loadout saved. Application activation was not changed.')
     } catch (caught) { setError(caught.message) }
     finally { setWorking(false); setDeleting(false) }
+  }
+  const saveDraft = async () => {
+    if (working || !draft || !draft.name.trim()) return false
+    const previousKey = loadoutDraftKey(draft.id)
+    setWorking(true); setError(null); setNotice(null)
+    try {
+      const result = requireOk(await pluginCtx.rest('/loadouts/save', { method: 'POST', body: { name: draft.name, states: draft.states, ...(draft.id ? { loadout_id: draft.id } : {}) } }))
+      const data = requireOk(await pluginCtx.rest('/loadouts'))
+      qc.setQueryData(LOADOUTS_KEY, data)
+      clearPersistedLoadoutDraft(previousKey)
+      clearPersistedLoadoutDraft(loadoutDraftKey(result.loadout.id))
+      editingSelection.current = result.loadout.id
+      selectedLoadoutAtom.set(result.loadout.id)
+      storeSet('selectedLoadout', result.loadout.id)
+      beginEdit(result.loadout, { persisted: false })
+      setPendingTransition(null)
+      setNotice('Loadout saved. Application activation was not changed.')
+      return true
+    } catch (caught) {
+      setError(caught.message)
+      return false
+    } finally {
+      setWorking(false)
+    }
   }
   const capture = async () => {
     if (working || !apps.length) return
@@ -1508,10 +1637,43 @@ function LoadoutManager() {
   const filtered = capabilities.filter(row => `${row.label} ${row.kind}`.toLowerCase().includes(search.toLowerCase()))
   const dirty = draft && (!record || draft.name !== record.name || JSON.stringify(draft.states) !== JSON.stringify(record.states))
   const busy = working || operation.busy || !!operation.preview || !backendReady(state)
+  useEffect(() => {
+    if (draft && dirty) {
+      persistLoadoutDraft(loadoutDraftKey(draft.id), { draft: draft, apps: apps, editingApp: editingApp, editingCapabilities: editingCapabilities, search: search })
+    } else if (draft) {
+      clearPersistedLoadoutDraft(loadoutDraftKey(draft.id))
+    }
+  }, [draft, dirty, apps.join('|'), editingApp, editingCapabilities, search])
+  useEffect(() => {
+    if (!dirty) {
+      loadoutDraftGuardAtom.set({ dirty: false })
+      return undefined
+    }
+    const guard = { dirty: true, confirm: action => setPendingTransition(() => action) }
+    loadoutDraftGuardAtom.set(guard)
+    return () => {
+      if (loadoutDraftGuardAtom.get() === guard) loadoutDraftGuardAtom.set({ dirty: false })
+    }
+  }, [dirty])
+  const finishPendingTransition = action => {
+    setPendingTransition(null)
+    if (typeof action === 'function') action()
+  }
+  const saveThenFinishPendingTransition = async () => {
+    const action = pendingTransition
+    if (await saveDraft()) finishPendingTransition(action)
+  }
+  const discardThenFinishPendingTransition = () => {
+    const action = pendingTransition
+    if (draft) clearPersistedLoadoutDraft(loadoutDraftKey(draft.id))
+    finishPendingTransition(action)
+    if (record && selectedLoadoutAtom.get() === selected) beginEdit(record, { persisted: false })
+    else setDraft(null)
+  }
   if (query.isPending) return jsx(Skeleton, { className: 'm-3 h-32' })
   if (query.isError || !query.data || query.data.ok !== true) return jsx(ErrorState, { title: 'Loadouts unavailable', description: 'Restart the updated backend or correct its saved records, then retry.', children: jsx(Button, { onClick: () => query.refetch(), children: 'Retry' }) })
   return jsx(ScrollArea, { className: 'h-full', children: jsxs('div', { 'data-loadout-manager': 'true', className: 'flex min-w-0 flex-col gap-3 p-3', children: [
-    jsxs('div', { className: 'flex flex-wrap items-center gap-2', children: [jsx('h2', { className: 'font-medium', children: 'Named loadouts' }), jsx(Button, { variant: 'primary', size: 'xs', disabled: busy, onClick: () => { editingSelection.current = ''; selectLoadout(''); beginEdit({ name: '', states: [] }) }, children: 'New loadout' })] }),
+    jsxs('div', { className: 'flex flex-wrap items-center gap-2', children: [jsx('h2', { className: 'font-medium', children: 'Named loadouts' }), jsx(Button, { variant: 'primary', size: 'xs', disabled: busy, onClick: () => requestLoadoutTransition(() => { editingSelection.current = ''; selectedLoadoutAtom.set(null); storeSet('selectedLoadout', null); beginEdit({ name: '', states: [] }) }), children: 'New loadout' })] }),
     jsx('p', { className: 'text-xs text-muted-foreground', children: 'Save desired skill and MCP states for selected applications. Saving never applies them. Unlisted capabilities remain unchanged when you apply.' }),
     jsx(LoadoutPicker, {}),
     notice ? jsx('p', { role: 'status', className: 'text-xs text-muted-foreground', children: notice }) : null,
@@ -1541,20 +1703,29 @@ function LoadoutManager() {
         filtered.length > 100 ? jsx('p', { className: 'text-xs text-muted-foreground', children: `Showing 100 of ${filtered.length}. Refine the search to edit the rest; all saved selections are retained.` }) : null
       ] }) : null,
       jsxs('div', { className: 'flex flex-wrap gap-2', children: [
-        jsx(Button, { variant: 'primary', size: 'xs', disabled: busy || !draft.name.trim(), onClick: () => updateRecord('/loadouts/save', { name: draft.name, states: draft.states, ...(draft.id ? { loadout_id: draft.id } : {}) }), children: 'Save loadout' }),
-        jsx(Button, { variant: 'secondary', size: 'xs', disabled: busy || !draft.id || dirty, onClick: () => reviewOperation('/loadouts/plan', { loadout_id: draft.id }), children: 'Review saved loadout' }),
-        jsx(Button, { variant: 'ghost', size: 'xs', disabled: busy || !draft.id, onClick: () => updateRecord('/loadouts/edit', { loadout_id: draft.id, action: 'duplicate' }), children: 'Duplicate' }),
-        jsx(Button, { variant: 'ghost', size: 'xs', disabled: busy || !draft.id, onClick: () => setDeleting(true), children: 'Delete loadout' })
+        jsx(Button, { variant: 'primary', size: 'xs', disabled: busy || !draft.name.trim(), onClick: saveDraft, children: 'Save loadout' }),
+        jsx(Button, { variant: 'secondary', size: 'xs', disabled: busy || !draft.id, onClick: () => reviewOperation('/loadouts/plan', { loadout_id: draft.id }), children: dirty ? 'Review saved version' : 'Review saved loadout' }),
+        jsx(Button, { variant: 'ghost', size: 'xs', disabled: busy || !draft.id, onClick: () => requestLoadoutTransition(() => updateRecord('/loadouts/edit', { loadout_id: draft.id, action: 'duplicate' })), children: dirty ? 'Duplicate saved version' : 'Duplicate' }),
+        jsx(Button, { variant: 'ghost', size: 'xs', disabled: busy || !draft.id, onClick: () => requestLoadoutTransition(() => setDeleting(true)), children: 'Delete loadout' })
       ] }),
       dirty ? jsx('p', { className: 'text-xs text-muted-foreground', children: 'Save your edits before applying this loadout.' }) : null
     ] }),
+    pendingTransition ? jsx(AccessibleDialog, { title: 'Unsaved loadout draft', onClose: () => setPendingTransition(null), className: 'rounded-md border border-(--ui-stroke-secondary) p-3 text-xs', children: [
+      jsx('p', { className: 'mt-1 text-muted-foreground', children: 'Save this draft, discard it, or cancel and keep editing.' }, 'description'),
+      error ? jsx('p', { role: 'alert', className: 'mt-2 break-words text-(--ui-text-danger)', children: error }, 'error') : null,
+      jsxs('div', { className: 'mt-2 flex flex-wrap gap-2', children: [
+        jsx(Button, { variant: 'primary', size: 'xs', disabled: working || !draft?.name.trim(), onClick: saveThenFinishPendingTransition, children: 'Save draft' }),
+        jsx(Button, { variant: 'secondary', size: 'xs', disabled: working, onClick: discardThenFinishPendingTransition, children: 'Discard draft' }),
+        jsx(Button, { variant: 'ghost', size: 'xs', disabled: working, onClick: () => setPendingTransition(null), children: 'Cancel' })
+      ] }, 'actions')
+    ] }) : null,
     jsx(ConfirmDialog, { open: deleting, title: 'Delete this saved loadout?', description: 'This removes the saved selection only. No application or skill files will change.', confirmLabel: 'Delete loadout', onClose: () => setDeleting(false), onConfirm: () => draft && updateRecord('/loadouts/edit', { loadout_id: draft.id, action: 'delete' }) })
   ] }) })
 }
 
 function ArrivalBanner({ arrivals, onDismiss }) {
   return jsxs('aside', { 'data-arrivals': 'true', className: 'm-3 flex flex-wrap items-center gap-2 rounded-md border border-(--ui-stroke-secondary) p-3 text-xs', children: [
-    jsx('p', { className: 'min-w-0 flex-1', children: `${arrivals.length} newly observed skills. Discovery does not enable them.` }),
+    jsx('p', { className: 'min-w-0 flex-1', children: `${arrivals.length} newly observed skill${arrivals.length === 1 ? '' : 's'}. Discovery does not enable them.` }),
     jsx(Button, { variant: 'ghost', size: 'xs', onClick: onDismiss, children: 'Dismiss' })
   ] })
 }
@@ -1776,6 +1947,35 @@ function ImportPlanPreview({ plan, chosen }) {
   })
 }
 
+function ImportScanSummary({ plan }) {
+  const t = usePluginI18n(ID)
+  const totals = plan && plan.totals ? plan.totals : {}
+  const entries = plan && Array.isArray(plan.entries) ? plan.entries : []
+  const refused = plan && Array.isArray(plan.refused) ? plan.refused : []
+  const skipped = plan && Array.isArray(plan.skipped) ? plan.skipped : []
+  const entrySources = Array.from(new Set(entries.map(row => row.source).filter(Boolean)))
+  const sourceCount = typeof totals.sources === 'number' ? totals.sources : entrySources.length + refused.length + skipped.length
+  return jsxs('section', { 'data-import-scan-summary': 'true', className: 'flex flex-col gap-2 rounded-md border border-(--ui-stroke-secondary) p-3 text-xs', children: [
+    jsx('div', { className: 'font-medium', children: t('wizardScanSummary', sourceCount, entries.length, refused.length, skipped.length) }),
+    entrySources.length ? jsxs('div', { children: [
+      jsx('div', { className: 'font-medium', children: t('wizardScannedSources') }),
+      entrySources.map(source => jsx('div', { className: 'break-words text-muted-foreground', children: source }, source))
+    ] }) : null,
+    refused.length ? jsxs('div', { children: [
+      jsx('div', { className: 'font-medium text-(--ui-text-warning)', children: t('wizardRefusals') }),
+      refused.map((row, index) => jsx('div', {
+        'data-import-refusal': row.code,
+        className: 'break-words text-(--ui-text-warning)',
+        children: t('wizardRefusalLine', row.root || row.path || row.tool || t('unknownPath'), row.code)
+      }, `${row.root || row.path || row.tool}-${index}`))
+    ] }) : jsx('p', { className: 'text-muted-foreground', children: t('wizardNoRefusals') }),
+    skipped.length ? jsxs('div', { children: [
+      jsx('div', { className: 'font-medium text-muted-foreground', children: t('wizardSkippedSources') }),
+      skipped.map((row, index) => jsx('div', { className: 'break-words text-muted-foreground', children: t('wizardRefusalLine', row.root || row.path || t('unknownPath'), row.code || row.reason || t('none')) }, `${row.root || row.path || index}`))
+    ] }) : null
+  ] })
+}
+
 function ImportReceipt({ response, undoResults }) {
   const t = usePluginI18n(ID)
   const receipt = response && response.receipt ? response.receipt : {}
@@ -1816,6 +2016,7 @@ function ImportReceipt({ response, undoResults }) {
 
 function FirstRunWizard() {
   const t = usePluginI18n(ID)
+  const folderId = useId()
   const qc = useQueryClient()
   const saved = wizardState()
   const [step, setStep] = useState(saved.step || 'welcome')
@@ -1825,6 +2026,7 @@ function FirstRunWizard() {
   const [category, setCategory] = useState(saved.category)
   const [plan, setPlan] = useState(null)
   const [chosenKeys, setChosenKeys] = useState(() => new Set())
+  const [importSearch, setImportSearch] = useState('')
   const [confirm, setConfirm] = useState(null)
   const [receipt, setReceipt] = useState(null)
   const [undoResults, setUndoResults] = useState(null)
@@ -1864,6 +2066,7 @@ function FirstRunWizard() {
   const entryKey = row => `${row.source}\u0000${row.name}`
   const entries = plan && Array.isArray(plan.entries) ? plan.entries : []
   const adoptable = plan && Array.isArray(plan.adoptable) ? plan.adoptable : []
+  const visibleAdoptable = adoptable.filter(row => `${row.name} ${row.path || ''} ${row.source || ''}`.toLowerCase().includes(importSearch.toLowerCase()))
   const chosen = adoptable.filter(row => chosenKeys.has(entryKey(row)) && (row.tool == null || selectedTools.has(row.tool)))
   const groupedKinds = [
     ['managed', 'wizardManaged'], ['unmanaged-skill', 'wizardUnique'],
@@ -1931,6 +2134,17 @@ function FirstRunWizard() {
     else next.add(key)
     return next
   })
+  const selectVisibleImports = checked => setChosenKeys(previous => {
+    const next = new Set(previous)
+    for (const row of visibleAdoptable) {
+      if (row.tool != null && !selectedTools.has(row.tool)) continue
+      const key = entryKey(row)
+      if (checked) next.add(key)
+      else next.delete(key)
+    }
+    return next
+  })
+  const selectNoImports = () => setChosenKeys(new Set())
   const addFolder = () => {
     const value = folderInput.trim()
     if (!value || scanRoots.indexOf(value) !== -1) return
@@ -1984,15 +2198,16 @@ function FirstRunWizard() {
           jsxs('span', { children: [jsx('span', { className: 'block font-medium', children: tool.label }), jsx('span', { className: 'block break-words text-xs text-muted-foreground', children: (tool.scope === 'project' ? t('projectScope') : t('globalScope')) + ': ' + tool.dir })] })
         ]
       }, tool.id)),
-      jsxs('div', { className: 'flex gap-2', children: [
-        jsx(Input, { value: folderInput, onChange: event => setFolderInput(event.target.value), placeholder: t('wizardFolderPlaceholder'), className: 'flex-1' }),
+      jsxs('div', { className: 'flex flex-wrap gap-2', children: [
+        jsx('label', { htmlFor: folderId, className: 'w-full text-xs font-medium', children: t('wizardFolderLabel') }),
+        jsx(Input, { id: folderId, 'aria-label': t('wizardFolderLabel'), value: folderInput, onChange: event => setFolderInput(event.target.value), placeholder: t('wizardFolderPlaceholder'), className: 'min-w-0 flex-1' }),
         jsx(Button, { variant: 'secondary', size: 'sm', disabled: !folderInput.trim(), onClick: addFolder, children: t('wizardAddFolder') })
       ] }),
       scanRoots.map(root => jsxs('div', { 'data-scan-root': root, className: 'flex items-center gap-2 text-xs text-muted-foreground', children: [
         jsx('span', { className: 'min-w-0 flex-1 break-words', children: root }),
         jsx(Button, { variant: 'ghost', size: 'xs', onClick: () => setScanRoots(previous => previous.filter(item => item !== root)), children: t('remove') })
       ] }, root)),
-      jsxs('div', { className: 'flex gap-2', children: [
+      jsxs('div', { className: 'flex flex-wrap gap-2', children: [
         jsx(Button, { variant: 'secondary', size: 'sm', onClick: () => saveProgress('welcome'), children: t('back') }),
         jsx(Button, { variant: 'primary', size: 'sm', disabled: !selectedTools.size && !scanRoots.length, onClick: runScan, children: t('wizardRunScan') })
       ] })
@@ -2005,14 +2220,16 @@ function FirstRunWizard() {
     ] })
   } else if (step === 'review') {
     body = entries.length === 0 ? jsxs('div', { className: 'flex max-w-2xl flex-col gap-3', children: [
-      jsx('h2', { className: 'text-lg font-medium', children: t('wizardScanEmptyTitle') }),
+      jsx(ImportScanSummary, { plan: plan }),
+      jsx('h2', { className: 'text-lg font-medium', children: (plan && Array.isArray(plan.refused) && plan.refused.length) ? t('wizardScanRefusedTitle') : t('wizardScanEmptyTitle') }),
       jsx('p', { className: 'text-sm text-muted-foreground', children: t('wizardScanEmptyDesc') }),
-      jsxs('div', { className: 'flex gap-2', children: [
+      jsxs('div', { className: 'flex flex-wrap gap-2', children: [
         jsx(Button, { variant: 'secondary', size: 'sm', onClick: () => saveProgress('sources'), children: t('wizardRescan') }),
         jsx(Button, { variant: 'primary', size: 'sm', onClick: finish, children: t('wizardViewTools') })
       ] })
     ] }) : jsxs('div', { className: 'flex flex-col gap-3', children: [
       jsx('h2', { className: 'text-lg font-medium', children: t('wizardReviewTitle') }),
+      jsx(ImportScanSummary, { plan: plan }),
       plan && Array.isArray(plan.duplicate_groups) && plan.duplicate_groups.length
         ? jsx('div', { 'data-duplicate-groups': 'true', className: 'rounded-md border border-(--ui-stroke-secondary) p-2 text-xs text-(--ui-text-warning)', children: t('wizardDuplicateGroups', plan.duplicate_groups.length) })
         : null,
@@ -2023,7 +2240,7 @@ function FirstRunWizard() {
           rows.slice(0, 4).map(row => jsx('div', { className: 'break-words text-xs text-muted-foreground', children: `${row.name} — ${row.path}` }, `${row.source}-${row.name}`))
         ] }, kind)
       }) }),
-      jsxs('div', { className: 'flex gap-2', children: [
+      jsxs('div', { className: 'flex flex-wrap gap-2', children: [
         jsx(Button, { variant: 'secondary', size: 'sm', onClick: () => saveProgress('sources'), children: t('wizardRescan') }),
         jsx(Button, { variant: 'primary', size: 'sm', onClick: () => setStep('choose'), children: t('continue') })
       ] })
@@ -2034,18 +2251,26 @@ function FirstRunWizard() {
       jsx('div', { className: 'flex flex-wrap gap-2', children: detectedTools.map(tool => jsxs('label', { 'data-manage-tool': tool.id, className: 'flex items-center gap-1 text-xs', children: [
         jsx('input', { type: 'checkbox', checked: selectedTools.has(tool.id), onChange: () => toggleTool(tool.id), 'aria-label': t('wizardManageTool', tool.label) }), tool.label
       ] }, tool.id)) }),
-      adoptable.length ? adoptable.map(row => jsxs('label', {
+      adoptable.length ? jsxs('div', { className: 'flex flex-col gap-2', children: [
+        jsx(SearchField, { 'aria-label': 'Find import entries', placeholder: t('wizardImportSearch'), value: importSearch, onChange: value => setImportSearch(value && value.target ? value.target.value : value) }),
+        jsxs('div', { className: 'flex flex-wrap items-center gap-2', children: [
+          jsx(Button, { variant: 'secondary', size: 'xs', disabled: !adoptable.length, onClick: selectNoImports, children: t('selectNone') }),
+          jsx(Button, { variant: 'secondary', size: 'xs', disabled: !visibleAdoptable.length, onClick: () => selectVisibleImports(true), children: t('selectVisible') }),
+          jsx('span', { className: 'text-xs text-muted-foreground', children: t('wizardVisibleImports', visibleAdoptable.length, adoptable.length) })
+        ] }),
+        ...visibleAdoptable.map(row => jsxs('label', {
         'data-adopt-entry': row.name,
         className: 'flex items-start gap-2 rounded-md border border-(--ui-stroke-secondary) p-2',
         children: [
           jsx('input', { type: 'checkbox', checked: chosenKeys.has(entryKey(row)), disabled: row.tool != null && !selectedTools.has(row.tool), onChange: () => toggleEntry(row), 'aria-label': t('wizardSelectEntry', row.name) }),
           jsxs('span', { children: [jsx('span', { className: 'block font-medium', children: row.name }), jsx('span', { className: 'block break-words text-xs text-muted-foreground', children: row.path })] })
         ]
-      }, entryKey(row))) : jsx(EmptyState, { title: t('wizardNothingToAdopt'), description: t('wizardNothingDesc') }),
+      }, entryKey(row)))
+      ] }) : jsx(EmptyState, { title: t('wizardNothingToAdopt'), description: t('wizardNothingDesc') }),
       entries.some(row => row.conflict || row.kind === 'identical-duplicate' || row.kind === 'drifted')
         ? jsx('div', { 'data-duplicates-flagged': 'true', className: 'text-xs text-(--ui-text-warning)', children: t('wizardDuplicatesFlagged') })
         : null,
-      jsxs('div', { className: 'flex gap-2', children: [
+      jsxs('div', { className: 'flex flex-wrap gap-2', children: [
         jsx(Button, { variant: 'secondary', size: 'sm', onClick: () => setStep('review'), children: t('back') }),
         jsx(Button, { variant: 'primary', size: 'sm', disabled: !chosen.length, onClick: () => setStep('preview'), children: t('wizardReviewPlan') })
       ] })
@@ -2055,7 +2280,7 @@ function FirstRunWizard() {
       jsx('h2', { className: 'text-lg font-medium', children: t('wizardPreviewTitle') }),
       jsx(ImportPlanPreview, { plan: plan, chosen: chosen }),
       jsx('p', { className: 'text-xs text-muted-foreground', children: t('wizardApplySafety') }),
-      jsxs('div', { className: 'flex gap-2', children: [
+      jsxs('div', { className: 'flex flex-wrap gap-2', children: [
         jsx(Button, { variant: 'secondary', size: 'sm', onClick: () => setStep('choose'), children: t('back') }),
         jsx(Button, { variant: 'primary', size: 'sm', disabled: !chosen.length, onClick: startApply, children: t('wizardApply') })
       ] })
@@ -2071,7 +2296,7 @@ function FirstRunWizard() {
     body = jsxs('div', { className: 'flex max-w-2xl flex-col gap-3', children: [
       jsx('h2', { className: 'text-lg font-medium', children: t('wizardReceiptTitle') }),
       jsx(ImportReceipt, { response: receipt, undoResults: undoResults }),
-      jsxs('div', { className: 'flex gap-2', children: [
+      jsxs('div', { className: 'flex flex-wrap gap-2', children: [
         jsx(Button, { variant: 'secondary', size: 'sm', disabled: !undo.length, onClick: undoAdoption, children: t('undo') }),
         jsx(Button, { variant: 'primary', size: 'sm', onClick: finish, children: t('wizardViewTools') })
       ] })
@@ -2082,7 +2307,7 @@ function FirstRunWizard() {
     'data-first-run-wizard': step,
     className: 'flex h-full min-w-0 flex-col text-sm',
     children: [
-      jsxs('div', { className: 'flex items-center gap-2 border-b border-(--ui-stroke-secondary) px-4 py-3', children: [
+      jsxs('div', { className: 'flex flex-wrap items-center gap-2 border-b border-(--ui-stroke-secondary) px-4 py-3', children: [
         jsx(Button, { variant: 'secondary', size: 'xs', onClick: () => ccSectionAtom.set('tools'), children: t('backToTools') }),
         jsx('span', { className: 'font-medium', children: t('wizardTitle') }),
         jsx(Badge, { variant: 'outline', size: 'xs', children: t('wizardStep', stepIndex + 1, WIZARD_STEPS.length) })
@@ -2106,9 +2331,10 @@ function SectionPlaceholder({ title, hint }) {
 }
 
 function PrimaryNav({ sections, active, onSelect, layout }) {
+  const controlId = useId()
   if (layout === 'narrow') return jsxs('nav', { 'aria-label': 'Loadout sections', className: 'flex w-full min-w-0 items-center gap-2 border-b border-(--ui-stroke-secondary) p-2', children: [
-    jsx('label', { htmlFor: 'loadout-section', className: 'text-xs text-muted-foreground', children: 'Section' }),
-    jsx('select', { id: 'loadout-section', 'aria-label': 'Loadout section', value: sections.some(section => section.id === active) ? active : 'tools',
+    jsx('label', { htmlFor: controlId, className: 'text-xs text-muted-foreground', children: 'Section' }),
+    jsx('select', { id: controlId, 'aria-label': 'Loadout section', value: sections.some(section => section.id === active) ? active : 'tools',
       onChange: event => onSelect(event.target.value), className: 'min-w-0 flex-1 rounded-md border border-(--ui-stroke-secondary) bg-background px-2 py-1 text-sm',
       children: sections.map(section => jsx('option', { value: section.id, children: section.label }, section.id)) })
   ] })
@@ -2160,7 +2386,7 @@ function ControlCenter() {
       jsxs('div', {
         className: layout === 'narrow' ? 'flex min-h-0 flex-1 flex-col' : 'flex min-h-0 flex-1 flex-row',
         children: [
-          jsx(PrimaryNav, { sections: sections, active: active, onSelect: next => ccSectionAtom.set(next), layout: layout }),
+          jsx(PrimaryNav, { sections: sections, active: active, onSelect: next => requestLoadoutTransition(() => ccSectionAtom.set(next)), layout: layout }),
           jsx('main', { className: 'min-h-0 min-w-0 flex-1', children: renderBody() })
         ]
       }),
@@ -2209,6 +2435,7 @@ export default {
         problemLine: (broken, drift, foreign, bypasses) => `${broken} broken · ${drift} conflicts · ${foreign} protected · ${bypasses} bypasses`,
         toolsLandingHint: 'Manage daily skill availability by tool.',
         toolPathUnknown: 'Path not detected',
+        toolConfigBacked: 'Configuration-backed in the active Hermes profile',
         manageTool: 'Manage',
         enabledOfTotal: (enabled, total) => `${enabled} on / ${total}`,
         enabledLabel: 'enabled',
@@ -2265,6 +2492,7 @@ export default {
         wizardSelectTool: label => `Scan ${label}`,
         wizardManageTool: label => `Manage ${label}`,
         wizardFolderPlaceholder: '/path/to/another/skills folder',
+        wizardFolderLabel: 'Additional skills folder',
         wizardAddFolder: 'Add folder',
         wizardRunScan: 'Run scan',
         wizardScanningTitle: 'Scanning selected folders…',
@@ -2272,7 +2500,12 @@ export default {
         wizardScanFailed: 'Could not complete the import scan',
         wizardReviewTitle: 'Review what was found',
         wizardScanEmptyTitle: 'No skills found',
+        wizardScanRefusedTitle: 'Selected sources could not be scanned',
         wizardScanEmptyDesc: 'No skills were found in the selected folders. Nothing changed. Choose different folders or return to Tools.',
+        wizardScanSummary: (sources, entries, refused, skipped) => `${sources} sources · ${entries} entries · ${refused} refused · ${skipped} skipped`,
+        wizardScannedSources: 'Scanned sources',
+        wizardSkippedSources: 'Skipped sources',
+        wizardNoRefusals: 'No refused scan sources.',
         wizardDuplicateGroups: n => `${n} duplicate-name group(s) need review and will not be adopted automatically.`,
         wizardManaged: 'Managed links',
         wizardUnique: 'Unique copies',
@@ -2284,6 +2517,8 @@ export default {
         wizardUnmanaged: 'Unmanaged entries',
         wizardRescan: 'Change sources',
         wizardChooseTitle: 'Choose tools and skills to manage',
+        wizardImportSearch: 'Find imports',
+        wizardVisibleImports: (visible, total) => `${visible} visible of ${total}`,
         wizardSelectEntry: name => `Adopt ${name}`,
         wizardNothingToAdopt: 'No unique copies to adopt',
         wizardNothingDesc: 'Protected, duplicate, drifted, and already-managed entries remain unchanged.',
@@ -2322,6 +2557,8 @@ export default {
         backToTools: 'Back to Applications',
         bulkReceiptId: id => `Receipt ${id}`,
         viewEnabled: 'Enabled',
+        selectNone: 'Select none',
+        selectVisible: 'Select visible',
         selectAllVisible: 'Select all visible',
         visibleCount: n => `${n} visible`,
         selectSkill: skill => `Select ${skill}`,

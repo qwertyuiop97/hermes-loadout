@@ -7,9 +7,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from test_mcp_backend import McpFixture, pa
+from test_mcp_backend import McpFixture, needs_yaml, pa
 
 
+@needs_yaml
 class McpUnreadableTests(unittest.TestCase):
     def test_unreadable_writer_refuses_sync_and_remove_without_changing_files(self):
         fixture = McpFixture()

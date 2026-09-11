@@ -45,7 +45,8 @@ jobs:
         with:
           python-version: '3.9'
       - name: Python 3.9 core without dependency installation
-        # HTTP tests are covered by the matrix; missing YAML restore fails closed.
+        # HTTP and MCP YAML interpretation are covered by the dependency matrix;
+        # no-deps keeps imports clean and verifies explicit parser-required refusal.
         run: python -m unittest discover -s tests -p 'test_*.py' -v
 
   frontend:

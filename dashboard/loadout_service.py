@@ -69,6 +69,11 @@ class LoadoutService:
             raise self.Error('Use a loadout name of 1 to 64 characters.', 'invalid-name')
         return name.strip()
 
+    def _operation_label(self, label):
+        if not isinstance(label, str) or not label.strip() or len(label) > 256 or any(ord(c) < 32 for c in label):
+            raise self.Error('Use an operation label of 1 to 256 characters.', 'invalid-label')
+        return label.strip()
+
     def _states(self, states):
         if not isinstance(states, list) or len(states) > 2048:
             raise self.Error('A loadout may contain at most 2,048 explicit selections.', 'invalid-states')
@@ -242,6 +247,9 @@ class LoadoutService:
                 raise self.Error(result.get('reason', 'This entry is protected.'), result.get('code', 'protected'))
             return 'unchanged' if result['kind'] == 'satisfied' else ('enable' if row['enabled'] else 'disable')
         public = self.mcp.mcp_state()
+        if public.get('catalog_error'):
+            error = public['catalog_error']
+            raise self.Error(error.get('error', 'The Hermes MCP catalog cannot be read.'), error.get('code', 'config-unreadable'))
         entry = next((r for r in public['rows'] if r['name'] == row['id']), None)
         if entry is None:
             raise self.Error('This server is unavailable in the Hermes inventory.', 'unknown-server')
@@ -290,7 +298,8 @@ class LoadoutService:
                     items.append(item)
                 except (self.Error, OSError, ValueError) as exc:
                     items.append(self._public_error(row, exc))
-            payload = {'label': self._name(label), 'items': items, 'loadout_id': loadout_id}
+            label = self._operation_label(label)
+            payload = {'label': label, 'items': items, 'loadout_id': loadout_id}
             if loadout_id is not None:
                 record = next(r for r in self._loadouts()['loadouts'] if r['id'] == loadout_id)
                 payload['definition_hash'] = self.digest(record)

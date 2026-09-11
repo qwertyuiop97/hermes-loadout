@@ -6,9 +6,11 @@ Fixtures only; no real config files are touched.
 from __future__ import annotations
 
 import json
+import importlib.util
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 _REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO / "tests"))
@@ -16,6 +18,8 @@ from test_plugin_api import Fixture, pa  # noqa: E402
 
 McpCore = pa.McpCore
 LoadoutError = pa.LoadoutError
+YAML_AVAILABLE = importlib.util.find_spec("yaml") is not None
+needs_yaml = unittest.skipUnless(YAML_AVAILABLE, "PyYAML required for MCP YAML interpretation")
 
 CONFIG = """# header comment
 model:
@@ -68,6 +72,7 @@ class McpFixture(Fixture):
 
 
 class ParseTests(unittest.TestCase):
+    @needs_yaml
     def test_parse_mcp_servers(self) -> None:
         parsed = pa.parse_mcp_servers(CONFIG)
         self.assertEqual(sorted(parsed), ["chrome-devtools", "docs", "weather"])
@@ -79,6 +84,7 @@ class ParseTests(unittest.TestCase):
         self.assertFalse(weather["enabled"])
         self.assertEqual(weather["definition"]["env"], {"API_KEY": "sk-test-123"})
 
+    @needs_yaml
     def test_parse_edge_cases(self) -> None:
         text = (
             "mcp_servers:\n"
@@ -113,10 +119,91 @@ class ParseTests(unittest.TestCase):
         assert p3["quoted"]["definition"]["args"] == ["x # y"]
         assert p3["colon-value"]["definition"]["env"]["TOKEN"] == "a:b:c"
 
+    @needs_yaml
+    def test_toggle_does_not_rewrite_nested_enabled_env_key(self) -> None:
+        text = 'mcp_servers:\n  docs:\n    command: node\n    env:\n      enabled: "keep-me"\n'
+        updated = pa.set_mcp_server_enabled(text, 'docs', True)
+        self.assertEqual(pa.parse_mcp_servers(updated)['docs']['definition']['env']['enabled'], 'keep-me')
+        disabled = pa.set_mcp_server_enabled(text, 'docs', False)
+        self.assertFalse(pa.parse_mcp_servers(disabled)['docs']['enabled'])
+        self.assertEqual(pa.parse_mcp_servers(disabled)['docs']['definition']['env']['enabled'], 'keep-me')
+
+    @needs_yaml
+    def test_parse_yaml_flow_and_quoted_scalars_preserves_supported_types(self) -> None:
+        text = (
+            "mcp_servers:\n"
+            "  flow-docs:\n"
+            "    command: node\n"
+            "    args: [\"server.js\", \"--port\", \"1234\"]\n"
+            "    env:\n"
+            "      PORT: \"1234\"\n"
+            "      DEBUG: \"false\"\n"
+            "      EMPTY: \"\"\n"
+            "      RETRIES: 3\n"
+            "      ENABLED: true\n"
+        )
+        parsed = pa.parse_mcp_servers(text)
+        definition = parsed["flow-docs"]["definition"]
+        self.assertEqual(definition["args"], ["server.js", "--port", "1234"])
+        self.assertEqual(definition["env"]["PORT"], "1234")
+        self.assertEqual(definition["env"]["DEBUG"], "false")
+        self.assertEqual(definition["env"]["EMPTY"], "")
+        self.assertEqual(definition["env"]["RETRIES"], 3)
+        self.assertEqual(definition["env"]["ENABLED"], True)
+        with self.assertRaises(LoadoutError) as error:
+            pa._check_mcp_projection(definition, "claude")
+        self.assertEqual(error.exception.code, "invalid-definition")
+
+    @needs_yaml
+    def test_parse_mcp_servers_duplicate_keys_fail_closed(self) -> None:
+        text = (
+            "mcp_servers:\n"
+            "  docs:\n"
+            "    command: node\n"
+            "  docs:\n"
+            "    command: other\n"
+        )
+        with self.assertRaises(LoadoutError) as error:
+            pa.parse_mcp_servers(text)
+        self.assertEqual(error.exception.code, "config-invalid")
+
+    def test_mcp_yaml_without_pyyaml_requires_parser_for_quoted_types_and_duplicates(self) -> None:
+        real_import = __import__
+
+        def without_yaml(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "yaml":
+                raise ImportError("fixture missing PyYAML")
+            return real_import(name, globals, locals, fromlist, level)
+
+        with patch("builtins.__import__", without_yaml):
+            self.assertEqual(pa.parse_mcp_servers("model: x\n"), {})
+            for text in (
+                (
+                    "mcp_servers:\n"
+                    "  docs:\n"
+                    "    command: node\n"
+                    "    env:\n"
+                    "      PORT: \"1234\"\n"
+                    "      DEBUG: \"false\"\n"
+                ),
+                (
+                    "mcp_servers:\n"
+                    "  docs:\n"
+                    "    command: node\n"
+                    "  docs:\n"
+                    "    command: other\n"
+                ),
+            ):
+                with self.subTest(text=text):
+                    with self.assertRaises(LoadoutError) as error:
+                        pa.parse_mcp_servers(text)
+                    self.assertEqual(error.exception.code, "config-parser-required")
+
     def test_parse_no_block_and_garbage(self) -> None:
         self.assertEqual(pa.parse_mcp_servers("model: x\n"), {})
         self.assertEqual(pa.parse_mcp_servers(""), {})
 
+    @needs_yaml
     def test_set_enabled_flip_insert_and_selfcheck(self) -> None:
         out = pa.set_mcp_server_enabled(CONFIG, "weather", True)
         self.assertTrue(pa.parse_mcp_servers(out)["weather"]["enabled"])
@@ -136,6 +223,52 @@ class ParseTests(unittest.TestCase):
         except pa.ConfigEditError:
             pass
         self.assertEqual(pa.parse_mcp_servers(CONFIG)["weather"]["enabled"], False)
+
+    @needs_yaml
+    def test_toggle_flow_and_alternate_indentation_preserves_semantics_or_refuses(self) -> None:
+        fx = McpFixture()
+        self.addCleanup(fx.cleanup)
+        flow = (
+            "mcp_servers:\n"
+            "  docs:\n"
+            "    command: node\n"
+            "    args: [\"server.js\", \"--port\", \"1234\"]\n"
+            "    env:\n"
+            "      PORT: \"1234\"\n"
+            "      DEBUG: \"false\"\n"
+        )
+        (fx.home / "config.yaml").write_text(flow, encoding="utf-8")
+        before = (fx.home / "config.yaml").read_text(encoding="utf-8")
+        result = fx.mcp.toggle_hermes("docs", False)
+        self.assertEqual(result["action"], "config-updated")
+        parsed = pa.parse_mcp_servers((fx.home / "config.yaml").read_text(encoding="utf-8"))
+        self.assertFalse(parsed["docs"]["enabled"])
+        self.assertEqual(parsed["docs"]["definition"]["args"], ["server.js", "--port", "1234"])
+        self.assertEqual(parsed["docs"]["definition"]["env"]["PORT"], "1234")
+        self.assertEqual(parsed["docs"]["definition"]["env"]["DEBUG"], "false")
+        self.assertIn('args: ["server.js", "--port", "1234"]', (fx.home / "config.yaml").read_text(encoding="utf-8"))
+        self.assertNotEqual((fx.home / "config.yaml").read_text(encoding="utf-8"), before)
+
+        alternate = (
+            "mcp_servers:\n"
+            "    docs:\n"
+            "        command: node\n"
+            "        args:\n"
+            "            - server.js\n"
+        )
+        (fx.home / "config.yaml").write_text(alternate, encoding="utf-8")
+        result = fx.mcp.toggle_hermes("docs", False)
+        self.assertEqual(result["action"], "config-updated")
+        parsed = pa.parse_mcp_servers((fx.home / "config.yaml").read_text(encoding="utf-8"))
+        self.assertFalse(parsed["docs"]["enabled"])
+        self.assertEqual(parsed["docs"]["definition"]["args"], ["server.js"])
+
+        root_flow = 'mcp_servers: {docs: {command: node, args: ["server.js"]}}\n'
+        (fx.home / "config.yaml").write_text(root_flow, encoding="utf-8")
+        with self.assertRaises(LoadoutError) as error:
+            fx.mcp.toggle_hermes("docs", False)
+        self.assertEqual(error.exception.code, "config-edit")
+        self.assertEqual((fx.home / "config.yaml").read_text(encoding="utf-8"), root_flow)
 
 
 CODEX_TOML = """# codex config
@@ -163,6 +296,7 @@ max_depth = 2 # trailing section
 """
 
 
+@needs_yaml
 class CodexWriterTests(unittest.TestCase):
     def setUp(self) -> None:
         self.fx = McpFixture()
@@ -239,6 +373,7 @@ class CodexWriterTests(unittest.TestCase):
         self.assertFalse(st["writers"]["codex"]["present"])
 
 
+@needs_yaml
 class McpCoreTests(unittest.TestCase):
     def setUp(self) -> None:
         self.fx = McpFixture()

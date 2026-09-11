@@ -6,9 +6,10 @@ import unittest
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_plugin_api import pa
-from test_mcp_backend import McpFixture
+from test_mcp_backend import McpFixture, needs_yaml
 
 
+@needs_yaml
 class McpPreservationTests(unittest.TestCase):
     def setUp(self):
         self.fx = McpFixture()
