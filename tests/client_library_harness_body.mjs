@@ -43,7 +43,7 @@ const rest = async (path, options = {}) => {
   ] }
 }
 plugin.register({ source: 'plugin:hermes-loadout', rest,
-  storage: { get: (key, fallback) => key === 'onboarding' ? { version: 1, complete: true } : fallback, set: () => {} },
+  storage: { get: (key, fallback) => key === 'onboarding:["local","default"]' ? { version: 1, complete: true } : fallback, set: () => {} },
   i18n: { register: bundle => Object.assign(channel.bundle, bundle) }, registerMany: () => {}, os: {}, socket: () => () => {} })
 const buttons = tree => tree.root.findAllByType('button')
 const button = (tree, label) => buttons(tree).find(node => node.children.join('') === label)

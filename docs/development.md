@@ -66,7 +66,11 @@ python tests/check_frontend.py --require-sdk --sdk-index /path/to/hermes-agent/a
 React harnesses use real React and an SDK substitute. They cover rendering,
 container-responsive navigation, keyboard names, review cancellation, errors,
 partial receipts, undo, immutable import selection, the client library, and
-loadout editing. They do not replace a disposable native Hermes session.
+loadout editing. A dedicated two-source harness verifies that query caches,
+selections, drafts, onboarding state and late mutation responses are isolated by
+the SDK connection/profile identity. Pre-isolation drafts are recoverable only
+through an explicit source assignment. These tests do not replace a disposable
+native Hermes session.
 
 ## State and recovery
 
@@ -143,3 +147,11 @@ Hermes version: plugin loading, backend restart, narrow/wide layouts, actual tab
 focus and dialog focus restoration, Global/Project setup, new-session client
 skill discovery, import without activation, and reopening/undo recovery.
 A screenshot of an SDK-fixture render is labeled as such, never as native proof.
+
+## Reliability audit
+
+See [the September 2026 audit](reliability-audit.md) for the implemented
+save/capture/review/editor fixes and remaining native acceptance priorities.
+Record writes use the same 4 MiB UTF-8 limit as reads and preserve existing
+records on overflow. Capture refuses unreadable selected MCP configurations
+without returning replacement draft states.

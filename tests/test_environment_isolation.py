@@ -175,14 +175,23 @@ core = api.McpCore(home)
 assert api.same_path(core.codex_config, codex)
 assert api.is_inside(core.claude_config, user)
 state = core.mcp_state()
-assert [row['name'] for row in state['rows']] == ['fixture-home']
+try:
+    import yaml
+except ImportError:
+    assert state['catalog_error']['code'] == 'config-parser-required', state
+    assert state['rows'] == [], state
+else:
+    assert 'catalog_error' not in state, state
+    assert [row['name'] for row in state['rows']] == ['fixture-home'], state
 assert sorted(row['name'] for row in state['foreign']) == ['fixture-claude', 'fixture-codex']
 print('ISOLATED_DEFAULTS_OK')
 """.replace('MODULE', repr(str(ROOT / 'dashboard/plugin_api.py')))
-        with disposable_root() as root:
-            result = run_isolated_python(probe, root / 'user')
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('ISOLATED_DEFAULTS_OK', result.stdout)
+        for block_yaml in (False, True):
+            with self.subTest(block_yaml=block_yaml), disposable_root() as root:
+                prefix = "import sys; sys.modules['yaml'] = None\n" if block_yaml else ''
+                result = run_isolated_python(prefix + probe, root / 'user')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('ISOLATED_DEFAULTS_OK', result.stdout)
 
     def test_singletons_remain_in_the_fixture_after_a_real_core_reset(self):
         with disposable_root() as ambient, isolated_user_home(ambient / 'user'):

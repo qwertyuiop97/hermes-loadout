@@ -4,6 +4,24 @@ import { createElement, Fragment, useSyncExternalStore, useState } from 'react'
 
 const S = () => globalThis.__LOADOUT_TEST || {}
 
+const sourceState = (field, fallback) => ({
+  get: () => S().source?.[field] ?? fallback,
+  subscribe: fn => {
+    const listeners = (S().sourceListeners ||= new Set())
+    listeners.add(fn)
+    return () => listeners.delete(fn)
+  },
+  listen(fn) {
+    return this.subscribe(fn)
+  }
+})
+
+const sourceForQuery = queryKey => {
+  const channel = S()
+  if (!Array.isArray(queryKey) || queryKey.length < 4 || !channel.sources) return channel
+  return channel.sources[`${queryKey[2]}\u0000${queryKey[3]}`] || channel
+}
+
 const el = (type, props, ...kids) => {
   const { children, ...rest } = props || {}
   const list = Array.isArray(children) ? children : children !== undefined && children !== null ? [children] : []
@@ -32,7 +50,11 @@ export const host = {
       if (typeof rec.onClose === 'function') rec.onClose()
     }
   },
-  state: {}
+  state: {
+    connectionId: sourceState('connectionId', 'local'),
+    profile: sourceState('profile', 'default')
+  },
+  activeConnectionId: () => S().source?.connectionId ?? 'local'
 }
 
 export const haptic = () => {}
@@ -59,32 +81,33 @@ export const SegmentedControl = (props) => el('div', { role: 'radiogroup' }, pro
 export function useQuery({ queryKey }) {
   const field = queryKey[1] === 'mcp' ? 'mcpState' : queryKey[1]
   const channel = S()
+  const source = sourceForQuery(queryKey)
   useSyncExternalStore(fn => {
     const listeners = channel.queryListeners ||= new Set()
     listeners.add(fn)
     return () => listeners.delete(fn)
-  }, () => channel[field], () => channel[field])
+  }, () => source[field], () => source[field])
   const mode = S().mode || 'ready'
   if (['loadouts', 'operation', 'metadata', 'backups'].includes(queryKey[1])) {
     const defaults = { loadouts: { ok: true, loadouts: [] }, operation: { ok: true, receipt: null, recovery_required: false }, metadata: { ok: true, skills: {}, classifications: ['Portable', 'Hermes-specific', 'Codex-specific', 'Claude-specific', 'Other application-specific', 'Unclassified'] }, backups: { ok: true, backups: [], count: 0 } }
-    return { data: channel[field] || defaults[field], isLoading: mode === 'loading', isPending: mode === 'loading', isError: mode === 'error', error: mode === 'error' ? new Error('Fixture connection failure') : null, refetch: async () => { (channel.refetched ||= []).push(field) } }
+    return { data: source[field] || defaults[field], isLoading: mode === 'loading', isPending: mode === 'loading', isError: mode === 'error', error: mode === 'error' ? new Error('Fixture connection failure') : null, refetch: async () => { (channel.refetched ||= []).push(field) } }
   }
   if (queryKey[1] === 'mcp') {
     if (mode === 'loading') return { data: undefined, isLoading: true, isPending: true, isError: false, error: null, refetch: () => {} }
     if (mode === 'error') return { data: undefined, isLoading: false, isPending: false, isError: true, error: new Error('x') }
-    return { data: S().mcpState, isLoading: false, isPending: false, isError: false, error: null, refetch: () => {} }
+    return { data: source.mcpState, isLoading: false, isPending: false, isError: false, error: null, refetch: () => {} }
   }
   if (queryKey[1] === 'drift') {
     if (mode === 'error') return { data: undefined, isLoading: false, isError: true, error: new Error('x') }
-    return { data: S().drift || S().driftList || { ok: true, drifted: [], count: 0 }, isLoading: false, isPending: false, isError: false, error: null, refetch: () => {} }
+    return { data: source.drift || source.driftList || { ok: true, drifted: [], count: 0 }, isLoading: false, isPending: false, isError: false, error: null, refetch: () => {} }
   }
   if (queryKey[1] === 'state') {
     if (mode === 'loading') return { data: undefined, isLoading: true, isPending: true, isError: false, error: null, refetch: () => {} }
     if (mode === 'error') return { data: undefined, isLoading: false, isPending: false, isError: true, error: new Error(S().errorMessage || 'boom'), refetch: () => {} }
-    return { data: S().state, isLoading: false, isPending: false, isError: false, error: null, refetch: () => {} }
+    return { data: source.state, isLoading: false, isPending: false, isError: false, error: null, refetch: () => {} }
   }
   if (mode === 'error') return { data: undefined, isLoading: false, isPending: false, isError: true, error: new Error('x') }
-  return { data: S().diff, isLoading: false, isPending: false, isError: false, error: null, refetch: () => {} }
+  return { data: source.diff, isLoading: false, isPending: false, isError: false, error: null, refetch: () => {} }
 }
 
 export function useMutation(opts) {
@@ -118,11 +141,12 @@ export const useQueryClient = () => ({
   setQueryData: (key, updater) => {
     const field = key[1] === 'mcp' ? 'mcpState' : key[1]
     const channel = S()
-    channel[field] = typeof updater === 'function' ? updater(channel[field]) : updater
+    const source = sourceForQuery(key)
+    source[field] = typeof updater === 'function' ? updater(source[field]) : updater
     ;(channel.patchedKeys ||= []).push(key[1])
     for (const listener of channel.queryListeners || []) listener()
   },
-  getQueryData: key => S()[key[1] === 'mcp' ? 'mcpState' : key[1]],
+  getQueryData: key => sourceForQuery(key)[key[1] === 'mcp' ? 'mcpState' : key[1]],
   cancelQueries: async () => {},
   invalidateQueries: ({ queryKey }) => { S().invalidated = S().invalidated || []; S().invalidated.push(queryKey[1]) }
 })

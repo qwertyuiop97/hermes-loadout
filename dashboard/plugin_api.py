@@ -798,14 +798,14 @@ class HermesLoadoutCore:
 
     # -- validation --------------------------------------------------------
 
-    def _validate_skill(self, skill_id: object) -> str:
+    def _validate_skill(self, skill_id: object, indexed: dict | None = None) -> str:
         if not isinstance(skill_id, str) or not _SKILL_ID_RE.match(skill_id):
             raise LoadoutError(
                 f"invalid skill id {skill_id!r} — expected 'category/name' from the skills index", "invalid-skill"
             )
         if any(seg in (".", "..") for seg in skill_id.split("/")):
             raise LoadoutError(f"invalid skill id {skill_id!r} — path segments may not be '.' or '..'", "invalid-skill")
-        indexed = self._scan_skills()
+        indexed = self._scan_skills() if indexed is None else indexed
         if skill_id not in indexed:
             raise LoadoutError(
                 f"unknown skill {skill_id!r} — not present under {self.skills_root}", "unknown-skill"

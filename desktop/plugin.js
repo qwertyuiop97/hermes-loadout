@@ -42,11 +42,16 @@ const DRIFT_KEY = [ID, 'drift']
 const MCP_KEY = [ID, 'mcp']
 const ONBOARDING_KEY = 'onboarding'
 const ONBOARDING_VERSION = 1
-const LOADOUT_DRAFTS_KEY = 'loadoutDrafts'
+const LOADOUT_DRAFTS_KEY = 'loadoutDraftsBySource'
+const LEGACY_LOADOUT_DRAFTS_KEY = 'loadoutDrafts'
+const SELECTED_LOADOUTS_KEY = 'selectedLoadoutsBySource'
 const ccSectionAtom = atom('tools')
 const arrivalsAtom = atom([])
 const loadoutDraftGuardAtom = atom({ dirty: false })
+const loadoutMutationEpochAtom = atom(0)
 const watchPrefsEpochAtom = atom(0)
+const fallbackConnectionAtom = atom('local')
+const fallbackProfileAtom = atom('default')
 const WORKSPACE_ID = 'hermes-loadout.control-center'
 let workspaceDispose = null
 let bgHosted = false
@@ -71,25 +76,134 @@ function storeSet(key, value) {
   }
 }
 
-function storedLoadoutDrafts() {
-  const drafts = storeGet(LOADOUT_DRAFTS_KEY, {})
+function normalizeSourcePart(value, fallback) {
+  const text = typeof value === 'string' ? value.trim() : ''
+  return text || fallback
+}
+
+function sourceScope(connectionId, profile) {
+  const connection = normalizeSourcePart(connectionId, 'local')
+  const name = normalizeSourcePart(profile, 'default')
+  return { connectionId: connection, profile: name, key: JSON.stringify([connection, name]) }
+}
+
+function currentSourceScope() {
+  return sourceScope(
+    host.state?.connectionId?.get?.() || host.activeConnectionId?.(),
+    host.state?.profile?.get?.()
+  )
+}
+
+function useSourceScope() {
+  const connectionId = useValue(host.state?.connectionId || fallbackConnectionAtom)
+  const profile = useValue(host.state?.profile || fallbackProfileAtom)
+  return useMemo(() => sourceScope(connectionId || host.activeConnectionId?.(), profile), [connectionId, profile])
+}
+
+function sameSource(left, right = currentSourceScope()) {
+  return !!left && left.key === right.key
+}
+
+function scopedQueryKey(base, scope = currentSourceScope()) {
+  return [...base, scope.connectionId, scope.profile]
+}
+
+function scopedStorageKey(base, scope = currentSourceScope()) {
+  return `${base}:${scope.key}`
+}
+
+function useScopedQuery(options) {
+  const scope = useSourceScope()
+  const queryKey = useMemo(() => scopedQueryKey(options.queryKey, scope), [options.queryKey[0], options.queryKey[1], scope.key])
+  return useQuery({ ...options, queryKey: queryKey })
+}
+
+function sourceBuckets(key) {
+  const buckets = storeGet(key, {})
+  return buckets && typeof buckets === 'object' && !Array.isArray(buckets) ? buckets : {}
+}
+
+function storedLoadoutDrafts(scope = currentSourceScope()) {
+  const drafts = sourceBuckets(LOADOUT_DRAFTS_KEY)[scope.key]
   return drafts && typeof drafts === 'object' && !Array.isArray(drafts) ? drafts : {}
+}
+
+function legacyLoadoutDrafts() {
+  const drafts = storeGet(LEGACY_LOADOUT_DRAFTS_KEY, {})
+  return drafts && typeof drafts === 'object' && !Array.isArray(drafts) ? drafts : {}
+}
+
+function selectedLoadoutFor(scope = currentSourceScope()) {
+  const selected = sourceBuckets(SELECTED_LOADOUTS_KEY)[scope.key]
+  return typeof selected === 'string' ? selected : null
+}
+
+function persistSelectedLoadout(scope, id) {
+  storeSet(SELECTED_LOADOUTS_KEY, { ...sourceBuckets(SELECTED_LOADOUTS_KEY), [scope.key]: id || null })
+}
+
+const validLoadoutApp = app => typeof app === 'string' && /^[a-z0-9-]{1,64}$/.test(app)
+
+function normalizeDraftSearch(value) {
+  return (typeof value === 'string' ? value : '').replace(/[\u0000-\u001f]/g, '').slice(0, 256)
+}
+
+function validStoredLoadoutDraft(value, id) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const draft = value.draft
+  if (!draft || typeof draft !== 'object' || Array.isArray(draft) || draft.id !== (id || null)
+    || typeof draft.name !== 'string' || draft.name.length > 64 || /[\u0000-\u001f]/.test(draft.name)
+    || !Array.isArray(draft.states) || draft.states.length > 2048) return false
+  if (!Array.isArray(value.apps) || value.apps.length > 2048 || !value.apps.every(validLoadoutApp)
+    || new Set(value.apps).size !== value.apps.length) return false
+  const seen = new Set()
+  for (const row of draft.states) {
+    if (!row || typeof row !== 'object' || Array.isArray(row)
+      || Object.keys(row).sort().join(',') !== 'app,enabled,id,kind'
+      || !['skill', 'mcp'].includes(row.kind) || !validLoadoutApp(row.app) || !value.apps.includes(row.app)
+      || typeof row.enabled !== 'boolean' || typeof row.id !== 'string' || !row.id.trim()
+      || row.id.length > 256 || /[\u0000-\u001f]/.test(row.id)) return false
+    if (row.kind === 'skill' && (row.id.split('/').length !== 2
+      || row.id.split('/').some(part => !part || part === '.' || part === '..' || part.includes('\\')))) return false
+    const key = selectionKey(row)
+    if (seen.has(key)) return false
+    seen.add(key)
+  }
+  return true
+}
+
+function normalizedStoredLoadoutDraft(value, id) {
+  if (!validStoredLoadoutDraft(value, id)) return null
+  const editingApp = validLoadoutApp(value.editingApp) && value.apps.includes(value.editingApp)
+    ? value.editingApp
+    : value.apps[0] || 'hermes'
+  return {
+    draft: { ...value.draft, states: value.draft.states.map(item => ({ ...item })) },
+    apps: [...value.apps],
+    editingApp: editingApp,
+    editingCapabilities: value.editingCapabilities === true,
+    search: normalizeDraftSearch(value.search)
+  }
 }
 
 function loadoutDraftKey(id) {
   return id || '__new'
 }
 
-function persistLoadoutDraft(key, value) {
-  storeSet(LOADOUT_DRAFTS_KEY, { ...storedLoadoutDrafts(), [key]: value })
+function persistLoadoutDraft(scope, key, value) {
+  storeSet(LOADOUT_DRAFTS_KEY, {
+    ...sourceBuckets(LOADOUT_DRAFTS_KEY),
+    [scope.key]: { ...storedLoadoutDrafts(scope), [key]: value }
+  })
 }
 
-function clearPersistedLoadoutDraft(key) {
-  const drafts = storedLoadoutDrafts()
+function clearPersistedLoadoutDraft(scope, key) {
+  const buckets = sourceBuckets(LOADOUT_DRAFTS_KEY)
+  const drafts = storedLoadoutDrafts(scope)
   if (!(key in drafts)) return
   const next = { ...drafts }
   delete next[key]
-  storeSet(LOADOUT_DRAFTS_KEY, next)
+  storeSet(LOADOUT_DRAFTS_KEY, { ...buckets, [scope.key]: next })
 }
 
 // ---------------------------------------------------------------------------
@@ -225,24 +339,26 @@ function usePaneLayout(ref) {
 // Tool switch cell — one (skill, tool) pair
 // ---------------------------------------------------------------------------
 
-function markSkillsSeen(ids) {
+function markSkillsSeen(ids, scope = currentSourceScope()) {
+  const key = scopedStorageKey('seenSkills', scope)
   let seen = []
   try {
-    seen = JSON.parse(storeGet('seenSkills', '[]')) || []
+    seen = JSON.parse(storeGet(key, '[]')) || []
   } catch (_err) {
     seen = []
   }
   const set = new Set(seen)
   for (const id of ids) set.add(id)
-  storeSet('seenSkills', JSON.stringify(Array.from(set)))
+  storeSet(key, JSON.stringify(Array.from(set)))
 }
 
 function useBackgroundSync() {
   const t = usePluginI18n(ID)
+  const source = useSourceScope()
   const qc = useQueryClient()
   const arrivals = useValue(arrivalsAtom)
   const watchPrefsEpoch = useValue(watchPrefsEpochAtom)
-  const stateQuery = useQuery({
+  const stateQuery = useScopedQuery({
     queryKey: STATE_KEY,
     queryFn: () => (pluginCtx ? pluginCtx.rest('/state') : Promise.reject(new Error('no backend'))),
     staleTime: 10000,
@@ -250,7 +366,7 @@ function useBackgroundSync() {
     refetchOnWindowFocus: false,
     retry: 1
   })
-  const diffQuery = useQuery({
+  const diffQuery = useScopedQuery({
     queryKey: DIFF_KEY,
     queryFn: () => (pluginCtx ? pluginCtx.rest('/diff') : Promise.reject(new Error('no backend'))),
     staleTime: 10000,
@@ -258,7 +374,7 @@ function useBackgroundSync() {
     refetchOnWindowFocus: false,
     retry: 1
   })
-  const driftQuery = useQuery({
+  const driftQuery = useScopedQuery({
     queryKey: DRIFT_KEY,
     queryFn: () => (pluginCtx ? pluginCtx.rest('/drift') : Promise.reject(new Error('no backend'))),
     staleTime: 30000,
@@ -273,9 +389,10 @@ function useBackgroundSync() {
   useEffect(() => {
     if (!state || !state.ok || !Array.isArray(state.skills)) return
     const ids = state.skills.map(skill => skill.id)
-    const rawSeen = storeGet('seenSkills', null)
+    const key = scopedStorageKey('seenSkills', source)
+    const rawSeen = storeGet(key, null)
     if (rawSeen === null) {
-      markSkillsSeen(ids)
+      markSkillsSeen(ids, source)
       return
     }
     let seen
@@ -296,9 +413,12 @@ function useBackgroundSync() {
     } catch (_err) {
       /* watch prefs are optional */
     }
-  }, [state, t])
+  }, [source.key, state, t])
 
   const watchRef = useRef({ initialized: false, broken: null, drift: null })
+  useEffect(() => {
+    watchRef.current = { initialized: false, broken: null, drift: null }
+  }, [source.key])
   useEffect(() => {
     let prefs = { on: false, arrivals: true, broken: true, drift: true }
     try {
@@ -327,7 +447,7 @@ function useBackgroundSync() {
     if (prefs.broken && broken > watchRef.current.broken) notify(t('watchBrokenTitle'), t('watchBrokenBody', broken))
     if (prefs.drift && driftCount > watchRef.current.drift) notify(t('watchDriftTitle'), t('watchDriftBody', driftCount))
     watchRef.current = { initialized: true, broken: broken, drift: driftCount }
-  }, [diff, drift, t, watchPrefsEpoch])
+  }, [source.key, diff, drift, t, watchPrefsEpoch])
 }
 
 function BackgroundRunner() {
@@ -359,7 +479,7 @@ function BackgroundHost() {
 
 // Health chip for the status bar — always mounted, cheap polling.
 function HealthChip() {
-  const diffQuery = useQuery({
+  const diffQuery = useScopedQuery({
     queryKey: DIFF_KEY,
     queryFn: () => (pluginCtx ? pluginCtx.rest('/diff') : Promise.reject(new Error('no backend'))),
     staleTime: 30000,
@@ -396,7 +516,7 @@ function CompactSummaryPane() {
   const rootRef = useRef(null)
   const layout = usePaneLayout(rootRef)
   const reducedMotion = usePrefersReducedMotion()
-  const stateQuery = useQuery({
+  const stateQuery = useScopedQuery({
     queryKey: STATE_KEY,
     queryFn: () => (pluginCtx ? pluginCtx.rest('/state') : Promise.reject(new Error('no backend'))),
     staleTime: 10000,
@@ -404,7 +524,7 @@ function CompactSummaryPane() {
     refetchOnWindowFocus: false,
     retry: 1
   })
-  const diffQuery = useQuery({
+  const diffQuery = useScopedQuery({
     queryKey: DIFF_KEY,
     queryFn: () => (pluginCtx ? pluginCtx.rest('/diff') : Promise.reject(new Error('no backend'))),
     staleTime: 10000,
@@ -412,7 +532,7 @@ function CompactSummaryPane() {
     refetchOnWindowFocus: false,
     retry: 1
   })
-  const driftQuery = useQuery({
+  const driftQuery = useScopedQuery({
     queryKey: DRIFT_KEY,
     queryFn: () => (pluginCtx ? pluginCtx.rest('/drift') : Promise.reject(new Error('no backend'))),
     staleTime: 30000,
@@ -655,10 +775,10 @@ function MaintenancePane({ section }) {
   const [notifications, setNotifications] = useState(() => {
     try { return !!JSON.parse(storeGet('watchPrefs', '{}')).on } catch (_) { return false }
   })
-  const stateQuery = useQuery({ queryKey: STATE_KEY, queryFn: () => pluginCtx.rest('/state'), staleTime: 10000 })
-  const diffQuery = useQuery({ queryKey: DIFF_KEY, queryFn: () => pluginCtx.rest('/diff'), staleTime: 10000 })
-  const driftQuery = useQuery({ queryKey: DRIFT_KEY, queryFn: () => pluginCtx.rest('/drift'), staleTime: 10000 })
-  const backupsQuery = useQuery({ queryKey: [ID, 'backups'], queryFn: () => pluginCtx.rest('/backups').then(requireOk), enabled: showBackups, staleTime: 0 })
+  const stateQuery = useScopedQuery({ queryKey: STATE_KEY, queryFn: () => pluginCtx.rest('/state'), staleTime: 10000 })
+  const diffQuery = useScopedQuery({ queryKey: DIFF_KEY, queryFn: () => pluginCtx.rest('/diff'), staleTime: 10000 })
+  const driftQuery = useScopedQuery({ queryKey: DRIFT_KEY, queryFn: () => pluginCtx.rest('/drift'), staleTime: 10000 })
+  const backupsQuery = useScopedQuery({ queryKey: [ID, 'backups'], queryFn: () => pluginCtx.rest('/backups').then(requireOk), enabled: showBackups, staleTime: 0 })
   const state = stateQuery.data
   const tools = state && state.ok && Array.isArray(state.tools) ? state.tools : []
   const skills = state && state.ok && Array.isArray(state.skills) ? state.skills : []
@@ -712,7 +832,7 @@ function MaintenancePane({ section }) {
     jsx('h2', { className: 'font-medium', children: 'Advanced' }),
     jsx('p', { className: 'text-xs text-muted-foreground', children: 'Paths belong to the active Hermes backend, which may be a different computer. Discovery never enables capabilities.' }),
     jsxs('div', { className: 'flex flex-wrap gap-2', children: [
-      jsx(Button, { variant: 'secondary', size: 'xs', disabled: busy, onClick: () => { storeSet(ONBOARDING_KEY, { ...wizardState(), complete: false, step: 'welcome' }); ccSectionAtom.set('onboarding') }, children: 'Scan and import skills' }),
+      jsx(Button, { variant: 'secondary', size: 'xs', disabled: busy, onClick: () => { const source = currentSourceScope(); storeSet(scopedStorageKey(ONBOARDING_KEY, source), { ...wizardState(source), complete: false, step: 'welcome' }); ccSectionAtom.set('onboarding') }, children: 'Scan and import skills' }),
       jsx(Button, { variant: 'secondary', size: 'xs', onClick: () => setShowLibrary(value => !value), children: 'Manage application paths', 'aria-expanded': showLibrary }),
       jsx(Button, { variant: 'secondary', size: 'xs', onClick: () => setShowBackups(value => !value), children: 'Browse backups', 'aria-expanded': showBackups })
     ] }),
@@ -743,8 +863,8 @@ function McpPane() {
   const ui = useValue(operationUIAtom)
   const [search, setSearch] = useState('')
   const [app, setApp] = useState('hermes')
-  const query = useQuery({ queryKey: MCP_KEY, queryFn: () => pluginCtx.rest('/mcp/state').then(requireOk), staleTime: 10000, refetchInterval: 30000, retry: 1 })
-  const inventory = useQuery({ queryKey: STATE_KEY, queryFn: () => pluginCtx.rest('/state'), staleTime: 10000 })
+  const query = useScopedQuery({ queryKey: MCP_KEY, queryFn: () => pluginCtx.rest('/mcp/state').then(requireOk), staleTime: 10000, refetchInterval: 30000, retry: 1 })
+  const inventory = useScopedQuery({ queryKey: STATE_KEY, queryFn: () => pluginCtx.rest('/state'), staleTime: 10000 })
   const state = query.data
   const rows = state && state.ok && Array.isArray(state.rows) ? state.rows : []
   const writers = [{ id: 'hermes', app: 'hermes', label: 'Hermes' }, { id: 'claude', app: 'claude-desktop', label: 'Claude Desktop' }, { id: 'codex', app: 'codex', label: 'Codex' }]
@@ -867,18 +987,19 @@ function ToolCard({ tool, counts, busy, onManage, onEnableAll, onDisableAll }) {
 
 function SkillDetails({ skill, onClose }) {
   const qc = useQueryClient()
+  const source = useSourceScope()
   const [error, setError] = useState(null)
   const [busy, setBusy] = useState(false)
-  const metadataQuery = useQuery({ queryKey: METADATA_KEY, queryFn: () => pluginCtx.rest('/inventory/metadata').then(requireOk), staleTime: 10000 })
+  const metadataQuery = useScopedQuery({ queryKey: METADATA_KEY, queryFn: () => pluginCtx.rest('/inventory/metadata').then(requireOk), staleTime: 10000 })
   const data = metadataQuery.data
   const fields = data && data.ok && data.skills ? data.skills[skill.id] || {} : {}
   const labels = data && data.ok && Array.isArray(data.classifications) ? data.classifications : ['Unclassified']
   const save = async classification => {
     setBusy(true); setError(null)
     try {
-      requireOk(await pluginCtx.rest('/inventory/classify', { method: 'POST', body: { skill: skill.id, classification: classification } }))
-      qc.setQueryData(METADATA_KEY, requireOk(await pluginCtx.rest('/inventory/metadata')))
-    } catch (caught) { setError(caught.message) }
+      requireOk(await sourceBoundRest('/inventory/classify', { method: 'POST', body: { skill: skill.id, classification: classification } }, source))
+      qc.setQueryData(scopedQueryKey(METADATA_KEY, source), requireOk(await sourceBoundRest('/inventory/metadata', undefined, source)))
+    } catch (caught) { if (!isSourceChanged(caught) && sameSource(source)) setError(caught.message) }
     finally { setBusy(false) }
   }
   return jsxs('section', { 'data-skill-details': skill.id, className: 'flex min-w-0 flex-col gap-2 rounded-md border border-(--ui-stroke-secondary) p-3 text-xs', children: [
@@ -901,7 +1022,7 @@ function SingleToolView({ tool, skills, busy, onBack, onToggle, onBulk }) {
   const [designedFor, setDesignedFor] = useState('all')
   const [sourceFilter, setSourceFilter] = useState('all')
   const [details, setDetails] = useState(null)
-  const metadataQuery = useQuery({ queryKey: METADATA_KEY, queryFn: () => pluginCtx.rest('/inventory/metadata').then(requireOk), staleTime: 10000 })
+  const metadataQuery = useScopedQuery({ queryKey: METADATA_KEY, queryFn: () => pluginCtx.rest('/inventory/metadata').then(requireOk), staleTime: 10000 })
   const metadata = metadataQuery.data && metadataQuery.data.ok ? metadataQuery.data : { skills: {}, classifications: ['Unclassified'] }
   const sources = Array.from(new Set(skills.map(skill => metadata.skills[skill.id]?.source || 'Existing library')))
   const [collapsed, setCollapsed] = useState(() => new Set())
@@ -1152,6 +1273,7 @@ function ExpertMatrix({ skills, tools, busy, onToggle }) {
 function ClientLibrary({ onBack }) {
   const t = usePluginI18n(ID)
   const qc = useQueryClient()
+  const backendScope = useSourceScope()
   const [scope, setScope] = useState('global')
   const [search, setSearch] = useState('')
   const [projectInput, setProjectInput] = useState('')
@@ -1178,30 +1300,30 @@ function ClientLibrary({ onBack }) {
       setLoading(false)
       return () => { active = false }
     }
-    Promise.resolve().then(() => pluginCtx.rest(path)).then(response => {
+    Promise.resolve().then(() => sourceBoundRest(path, undefined, backendScope)).then(response => {
       if (!active) return
       if (!response || response.ok !== true) throw new Error(response?.error || t('libraryUnavailable'))
       if (response.catalog_version !== 1 || !Array.isArray(response.clients)) throw new Error(t('libraryVersion'))
       setCatalog(response)
-    }).catch(reason => { if (active) setError(reason.message || t('libraryUnavailable')) })
+    }).catch(reason => { if (active && !isSourceChanged(reason) && sameSource(backendScope)) setError(reason.message || t('libraryUnavailable')) })
       .finally(() => { if (active) setLoading(false) })
     return () => { active = false }
-  }, [scope, projectRoot, revision])
+  }, [backendScope.key, scope, projectRoot, revision])
 
   const activate = async (client, candidate) => {
     setBusy(true)
     setError('')
     setNotice('')
     try {
-      const response = await pluginCtx.rest('/clients/enable', { method: 'POST', body: {
+      const response = await sourceBoundRest('/clients/enable', { method: 'POST', body: {
         client_id: client.id, scope: candidate.scope, candidate: candidate.index,
         project_root: candidate.project_root || null, expected_dir: candidate.dir
-      } })
+      } }, backendScope)
       if (!response || response.ok !== true) throw new Error(response?.error || t('librarySaveFailed'))
-      qc.invalidateQueries({ queryKey: STATE_KEY })
+      qc.invalidateQueries({ queryKey: scopedQueryKey(STATE_KEY, backendScope) })
       setNotice(t('librarySaved', client.label))
       setRevision(value => value + 1)
-    } catch (reason) { setError(reason.message || t('librarySaveFailed')) }
+    } catch (reason) { if (!isSourceChanged(reason) && sameSource(backendScope)) setError(reason.message || t('librarySaveFailed')) }
     finally { setBusy(false) }
   }
   const addCustom = async () => {
@@ -1209,15 +1331,15 @@ function ClientLibrary({ onBack }) {
     setError('')
     setNotice('')
     try {
-      const response = await pluginCtx.rest('/config/tools', { method: 'POST', body: {
+      const response = await sourceBoundRest('/config/tools', { method: 'POST', body: {
         id: customId.trim(), label: customLabel.trim(), dir: customPath.trim()
-      } })
+      } }, backendScope)
       if (!response || response.ok !== true) throw new Error(response?.error || t('librarySaveFailed'))
-      qc.invalidateQueries({ queryKey: STATE_KEY })
+      qc.invalidateQueries({ queryKey: scopedQueryKey(STATE_KEY, backendScope) })
       setNotice(t('librarySaved', customLabel.trim()))
       setCustomId(''); setCustomLabel(''); setCustomPath('')
       setRevision(value => value + 1)
-    } catch (reason) { setError(reason.message || t('librarySaveFailed')) }
+    } catch (reason) { if (!isSourceChanged(reason) && sameSource(backendScope)) setError(reason.message || t('librarySaveFailed')) }
     finally { setBusy(false) }
   }
   const term = search.trim().toLocaleLowerCase()
@@ -1297,15 +1419,62 @@ const METADATA_KEY = [ID, 'metadata']
 const operationUIAtom = atom({ busy: false, preview: null, response: null, error: null })
 const selectedLoadoutAtom = atom(null)
 let reviewGeneration = 0
+let activeSourceKey = null
+let sourceSubscriptions = []
+
+function synchronizeSourceState(force = false) {
+  const scope = currentSourceScope()
+  if (!force && activeSourceKey === scope.key) return
+  activeSourceKey = scope.key
+  reviewGeneration += 1
+  operationUIAtom.set({ busy: false, preview: null, response: null, error: null })
+  loadoutDraftGuardAtom.set({ dirty: false })
+  arrivalsAtom.set([])
+  selectedLoadoutAtom.set(selectedLoadoutFor(scope))
+}
+
+function bindSourceState(ctx) {
+  for (const unsubscribe of sourceSubscriptions) unsubscribe?.()
+  const subscriptions = []
+  sourceSubscriptions = subscriptions
+  const changed = () => synchronizeSourceState()
+  for (const state of [host.state?.connectionId, host.state?.profile]) {
+    const listen = state && (state.listen || state.subscribe)
+    if (typeof listen === 'function') subscriptions.push(listen.call(state, changed))
+  }
+  if (typeof ctx.onDispose === 'function') {
+    ctx.onDispose(() => {
+      for (const unsubscribe of subscriptions) unsubscribe?.()
+      if (sourceSubscriptions === subscriptions) sourceSubscriptions = []
+    })
+  }
+}
 
 function requireOk(response) {
   if (!response || response.ok !== true) throw new Error(response && response.error || 'The backend could not finish this request. Refresh and try again.')
   return response
 }
 
-function refreshInventory(qc) {
+function sourceChangedError() {
+  const error = new Error('The active Hermes backend changed while this request was running. Return to the original source and refresh before retrying.')
+  error.code = 'source-changed'
+  return error
+}
+
+function isSourceChanged(error) {
+  return !!(error && error.code === 'source-changed')
+}
+
+async function sourceBoundRest(path, options, scope = currentSourceScope()) {
+  const context = pluginCtx
+  const response = await context.rest(path, options)
+  if (context !== pluginCtx || !sameSource(scope)) throw sourceChangedError()
+  return response
+}
+
+function refreshInventory(qc, scope = currentSourceScope()) {
   for (const key of [STATE_KEY, DIFF_KEY, DRIFT_KEY, MCP_KEY, OPERATION_KEY, LOADOUTS_KEY, METADATA_KEY]) {
-    qc.invalidateQueries({ queryKey: key })
+    qc.invalidateQueries({ queryKey: scopedQueryKey(key, scope) })
   }
 }
 
@@ -1317,14 +1486,15 @@ async function reviewOperation(path, body, applyPath = '/operations/apply') {
   if (operationUIAtom.get().busy) return
   const generation = ++reviewGeneration
   const context = pluginCtx
+  const source = currentSourceScope()
   operationUIAtom.set({ ...operationUIAtom.get(), busy: true, preview: null, error: null })
   try {
     const preview = requireOk(await context.rest(path, { method: 'POST', body: body }))
     if (!preview.plan_id || !Array.isArray(preview.items)) throw new Error('The backend is an older version. Restart Hermes and retry.')
-    if (generation !== reviewGeneration || context !== pluginCtx) return
-    operationUIAtom.set({ ...operationUIAtom.get(), busy: false, preview: { ...preview, applyPath: applyPath } })
+    if (generation !== reviewGeneration || context !== pluginCtx || !sameSource(source)) return
+    operationUIAtom.set({ ...operationUIAtom.get(), busy: false, preview: { ...preview, applyPath: applyPath, source: source } })
   } catch (error) {
-    if (generation !== reviewGeneration || context !== pluginCtx) return
+    if (generation !== reviewGeneration || context !== pluginCtx || !sameSource(source)) return
     operationUIAtom.set({ ...operationUIAtom.get(), busy: false, preview: null, error: error.message })
   }
 }
@@ -1339,12 +1509,16 @@ function cancelOperationReview() {
   operationUIAtom.set({ ...operationUIAtom.get(), preview: null })
 }
 
-async function publishOperation(response, qc) {
+async function publishOperation(response, qc, source = currentSourceScope()) {
+  if (!sameSource(source)) {
+    refreshInventory(qc, source)
+    return
+  }
   operationUIAtom.set({ busy: false, preview: null, response: response, error: response && response.ok === false ? response.error : null })
-  refreshInventory(qc)
+  refreshInventory(qc, source)
   try {
-    const latest = requireOk(await pluginCtx.rest('/operations/latest'))
-    qc.setQueryData(OPERATION_KEY, latest)
+    const latest = requireOk(await sourceBoundRest('/operations/latest', undefined, source))
+    qc.setQueryData(scopedQueryKey(OPERATION_KEY, source), latest)
   } catch (_) {
     // Keep the just-returned receipt visible even when a refresh cannot connect.
   }
@@ -1354,14 +1528,20 @@ async function applyOperation(qc) {
   const state = operationUIAtom.get()
   if (state.busy || !state.preview) return
   const preview = state.preview
+  const source = preview.source || currentSourceScope()
+  if (!sameSource(source)) return
   operationUIAtom.set({ ...state, busy: true, error: null })
   try {
     const response = await pluginCtx.rest(preview.applyPath, { method: 'POST', body: { plan_id: preview.plan_id } })
-    await publishOperation(response, qc)
-    if (response && response.ok) haptic('tap')
-  } catch (_) {
+    await publishOperation(response, qc, source)
+    if (sameSource(source) && response && response.ok) haptic('tap')
+  } catch (error) {
+    if (!sameSource(source)) {
+      refreshInventory(qc, source)
+      return
+    }
     // A disconnected response is ambiguous, not evidence that no write happened.
-    await publishOperation({ ok: false, error: 'The response was interrupted. Refresh the last change and inspect recovery before retrying.' }, qc)
+    await publishOperation({ ok: false, error: isSourceChanged(error) ? error.message : 'The response was interrupted. Refresh the last change and inspect recovery before retrying.' }, qc, source)
   }
 }
 
@@ -1457,8 +1637,8 @@ function OperationsPanel() {
   const qc = useQueryClient()
   const ui = useValue(operationUIAtom)
   const [expanded, setExpanded] = useState(false)
-  const latestQuery = useQuery({ queryKey: OPERATION_KEY, queryFn: () => pluginCtx.rest('/operations/latest').then(requireOk), staleTime: 0, refetchOnWindowFocus: true, retry: 1 })
-  const stateQuery = useQuery({ queryKey: STATE_KEY, queryFn: () => pluginCtx.rest('/state'), staleTime: 10000 })
+  const latestQuery = useScopedQuery({ queryKey: OPERATION_KEY, queryFn: () => pluginCtx.rest('/operations/latest').then(requireOk), staleTime: 0, refetchOnWindowFocus: true, retry: 1 })
+  const stateQuery = useScopedQuery({ queryKey: STATE_KEY, queryFn: () => pluginCtx.rest('/state'), staleTime: 10000 })
   const latest = latestQuery.data
   const responseReceipt = ui.response && (ui.response.operation || ui.response.receipt)
   const receipt = responseReceipt || (latest && latest.receipt)
@@ -1491,18 +1671,19 @@ function OperationsPanel() {
 }
 
 function useSavedLoadouts() {
-  return useQuery({ queryKey: LOADOUTS_KEY, queryFn: () => pluginCtx.rest('/loadouts').then(requireOk), staleTime: 10000, retry: 1 })
+  return useScopedQuery({ queryKey: LOADOUTS_KEY, queryFn: () => pluginCtx.rest('/loadouts').then(requireOk), staleTime: 10000, retry: 1 })
 }
 
-function selectLoadout(id) {
+function selectLoadout(id, scope = currentSourceScope()) {
   requestLoadoutTransition(() => {
     selectedLoadoutAtom.set(id || null)
-    storeSet('selectedLoadout', id || null)
+    persistSelectedLoadout(scope, id)
   })
 }
 
 function LoadoutPicker() {
   const controlId = useId()
+  const scope = useSourceScope()
   const query = useSavedLoadouts()
   const active = useValue(selectedLoadoutAtom) || ''
   const operation = useValue(operationUIAtom)
@@ -1512,33 +1693,53 @@ function LoadoutPicker() {
     jsx('label', { htmlFor: controlId, className: 'text-xs text-muted-foreground', children: 'Loadout' }),
     jsx('select', { id: controlId, 'aria-label': 'Saved loadout', value: selected, disabled: query.isPending || operation.busy,
       className: 'min-w-0 max-w-full flex-1 rounded-md border border-(--ui-stroke-secondary) bg-background px-2 py-1 text-xs',
-      onChange: event => selectLoadout(event.target.value), children: [jsx('option', { value: '', children: query.isError ? 'Unavailable, retry in Loadouts' : rows.length ? 'Choose a saved loadout' : 'No saved loadouts yet' }, 'none')].concat(rows.map(row => jsx('option', { value: row.id, children: row.name }, row.id))) }),
+      onChange: event => selectLoadout(event.target.value, scope), children: [jsx('option', { value: '', children: query.isError ? 'Unavailable, retry in Loadouts' : rows.length ? 'Choose a saved loadout' : 'No saved loadouts yet' }, 'none')].concat(rows.map(row => jsx('option', { value: row.id, children: row.name }, row.id))) }),
     jsx(Button, { variant: 'secondary', size: 'xs', disabled: !selected || operation.busy, onClick: () => reviewOperation('/loadouts/plan', { loadout_id: selected }), children: 'Review loadout' }),
     jsx(Button, { variant: 'ghost', size: 'xs', onClick: () => ccSectionAtom.set('loadouts'), children: 'Manage loadouts' })
   ] })
 }
 
 const selectionKey = row => `${row.kind}\u0000${row.app}\u0000${row.id}`
+const activeLoadoutMutations = new Map()
+
+function beginLoadoutMutation(scope) {
+  if (activeLoadoutMutations.has(scope.key)) return null
+  const token = {}
+  activeLoadoutMutations.set(scope.key, token)
+  loadoutMutationEpochAtom.set(loadoutMutationEpochAtom.get() + 1)
+  return token
+}
+
+function finishLoadoutMutation(scope, token) {
+  if (activeLoadoutMutations.get(scope.key) !== token) return
+  activeLoadoutMutations.delete(scope.key)
+  loadoutMutationEpochAtom.set(loadoutMutationEpochAtom.get() + 1)
+}
 
 function LoadoutManager() {
   const editorId = useId()
+  const scope = useSourceScope()
   const editingSelection = useRef(undefined)
   const query = useSavedLoadouts()
   const qc = useQueryClient()
   const operation = useValue(operationUIAtom)
+  useValue(loadoutMutationEpochAtom)
   const selected = useValue(selectedLoadoutAtom) || ''
   const [draft, setDraft] = useState(null)
+  const [draftSourceKey, setDraftSourceKey] = useState(scope.key)
   const [apps, setApps] = useState([])
   const [editingApp, setEditingApp] = useState('hermes')
   const [search, setSearch] = useState('')
   const [editingCapabilities, setEditingCapabilities] = useState(false)
+  const [visibleCapabilities, setVisibleCapabilities] = useState(100)
   const [working, setWorking] = useState(false)
   const [error, setError] = useState(null)
   const [notice, setNotice] = useState(null)
+  const [legacyDraft, setLegacyDraft] = useState(null)
   const [deleting, setDeleting] = useState(false)
   const [pendingTransition, setPendingTransition] = useState(null)
-  const stateQuery = useQuery({ queryKey: STATE_KEY, queryFn: () => pluginCtx.rest('/state').then(requireOk), staleTime: 10000 })
-  const mcpQuery = useQuery({ queryKey: MCP_KEY, queryFn: () => pluginCtx.rest('/mcp/state').then(requireOk), staleTime: 10000 })
+  const stateQuery = useScopedQuery({ queryKey: STATE_KEY, queryFn: () => pluginCtx.rest('/state').then(requireOk), staleTime: 10000 })
+  const mcpQuery = useScopedQuery({ queryKey: MCP_KEY, queryFn: () => pluginCtx.rest('/mcp/state').then(requireOk), staleTime: 10000 })
   const state = stateQuery.data
   const list = query.data && Array.isArray(query.data.loadouts) ? query.data.loadouts : []
   const record = list.find(row => row.id === selected)
@@ -1550,57 +1751,130 @@ function LoadoutManager() {
     if (!availableApps.some(app => app.id === row.app)) availableApps.push({ id: row.app, label: `${row.app} (unavailable)` })
   }
   const beginEdit = (row, options = {}) => {
-    const saved = options.persisted === false ? null : storedLoadoutDrafts()[loadoutDraftKey(row.id)]
-    const nextDraft = saved && saved.draft ? saved.draft : { id: row.id || null, name: row.name, states: row.states.map(item => ({ ...item })) }
-    setDraft({ ...nextDraft, states: (nextDraft.states || []).map(item => ({ ...item })) })
-    const ids = saved && Array.isArray(saved.apps) ? saved.apps : Array.from(new Set((nextDraft.states || []).map(item => item.app)))
-    setApps(ids.length ? ids : ['hermes'])
-    setEditingApp(saved && saved.editingApp ? saved.editingApp : ids[0] || 'hermes')
-    setSearch(saved && typeof saved.search === 'string' ? saved.search : '')
-    setError(null); setNotice(saved ? 'Unsaved draft restored. Save or discard it before leaving.' : null); setEditingCapabilities(saved ? saved.editingCapabilities === true : false)
+    const stored = options.persisted === false ? null : storedLoadoutDrafts(scope)[loadoutDraftKey(row.id)]
+    const saved = normalizedStoredLoadoutDraft(stored, row.id)
+    const legacy = options.persisted === false || saved ? null : legacyLoadoutDrafts()[loadoutDraftKey(row.id)]
+    const recoverableLegacy = normalizedStoredLoadoutDraft(legacy, row.id)
+    const nextDraft = saved ? saved.draft : { id: row.id || null, name: row.name, states: row.states.map(item => ({ ...item })) }
+    setDraft({ ...nextDraft, states: nextDraft.states.map(item => ({ ...item })) })
+    const ids = saved ? saved.apps : Array.from(new Set(nextDraft.states.map(item => item.app)))
+    const included = saved || ids.length ? ids : ['hermes']
+    setDraftSourceKey(scope.key)
+    setApps(included)
+    setEditingApp(saved ? saved.editingApp : included[0] || 'hermes')
+    setSearch(saved ? saved.search : '')
+    setVisibleCapabilities(100)
+    setError(null)
+    setLegacyDraft(recoverableLegacy)
+    setNotice(saved
+      ? 'Unsaved draft restored. Save or discard it before leaving.'
+      : stored
+        ? 'An invalid local draft was ignored. Your saved loadout was not changed.'
+        : recoverableLegacy
+          ? 'A draft from an earlier version has no backend identity. Restore it into this source explicitly or leave the saved version unchanged.'
+          : null)
+    setEditingCapabilities(saved ? saved.editingCapabilities === true : false)
+  }
+  const restoreLegacyDraft = () => {
+    const expectedId = draft ? draft.id : null
+    const restored = normalizedStoredLoadoutDraft(legacyDraft, expectedId)
+    if (!restored) return
+    setDraft(restored.draft)
+    setDraftSourceKey(scope.key)
+    setApps(restored.apps)
+    setEditingApp(restored.apps.includes(restored.editingApp) ? restored.editingApp : restored.apps[0] || 'hermes')
+    setSearch(restored.search)
+    setEditingCapabilities(restored.editingCapabilities)
+    persistLoadoutDraft(scope, loadoutDraftKey(restored.draft.id), restored)
+    setLegacyDraft(null)
+    setNotice('Legacy draft restored into this profile and backend. The original recovery copy remains available.')
   }
   // Hydrate when selection changes, not on background refreshes that could
   // erase unsaved edits. An explicit New draft has no saved selection.
   useEffect(() => {
-    if (editingSelection.current === selected || (selected && !record)) return
-    editingSelection.current = selected
+    const editKey = `${scope.key}\u0000${selected}`
+    if (editingSelection.current === editKey || (selected && !record)) return
+    editingSelection.current = editKey
     if (record) beginEdit(record)
-    else setDraft(null)
-  }, [selected, record])
+    else {
+      const storedNew = storedLoadoutDrafts(scope)[loadoutDraftKey(null)]
+      if (normalizedStoredLoadoutDraft(storedNew, null)) {
+        beginEdit({ id: null, name: '', states: [] })
+        return
+      }
+      const legacyNew = legacyLoadoutDrafts()[loadoutDraftKey(null)]
+      const recoverableLegacy = normalizedStoredLoadoutDraft(legacyNew, null)
+      setDraftSourceKey(scope.key)
+      setDraft(null)
+      setLegacyDraft(recoverableLegacy)
+      setNotice(storedNew
+        ? 'An invalid local draft was ignored. No saved loadout was changed.'
+        : recoverableLegacy
+          ? 'A draft from an earlier version has no backend identity. Restore it into this source explicitly or leave it unchanged.'
+          : null)
+    }
+  }, [scope.key, selected, record])
   const updateRecord = async (path, body) => {
     if (working) return
+    const mutationToken = beginLoadoutMutation(scope)
+    if (!mutationToken) return
     setWorking(true); setError(null); setNotice(null)
     try {
-      const result = requireOk(await pluginCtx.rest(path, { method: 'POST', body: body }))
-      const data = requireOk(await pluginCtx.rest('/loadouts'))
-      qc.setQueryData(LOADOUTS_KEY, data)
-      if (body.action === 'delete') { clearPersistedLoadoutDraft(loadoutDraftKey(body.loadout_id)); selectedLoadoutAtom.set(null); storeSet('selectedLoadout', null); setDraft(null) }
-      else { clearPersistedLoadoutDraft(loadoutDraftKey(body.loadout_id)); editingSelection.current = result.loadout.id; selectedLoadoutAtom.set(result.loadout.id); storeSet('selectedLoadout', result.loadout.id); beginEdit(result.loadout, { persisted: false }) }
-      setNotice(body.action === 'delete' ? 'Loadout deleted. Application activation was not changed.' : 'Loadout saved. Application activation was not changed.')
-    } catch (caught) { setError(caught.message) }
-    finally { setWorking(false); setDeleting(false) }
+      const context = pluginCtx
+      const loadoutsKey = scopedQueryKey(LOADOUTS_KEY, scope)
+      await qc.cancelQueries({ queryKey: loadoutsKey })
+      const result = requireOk(await context.rest(path, { method: 'POST', body: body }))
+      qc.setQueryData(loadoutsKey, previous => {
+        const rows = (previous && previous.loadouts || []).filter(row => row.id !== result.loadout.id)
+        if (body.action !== 'delete') rows.push(result.loadout)
+        return { ...previous, ok: true, loadouts: rows }
+      })
+      clearPersistedLoadoutDraft(scope, loadoutDraftKey(body.loadout_id))
+      persistSelectedLoadout(scope, body.action === 'delete' ? null : result.loadout.id)
+      if (context === pluginCtx && sameSource(scope)) {
+        if (body.action === 'delete') { selectedLoadoutAtom.set(null); setDraft(null) }
+        else { editingSelection.current = `${scope.key}\u0000${result.loadout.id}`; selectedLoadoutAtom.set(result.loadout.id); beginEdit(result.loadout, { persisted: false }) }
+        setNotice(body.action === 'delete' ? 'Loadout deleted. Application activation was not changed.' : 'Loadout saved. Application activation was not changed.')
+      }
+    } catch (caught) { if (sameSource(scope)) setError(caught.message) }
+    finally {
+      finishLoadoutMutation(scope, mutationToken)
+      setWorking(false)
+      setDeleting(false)
+    }
   }
   const saveDraft = async () => {
     if (working || !draft || !draft.name.trim()) return false
+    const mutationToken = beginLoadoutMutation(scope)
+    if (!mutationToken) return false
     const previousKey = loadoutDraftKey(draft.id)
     setWorking(true); setError(null); setNotice(null)
     try {
-      const result = requireOk(await pluginCtx.rest('/loadouts/save', { method: 'POST', body: { name: draft.name, states: draft.states, ...(draft.id ? { loadout_id: draft.id } : {}) } }))
-      const data = requireOk(await pluginCtx.rest('/loadouts'))
-      qc.setQueryData(LOADOUTS_KEY, data)
-      clearPersistedLoadoutDraft(previousKey)
-      clearPersistedLoadoutDraft(loadoutDraftKey(result.loadout.id))
-      editingSelection.current = result.loadout.id
-      selectedLoadoutAtom.set(result.loadout.id)
-      storeSet('selectedLoadout', result.loadout.id)
-      beginEdit(result.loadout, { persisted: false })
-      setPendingTransition(null)
-      setNotice('Loadout saved. Application activation was not changed.')
+      const context = pluginCtx
+      const loadoutsKey = scopedQueryKey(LOADOUTS_KEY, scope)
+      await qc.cancelQueries({ queryKey: loadoutsKey })
+      const result = requireOk(await context.rest('/loadouts/save', { method: 'POST', body: { name: draft.name, states: draft.states, ...(draft.id ? { loadout_id: draft.id } : {}) } }))
+      qc.setQueryData(loadoutsKey, previous => {
+        const rows = previous && previous.loadouts || []
+        const exists = rows.some(row => row.id === result.loadout.id)
+        return { ...previous, ok: true, loadouts: exists ? rows.map(row => row.id === result.loadout.id ? result.loadout : row) : [...rows, result.loadout] }
+      })
+      clearPersistedLoadoutDraft(scope, previousKey)
+      clearPersistedLoadoutDraft(scope, loadoutDraftKey(result.loadout.id))
+      persistSelectedLoadout(scope, result.loadout.id)
+      if (context === pluginCtx && sameSource(scope)) {
+        editingSelection.current = `${scope.key}\u0000${result.loadout.id}`
+        selectedLoadoutAtom.set(result.loadout.id)
+        beginEdit(result.loadout, { persisted: false })
+        setPendingTransition(null)
+        setNotice('Loadout saved. Application activation was not changed.')
+      }
       return true
     } catch (caught) {
-      setError(caught.message)
+      if (sameSource(scope)) setError(caught.message)
       return false
     } finally {
+      finishLoadoutMutation(scope, mutationToken)
       setWorking(false)
     }
   }
@@ -1608,11 +1882,11 @@ function LoadoutManager() {
     if (working || !apps.length) return
     setWorking(true); setError(null)
     try {
-      const data = requireOk(await pluginCtx.rest('/loadouts/capture', { method: 'POST', body: { apps: apps } }))
+      const data = requireOk(await sourceBoundRest('/loadouts/capture', { method: 'POST', body: { apps: apps } }, scope))
       setDraft(previous => ({ ...previous, states: data.states }))
       setNotice(`${data.states.length} current selections captured into this draft. ${(data.excluded || []).length} protected or unavailable selections were not captured. Nothing was activated.`)
       setEditingCapabilities(true)
-    } catch (caught) { setError(caught.message) }
+    } catch (caught) { if (!isSourceChanged(caught) && sameSource(scope)) setError(caught.message) }
     finally { setWorking(false) }
   }
   const changeApp = (app, checked) => {
@@ -1635,15 +1909,17 @@ function LoadoutManager() {
     if (row.app === editingApp && !capabilities.some(item => selectionKey(item) === selectionKey(row))) capabilities.push({ ...row, label: row.id, unavailable: true })
   }
   const filtered = capabilities.filter(row => `${row.label} ${row.kind}`.toLowerCase().includes(search.toLowerCase()))
+  useEffect(() => { setVisibleCapabilities(100) }, [search, editingApp])
   const dirty = draft && (!record || draft.name !== record.name || JSON.stringify(draft.states) !== JSON.stringify(record.states))
-  const busy = working || operation.busy || !!operation.preview || !backendReady(state)
+  const busy = working || activeLoadoutMutations.has(scope.key) || operation.busy || !!operation.preview || !backendReady(state)
   useEffect(() => {
+    if (draftSourceKey !== scope.key) return
     if (draft && dirty) {
-      persistLoadoutDraft(loadoutDraftKey(draft.id), { draft: draft, apps: apps, editingApp: editingApp, editingCapabilities: editingCapabilities, search: search })
+      persistLoadoutDraft(scope, loadoutDraftKey(draft.id), { draft: draft, apps: apps, editingApp: editingApp, editingCapabilities: editingCapabilities, search: search })
     } else if (draft) {
-      clearPersistedLoadoutDraft(loadoutDraftKey(draft.id))
+      clearPersistedLoadoutDraft(scope, loadoutDraftKey(draft.id))
     }
-  }, [draft, dirty, apps.join('|'), editingApp, editingCapabilities, search])
+  }, [scope.key, draftSourceKey, draft, dirty, apps.join('|'), editingApp, editingCapabilities, search])
   useEffect(() => {
     if (!dirty) {
       loadoutDraftGuardAtom.set({ dirty: false })
@@ -1665,7 +1941,7 @@ function LoadoutManager() {
   }
   const discardThenFinishPendingTransition = () => {
     const action = pendingTransition
-    if (draft) clearPersistedLoadoutDraft(loadoutDraftKey(draft.id))
+    if (draft) clearPersistedLoadoutDraft(scope, loadoutDraftKey(draft.id))
     finishPendingTransition(action)
     if (record && selectedLoadoutAtom.get() === selected) beginEdit(record, { persisted: false })
     else setDraft(null)
@@ -1673,10 +1949,15 @@ function LoadoutManager() {
   if (query.isPending) return jsx(Skeleton, { className: 'm-3 h-32' })
   if (query.isError || !query.data || query.data.ok !== true) return jsx(ErrorState, { title: 'Loadouts unavailable', description: 'Restart the updated backend or correct its saved records, then retry.', children: jsx(Button, { onClick: () => query.refetch(), children: 'Retry' }) })
   return jsx(ScrollArea, { className: 'h-full', children: jsxs('div', { 'data-loadout-manager': 'true', className: 'flex min-w-0 flex-col gap-3 p-3', children: [
-    jsxs('div', { className: 'flex flex-wrap items-center gap-2', children: [jsx('h2', { className: 'font-medium', children: 'Named loadouts' }), jsx(Button, { variant: 'primary', size: 'xs', disabled: busy, onClick: () => requestLoadoutTransition(() => { editingSelection.current = ''; selectedLoadoutAtom.set(null); storeSet('selectedLoadout', null); beginEdit({ name: '', states: [] }) }), children: 'New loadout' })] }),
+    jsxs('div', { className: 'flex flex-wrap items-center gap-2', children: [
+      jsx('h2', { className: 'font-medium', children: 'Named loadouts' }),
+      jsx(Badge, { variant: 'outline', size: 'xs', title: `Profile ${scope.profile}; backend ${scope.connectionId}`, children: `${scope.profile} · ${scope.connectionId === 'local' ? 'This device' : scope.connectionId}` }),
+      jsx(Button, { variant: 'primary', size: 'xs', className: 'ml-auto', disabled: busy, onClick: () => requestLoadoutTransition(() => { editingSelection.current = `${scope.key}\u0000`; selectedLoadoutAtom.set(null); persistSelectedLoadout(scope, null); beginEdit({ name: '', states: [] }) }), children: 'New loadout' })
+    ] }),
     jsx('p', { className: 'text-xs text-muted-foreground', children: 'Save desired skill and MCP states for selected applications. Saving never applies them. Unlisted capabilities remain unchanged when you apply.' }),
     jsx(LoadoutPicker, {}),
     notice ? jsx('p', { role: 'status', className: 'text-xs text-muted-foreground', children: notice }) : null,
+    legacyDraft ? jsx('div', { className: 'flex flex-wrap items-center gap-2 rounded-md border border-(--ui-stroke-secondary) p-2', children: jsx(Button, { variant: 'secondary', size: 'xs', disabled: busy, onClick: restoreLegacyDraft, children: 'Restore legacy draft here' }) }) : null,
     error ? jsx('p', { role: 'alert', className: 'break-words text-xs text-(--ui-text-danger)', children: error }) : null,
     !draft ? jsx(EmptyState, { title: 'Choose or create a loadout', description: 'Start empty, or capture your current choices. No starter activates capabilities for you.' }) : jsxs('div', { className: 'flex min-w-0 flex-col gap-3', children: [
       jsx('label', { htmlFor: `${editorId}-name`, className: 'text-xs', children: 'Name' }),
@@ -1690,9 +1971,9 @@ function LoadoutManager() {
       editingCapabilities ? jsxs('section', { className: 'flex min-w-0 flex-col gap-2 rounded-md border border-(--ui-stroke-secondary) p-3', children: [
         jsx('label', { htmlFor: `${editorId}-app`, className: 'text-xs', children: 'Edit one application' }),
         jsx('select', { id: `${editorId}-app`, 'aria-label': 'Edit application', value: editingApp, onChange: event => setEditingApp(event.target.value), className: 'max-w-full rounded-md border border-(--ui-stroke-secondary) bg-background p-1 text-xs', children: availableApps.filter(app => apps.includes(app.id)).map(app => jsx('option', { value: app.id, children: app.label }, app.id)) }),
-        jsx(SearchField, { 'aria-label': 'Find a capability', placeholder: 'Find a skill or MCP server', value: search, onChange: setSearch }),
+        jsx(SearchField, { 'aria-label': 'Find a capability', placeholder: 'Find a skill or MCP server', value: search, onChange: value => setSearch(normalizeDraftSearch(value)) }),
         jsx('p', { className: 'text-xs text-muted-foreground', children: 'Leave unchanged excludes an entry from this loadout. On and Off are explicit desired states, not live switches.' }),
-        filtered.slice(0, 100).map(row => {
+        filtered.slice(0, visibleCapabilities).map(row => {
           const desired = draft.states.find(item => selectionKey(item) === selectionKey(row))
           return jsxs('label', { className: 'flex min-w-0 flex-wrap items-center gap-2 text-xs', children: [
             jsx('span', { className: 'min-w-0 flex-1 break-words', children: `${row.label} (${row.kind === 'mcp' ? 'MCP' : 'Skill'}${row.unavailable ? ', unavailable' : ''})` }),
@@ -1700,7 +1981,10 @@ function LoadoutManager() {
               className: 'max-w-full rounded-md border border-(--ui-stroke-secondary) bg-background p-1', onChange: event => setDesired(row, event.target.value), children: [jsx('option', { value: 'ignore', children: 'Leave unchanged' }, 'ignore'), jsx('option', { value: 'on', children: 'On' }, 'on'), jsx('option', { value: 'off', children: 'Off' }, 'off')] })
           ] }, selectionKey(row))
         }),
-        filtered.length > 100 ? jsx('p', { className: 'text-xs text-muted-foreground', children: `Showing 100 of ${filtered.length}. Refine the search to edit the rest; all saved selections are retained.` }) : null
+        filtered.length > visibleCapabilities ? jsxs('div', { className: 'flex flex-wrap items-center gap-2', children: [
+          jsx('p', { role: 'status', className: 'text-xs text-muted-foreground', children: `Showing ${visibleCapabilities} of ${filtered.length}. All saved selections are retained.` }),
+          jsx(Button, { variant: 'ghost', size: 'xs', onClick: () => setVisibleCapabilities(value => value + 100), children: 'Show more capabilities' })
+        ] }) : null
       ] }) : null,
       jsxs('div', { className: 'flex flex-wrap gap-2', children: [
         jsx(Button, { variant: 'primary', size: 'xs', disabled: busy || !draft.name.trim(), onClick: saveDraft, children: 'Save loadout' }),
@@ -1733,14 +2017,15 @@ function ArrivalBanner({ arrivals, onDismiss }) {
 function ToolsOverview({ layout }) {
   const t = usePluginI18n(ID)
   const qc = useQueryClient()
-  const onboarding = storeGet(ONBOARDING_KEY, { version: ONBOARDING_VERSION, complete: false })
+  const source = useSourceScope()
+  const onboarding = storeGet(scopedStorageKey(ONBOARDING_KEY, source), { version: ONBOARDING_VERSION, complete: false })
   const onboardingComplete = onboarding && onboarding.version === ONBOARDING_VERSION && onboarding.complete === true
   const [selectedTool, setSelectedTool] = useState(null)
   const [showLibrary, setShowLibrary] = useState(false)
   const [viewMode, setViewMode] = useState('cards')
   const operation = useValue(operationUIAtom)
   const arrivals = useValue(arrivalsAtom)
-  const stateQuery = useQuery({
+  const stateQuery = useScopedQuery({
     queryKey: STATE_KEY,
     queryFn: () => (pluginCtx ? pluginCtx.rest('/state') : Promise.reject(new Error('no backend'))),
     staleTime: 10000,
@@ -1748,7 +2033,7 @@ function ToolsOverview({ layout }) {
     refetchOnWindowFocus: false,
     retry: 1
   })
-  const diffQuery = useQuery({
+  const diffQuery = useScopedQuery({
     queryKey: DIFF_KEY,
     queryFn: () => (pluginCtx ? pluginCtx.rest('/diff') : Promise.reject(new Error('no backend'))),
     staleTime: 10000,
@@ -1756,7 +2041,7 @@ function ToolsOverview({ layout }) {
     refetchOnWindowFocus: false,
     retry: 1
   })
-  const driftQuery = useQuery({
+  const driftQuery = useScopedQuery({
     queryKey: DRIFT_KEY,
     queryFn: () => (pluginCtx ? pluginCtx.rest('/drift') : Promise.reject(new Error('no backend'))),
     staleTime: 30000,
@@ -1903,8 +2188,8 @@ function ToolsOverview({ layout }) {
 
 const WIZARD_STEPS = ['welcome', 'sources', 'scanning', 'review', 'choose', 'preview', 'apply', 'receipt']
 
-function wizardState() {
-  const saved = storeGet(ONBOARDING_KEY, {})
+function wizardState(scope = currentSourceScope()) {
+  const saved = storeGet(scopedStorageKey(ONBOARDING_KEY, scope), {})
   if (!saved || saved.version !== ONBOARDING_VERSION) {
     return { version: ONBOARDING_VERSION, complete: false, step: 'welcome', selectedTools: [], scanRoots: [], category: 'imported' }
   }
@@ -2016,9 +2301,10 @@ function ImportReceipt({ response, undoResults }) {
 
 function FirstRunWizard() {
   const t = usePluginI18n(ID)
+  const source = useSourceScope()
   const folderId = useId()
   const qc = useQueryClient()
-  const saved = wizardState()
+  const saved = wizardState(source)
   const [step, setStep] = useState(saved.step || 'welcome')
   const [selectedTools, setSelectedTools] = useState(() => new Set(saved.selectedTools))
   const [scanRoots, setScanRoots] = useState(saved.scanRoots)
@@ -2030,7 +2316,7 @@ function FirstRunWizard() {
   const [confirm, setConfirm] = useState(null)
   const [receipt, setReceipt] = useState(null)
   const [undoResults, setUndoResults] = useState(null)
-  const stateQuery = useQuery({
+  const stateQuery = useScopedQuery({
     queryKey: STATE_KEY,
     queryFn: () => (pluginCtx ? pluginCtx.rest('/state') : Promise.reject(new Error('no backend'))),
     staleTime: 0,
@@ -2059,7 +2345,7 @@ function FirstRunWizard() {
       category: category,
       ...extra
     }
-    storeSet(ONBOARDING_KEY, payload)
+    storeSet(scopedStorageKey(ONBOARDING_KEY, source), payload)
     setStep(nextStep)
   }
 
@@ -2076,7 +2362,7 @@ function FirstRunWizard() {
   ]
 
   const scanMutation = useMutation({
-    mutationFn: vars => pluginCtx.rest('/import/plan', { method: 'POST', body: vars }),
+    mutationFn: vars => sourceBoundRest('/import/plan', { method: 'POST', body: vars }, source),
     onSuccess: data => {
       if (!data || data.ok !== true) {
         host.notify({ kind: 'error', message: t('wizardScanFailed') })
@@ -2085,7 +2371,7 @@ function FirstRunWizard() {
       }
       setPlan(data)
       setChosenKeys(new Set((data.adoptable || []).map(entryKey)))
-      storeSet(ONBOARDING_KEY, {
+      storeSet(scopedStorageKey(ONBOARDING_KEY, source), {
         version: ONBOARDING_VERSION, complete: false, step: 'sources',
         selectedTools: Array.from(selectedTools), scanRoots: scanRoots.slice(), category: category,
         lastScan: new Date().toISOString()
@@ -2093,30 +2379,32 @@ function FirstRunWizard() {
       setStep('review')
     },
     onError: err => {
+      if (isSourceChanged(err) || !sameSource(source)) return
       host.notifyError(err, t('wizardScanFailed'))
       saveProgress('sources')
     }
   })
 
   const applyMutation = useMutation({
-    mutationFn: vars => pluginCtx.rest('/import/apply-plan', { method: 'POST', body: vars }),
+    mutationFn: vars => sourceBoundRest('/import/apply-plan', { method: 'POST', body: vars }, source),
     onSuccess: data => {
       if (!data || data.ok !== true) {
-        publishOperation(data || { ok: false, error: 'Import returned no receipt. Refresh recovery before retrying.' }, qc)
+        publishOperation(data || { ok: false, error: 'Import returned no receipt. Refresh recovery before retrying.' }, qc, source)
         setStep('sources')
         return
       }
       setReceipt(data)
-      publishOperation(data, qc)
+      publishOperation(data, qc, source)
       setStep('receipt')
-      qc.invalidateQueries({ queryKey: STATE_KEY })
-      qc.invalidateQueries({ queryKey: DIFF_KEY })
-      qc.invalidateQueries({ queryKey: DRIFT_KEY })
+      qc.invalidateQueries({ queryKey: scopedQueryKey(STATE_KEY, source) })
+      qc.invalidateQueries({ queryKey: scopedQueryKey(DIFF_KEY, source) })
+      qc.invalidateQueries({ queryKey: scopedQueryKey(DRIFT_KEY, source) })
       const details = data.receipt || {}
       host.notify({ kind: details.failed || details.refused ? 'error' : 'success', message: t('wizardApplied', details.adopted || 0, details.failed || 0, details.refused || 0) })
     },
-    onError: () => {
-      publishOperation({ ok: false, error: 'The import response was interrupted. Refresh recovery before another import.' }, qc)
+    onError: error => {
+      if (isSourceChanged(error) || !sameSource(source)) return
+      publishOperation({ ok: false, error: 'The import response was interrupted. Refresh recovery before another import.' }, qc, source)
       setStep('sources')
     }
   })
@@ -2169,7 +2457,7 @@ function FirstRunWizard() {
   })
   const undoAdoption = () => reviewOperation('/operations/undo-plan', {}, '/operations/undo')
   const finish = () => {
-    storeSet(ONBOARDING_KEY, {
+    storeSet(scopedStorageKey(ONBOARDING_KEY, source), {
       version: ONBOARDING_VERSION, complete: true, step: 'welcome',
       selectedTools: Array.from(selectedTools), scanRoots: scanRoots.slice(), category: category,
       lastScan: new Date().toISOString()
@@ -2347,6 +2635,7 @@ function PrimaryNav({ sections, active, onSelect, layout }) {
 
 function ControlCenter() {
   const t = usePluginI18n(ID)
+  const source = useSourceScope()
   const rootRef = useRef(null)
   const layout = usePaneLayout(rootRef)
   const reducedMotion = usePrefersReducedMotion()
@@ -2359,12 +2648,12 @@ function ControlCenter() {
     { id: 'advanced', label: t('ccAdvanced') }
   ]
   const bodies = {
-    tools: () => jsx(ToolsOverview, { layout: layout }),
-    onboarding: () => jsx(FirstRunWizard, {}),
-    loadouts: () => jsx(LoadoutManager, {}),
-    problems: () => jsx(MaintenancePane, { section: 'problems' }),
-    mcp: () => jsx(McpPane, {}),
-    advanced: () => jsx(MaintenancePane, { section: 'advanced' })
+    tools: () => jsx(ToolsOverview, { layout: layout }, `tools:${source.key}`),
+    onboarding: () => jsx(FirstRunWizard, {}, `onboarding:${source.key}`),
+    loadouts: () => jsx(LoadoutManager, {}, `loadouts:${source.key}`),
+    problems: () => jsx(MaintenancePane, { section: 'problems' }, `problems:${source.key}`),
+    mcp: () => jsx(McpPane, {}, `mcp:${source.key}`),
+    advanced: () => jsx(MaintenancePane, { section: 'advanced' }, `advanced:${source.key}`)
   }
   const renderBody = bodies[active] || (() => jsx(SectionPlaceholder, { title: t('ccTools'), hint: t('toolsLandingHint') }))
   return jsxs('div', {
@@ -2375,12 +2664,12 @@ function ControlCenter() {
     className: 'flex h-full min-w-0 flex-col text-sm',
     children: [
       jsx(ReducedMotionGuard, { active: reducedMotion }),
-      jsx(BackgroundHost, {}),
+      jsx(BackgroundHost, {}, `background:${source.key}`),
       jsxs('div', {
         className: 'flex flex-col gap-2 border-b border-(--ui-stroke-secondary) px-3 py-2',
         children: [
           jsx('span', { className: 'font-medium', children: t('ccTitle') }),
-          jsx(LoadoutPicker, {})
+          jsx(LoadoutPicker, {}, `picker:${source.key}`)
         ]
       }),
       jsxs('div', {
@@ -2390,7 +2679,7 @@ function ControlCenter() {
           jsx('main', { className: 'min-h-0 min-w-0 flex-1', children: renderBody() })
         ]
       }),
-      jsx(OperationsPanel, {}),
+      jsx(OperationsPanel, {}, `operations:${source.key}`),
       jsx('style', { children: '[data-hermes-loadout-root="true"] :is(button,input,select,summary):focus-visible{outline:2px solid currentColor;outline-offset:2px}' })
     ]
   })
@@ -2406,9 +2695,9 @@ export default {
   defaultEnabled: false, // unified-package desktop halves ship opt-in
   register(ctx) {
     pluginCtx = ctx
-    reviewGeneration += 1
-    operationUIAtom.set({ busy: false, preview: null, response: null, error: null })
-    selectedLoadoutAtom.set(storeGet('selectedLoadout', null))
+    activeSourceKey = null
+    synchronizeSourceState(true)
+    bindSourceState(ctx)
 
     ctx.i18n.register({
       en: {

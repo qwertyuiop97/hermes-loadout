@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Five behavioral harnesses use real React and a test-only Hermes SDK adapter.
+# Six behavioral harnesses use real React and a test-only Hermes SDK adapter.
 # No plugin build is performed. Dependencies are pinned and cached locally.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -35,6 +35,7 @@ cp "$HERE/workspace_harness_body.mjs" "$FRONT/workspace_harness_body.mjs"
 cp "$HERE/mutation_harness_body.mjs" "$FRONT/mutation_harness_body.mjs"
 cp "$HERE/client_library_harness_body.mjs" "$FRONT/client_library_harness_body.mjs"
 cp "$HERE/loadout_harness_body.mjs" "$FRONT/loadout_harness_body.mjs"
+cp "$HERE/source_scope_harness_body.mjs" "$FRONT/source_scope_harness_body.mjs"
 # committed render fixtures (screenshot-shaped 105-skill state) ride along
 rm -rf "$FRONT/fixtures"
 cp -R "$HERE/fixtures" "$FRONT/fixtures"
@@ -48,3 +49,5 @@ PLUGIN_SRC="$FRONT/staging/plugin.js" STAGING_PLUGIN="$FRONT/staging/plugin.js" 
 PLUGIN_SRC="$FRONT/staging/plugin.js" STAGING_PLUGIN="$FRONT/staging/plugin.js" node client_library_harness_body.mjs
 
 PLUGIN_SRC="$FRONT/staging/plugin.js" STAGING_PLUGIN="$FRONT/staging/plugin.js" node loadout_harness_body.mjs
+
+PLUGIN_SRC="$FRONT/staging/plugin.js" STAGING_PLUGIN="$FRONT/staging/plugin.js" node source_scope_harness_body.mjs

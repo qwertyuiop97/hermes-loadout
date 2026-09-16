@@ -15,7 +15,7 @@ const state = { ok: true, capabilities: { reviewed_operations: 1 }, skills_root_
 const channel = { state, mode: 'ready', bundle: {}, notifications: [], invalidated: [], restCalls: [],
   diff: { ok: true, broken: [], foreign: [], unmanaged: [], unlinked: [], counts: {} }, drift: { ok: true, drifted: [], count: 0 } }
 globalThis.__LOADOUT_TEST = channel
-const storage = new Map([['onboarding', { version: 1, complete: true }]])
+const storage = new Map([['onboarding:["local","default"]', { version: 1, complete: true }]])
 const desired = { kind: 'skill', app: 'codex', id: 'software/safe-skill', enabled: true }
 const receipt = { operation_id: 'persisted-fixture', label: 'Enable one skill', changed: 1, skipped: 0, failed: 0, undo_available: true,
   items: [{ ...desired, status: 'completed' }] }
