@@ -66,7 +66,11 @@ python tests/check_frontend.py --require-sdk --sdk-index /path/to/hermes-agent/a
 React harnesses use real React and an SDK substitute. They cover rendering,
 container-responsive navigation, keyboard names, review cancellation, errors,
 partial receipts, undo, immutable import selection, the client library, and
-loadout editing. They do not replace a disposable native Hermes session.
+loadout editing. A dedicated two-source harness verifies that query caches,
+selections, drafts, onboarding state and late mutation responses are isolated by
+the SDK connection/profile identity. Pre-isolation drafts are recoverable only
+through an explicit source assignment. These tests do not replace a disposable
+native Hermes session.
 
 ## State and recovery
 

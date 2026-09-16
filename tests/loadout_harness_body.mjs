@@ -14,7 +14,11 @@ const channel = { state, mode: 'ready', bundle: {}, notifications: [], invalidat
   metadata: { ok: true, classifications: ['Portable', 'Hermes-specific', 'Codex-specific', 'Claude-specific', 'Other application-specific', 'Unclassified'], skills: {} },
   mcpState: { ok: true, rows: [{ name: 'reference', enabled: false, writers: { codex: 'missing', claude: 'missing' } }], writers: {} } }
 globalThis.__LOADOUT_TEST = channel
-const storage = new Map([['selectedLoadout', '111111111111']])
+const defaultScopeKey = JSON.stringify(['local', 'default'])
+const storage = new Map([['selectedLoadoutsBySource', { [defaultScopeKey]: '111111111111' }]])
+const selectedLoadout = () => storage.get('selectedLoadoutsBySource')?.[defaultScopeKey] ?? null
+const persistedDraft = id => storage.get('loadoutDraftsBySource')?.[defaultScopeKey]?.[id]
+const setPersistedDraft = (id, value) => storage.set('loadoutDraftsBySource', { [defaultScopeKey]: { [id]: value } })
 let counter = 2, failSave = false, failRead = false, failCapture = false
 const copy = value => JSON.parse(JSON.stringify(value))
 const records = copy(channel.loadouts.loadouts)
@@ -141,7 +145,7 @@ failRead = true
 await click(tree, 'Save loadout')
 assert.equal(records.length, countBeforeSave + 1)
 const savedId = records.at(-1).id
-assert.equal(storage.get('selectedLoadout'), savedId)
+assert.equal(selectedLoadout(), savedId)
 assert.match(JSON.stringify(tree.toJSON()), /Loadout saved/)
 assert.doesNotMatch(JSON.stringify(tree.toJSON()), /Refresh unavailable/)
 await click(tree, 'Save loadout')
@@ -149,19 +153,19 @@ assert.equal(records.length, countBeforeSave + 1, 'Retry saves the acknowledged 
 assert.equal(channel.restCalls.at(-1).body.loadout_id, savedId)
 await click(tree, 'Duplicate')
 assert.equal(records.length, countBeforeSave + 2)
-assert.equal(storage.get('selectedLoadout'), records.at(-1).id)
+assert.equal(selectedLoadout(), records.at(-1).id)
 await click(tree, 'Delete loadout')
 await act(async () => { const dialog = tree.root.findByProps({ role: 'dialog' }); button({ root: dialog }, 'Delete loadout').props.onClick() })
 assert.equal(records.length, countBeforeSave + 1)
-assert.equal(storage.get('selectedLoadout'), null)
+assert.equal(selectedLoadout(), null)
 failRead = false
 await selectSaved(tree, savedId)
 await change(tree, 'Loadout name', 'Keep this unsaved draft')
 failCapture = true
-const draftBeforeCapture = copy(storage.get('loadoutDrafts')[savedId].draft)
+const draftBeforeCapture = copy(persistedDraft(savedId).draft)
 await click(tree, 'Capture current selections')
 assert.match(JSON.stringify(tree.toJSON()), /MCP catalog could not be read/)
-assert.deepEqual(storage.get('loadoutDrafts')[savedId].draft, draftBeforeCapture)
+assert.deepEqual(persistedDraft(savedId).draft, draftBeforeCapture)
 failCapture = false
 await click(tree, 'Save loadout')
 await act(async () => { tree.unmount() })
@@ -182,14 +186,19 @@ const invalidDrafts = [
 ]
 for (const candidate of invalidDrafts) assert.equal(validStoredLoadoutDraft(candidate, savedId), false)
 assert.equal(validStoredLoadoutDraft(validDraft, savedId), true)
+for (const candidate of [
+  { ...copy(validDraft), search: null },
+  { ...copy(validDraft), editingApp: null },
+  { ...copy(validDraft), editingCapabilities: 'yes' }
+]) assert.equal(validStoredLoadoutDraft(candidate, savedId), true, 'editor-only preferences do not invalidate saved business data')
 const savedRecordBefore = copy(records.find(row => row.id === savedId))
-storage.set('loadoutDrafts', { [savedId]: invalidDrafts[3] })
+setPersistedDraft(savedId, invalidDrafts[3])
 await act(async () => { tree = TestRenderer.create(createElement(LoadoutManager)) })
 assert.equal(labeled(tree, 'Loadout name').props.value, savedRecordBefore.name)
 assert.match(JSON.stringify(tree.toJSON()), /invalid local draft was ignored/)
 assert.deepEqual(records.find(row => row.id === savedId), savedRecordBefore)
 await act(async () => { tree.unmount() })
-storage.set('loadoutDrafts', { [savedId]: copy(validDraft) })
+setPersistedDraft(savedId, copy(validDraft))
 await act(async () => { tree = TestRenderer.create(createElement(LoadoutManager)) })
 assert.equal(labeled(tree, 'Loadout name').props.value, 'Recovered unsaved work')
 assert.equal(labeled(tree, 'Include Hermes').props.checked, false, 'An intentionally empty application selection stays empty after reload')

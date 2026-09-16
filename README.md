@@ -73,6 +73,12 @@ For example, a **Research** loadout could turn on your research skills and an ex
 
 Loadout files contain names, identifiers and On/Off choices—not credentials, server definitions, or copied skill contents.
 
+The editor labels the active Hermes profile and backend. Saved selections,
+unsaved drafts, setup progress and server-derived views are isolated by that
+source. A draft created by an older version without source identity is never
+attached automatically; the editor offers an explicit recovery action and keeps
+the original recovery copy.
+
 ## How skills and connections are managed
 
 | Action | What it does | What it does not do |

@@ -28,6 +28,7 @@ const channel = { mode: 'ready', state, bundle: {}, notifications: [], registry:
 globalThis.__LOADOUT_TEST = channel
 const plugin = (await import(process.env.STAGING_PLUGIN)).default
 const storage = new Map()
+const onboardingKey = 'onboarding:["local","default"]'
 let pendingPlan = null, holdScan = false, resolveScan, holdImport = false, resolveImport
 const receipts = items => ({ receipt_id: 'abc123abc123', label: 'Fixture change', kind: 'selection', status: 'complete', changed: items.filter(row => row.status === 'completed').length, failed: items.filter(row => row.ok === false).length, skipped: 0, items, undo_available: items.some(row => row.status === 'completed') })
 plugin.register({ source: 'plugin:hermes-loadout', os: {}, socket: () => () => {},
@@ -210,8 +211,8 @@ await clicks(tree, 'Undo')
 assert(tree.root.findByProps({ role: 'dialog' }))
 await clicks(tree, 'Cancel')
 await clicks(tree, 'View Tools')
-assert.equal(storage.get('onboarding').complete, true)
-assert(!('entries' in storage.get('onboarding')))
+assert.equal(storage.get(onboardingKey).complete, true)
+assert(!('entries' in storage.get(onboardingKey)))
 console.log('ok  onboarding source review, bounded import choices, immutable token, partial receipt, and cancellation')
 
 await switchSection('loadouts')
