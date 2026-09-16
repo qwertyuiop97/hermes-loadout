@@ -2,7 +2,7 @@ name: Apply verified Loadout audit patch
 
 # Temporary delivery helper. It runs only on the audit branch, checks the exact
 # patch and resulting tree, tests the changes, and removes itself before commit.
-# It cannot merge, release, force-push, or write to main.
+# Its only push targets the audit branch; it never merges, releases or force-pushes.
 on:
   push:
     branches: [audit/reliability-2026-09-16]
@@ -29,9 +29,9 @@ jobs:
           package-manager-cache: false
       - name: Verify, apply, and stage the exact reviewed patch
         env:
-          EXPECTED_TREE: 5e4dc648b06a4197bfd5e97b066d4ba45c35336d
+          EXPECTED_TREE: 2440ecd99d76372ae4ff1a915ad504f9bc7065aa
         run: |
-          test "$(git rev-parse HEAD^)" = 55d1261c013957835372dc68d1ecc91089505fee
+          test "$(git rev-parse HEAD^)" = 86325fdb27e4f10b35d4fa20128f64b1f3faeb46
           python - <<'PY'
           import base64, gzip, hashlib, subprocess
           from pathlib import Path
@@ -40,6 +40,15 @@ jobs:
           assert hashlib.sha256(patch).hexdigest() == 'c63283a7548eb56db3190571e1eb4d2c550d2f7e2cd5686957b86ed559545ee4'
           subprocess.run(['git', 'apply', '--check', '-'], input=patch, check=True)
           subprocess.run(['git', 'apply', '-'], input=patch, check=True)
+          # Correct the new test's callback shape, SearchField receives a string.
+          harness = Path('tests/loadout_harness_body.mjs')
+          source = harness.read_text()
+          for value in ('draft-204', ''):
+              before = "await change(tree, 'Find a capability', " + repr(value) + ")"
+              after = "await act(async () => labeled(tree, 'Find a capability').props.onChange(" + repr(value) + "))"
+              assert source.count(before) == 1
+              source = source.replace(before, after)
+          harness.write_text(source)
           PY
           git rm .github/loadout-transfer-1.b64 .github/loadout-transfer-2.b64 .github/workflows/loadout-review-transfer.yml
           git add dashboard desktop docs tests
@@ -69,22 +78,9 @@ jobs:
           python tests/check_frontend.py --require-sdk --sdk-index .ci-hermes-sdk/apps/desktop/src/sdk/index.ts
       - name: Real React behavioral harnesses
         run: ./tests/run_render_harness.sh
-      - name: Preserve disposable frontend test dependencies for local reproduction
-        if: always()
-        run: |
-          if [ -d /tmp/hermes-loadout-tests/node_modules ]; then
-            tar -czf "$RUNNER_TEMP/frontend-dependencies.tar.gz" -C /tmp/hermes-loadout-tests node_modules package.json package-lock.json
-          fi
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        if: always()
-        with:
-          name: audit-frontend-dependencies
-          path: ${{ runner.temp }}/frontend-dependencies.tar.gz
-          retention-days: 1
-          if-no-files-found: warn
       - name: Commit only the verified tree to the audit branch
         env:
-          EXPECTED_TREE: 5e4dc648b06a4197bfd5e97b066d4ba45c35336d
+          EXPECTED_TREE: 2440ecd99d76372ae4ff1a915ad504f9bc7065aa
         run: |
           test "$(git write-tree)" = "$EXPECTED_TREE"
           git diff --exit-code
