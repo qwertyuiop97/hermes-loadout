@@ -201,9 +201,9 @@ class RouteRoundTrip(unittest.TestCase):
             self.assertTrue(mcp['partial_failure'], mcp)
             self.assertEqual(mcp['catalog_error']['code'], 'config-unreadable')
             captured = self.post('/loadouts/capture', apps=['hermes'])
-            self.assertTrue(captured['ok'], captured)
-            self.assertFalse(captured['states'])
-            self.assertTrue(captured['excluded'])
+            self.assertFalse(captured['ok'], captured)
+            self.assertEqual(captured['code'], 'capture-unavailable')
+            self.assertNotIn('states', captured, 'A failed capture cannot replace the editor draft')
 
     def test_bypass_conflict_and_backup_preview_apply_undo_over_http(self):
         link = self.fx.codex / 'shared'

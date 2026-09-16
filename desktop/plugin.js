@@ -76,6 +76,31 @@ function storedLoadoutDrafts() {
   return drafts && typeof drafts === 'object' && !Array.isArray(drafts) ? drafts : {}
 }
 
+function validStoredLoadoutDraft(value, id) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const draft = value.draft
+  if (!draft || typeof draft !== 'object' || Array.isArray(draft) || draft.id !== (id || null)
+    || typeof draft.name !== 'string' || draft.name.length > 64 || /[\u0000-\u001f]/.test(draft.name)
+    || !Array.isArray(draft.states) || draft.states.length > 2048) return false
+  const validApp = app => typeof app === 'string' && /^[a-z0-9-]{1,64}$/.test(app)
+  if (!Array.isArray(value.apps) || value.apps.length > 2048 || !value.apps.every(validApp)
+    || new Set(value.apps).size !== value.apps.length) return false
+  const seen = new Set()
+  for (const row of draft.states) {
+    if (!row || typeof row !== 'object' || Array.isArray(row)
+      || Object.keys(row).sort().join(',') !== 'app,enabled,id,kind'
+      || !['skill', 'mcp'].includes(row.kind) || !validApp(row.app) || !value.apps.includes(row.app)
+      || typeof row.enabled !== 'boolean' || typeof row.id !== 'string' || !row.id.trim()
+      || row.id.length > 256 || /[\u0000-\u001f]/.test(row.id)) return false
+    if (row.kind === 'skill' && (row.id.split('/').length !== 2
+      || row.id.split('/').some(part => !part || part === '.' || part === '..' || part.includes('\\')))) return false
+    const key = selectionKey(row)
+    if (seen.has(key)) return false
+    seen.add(key)
+  }
+  return true
+}
+
 function loadoutDraftKey(id) {
   return id || '__new'
 }
@@ -1532,6 +1557,7 @@ function LoadoutManager() {
   const [editingApp, setEditingApp] = useState('hermes')
   const [search, setSearch] = useState('')
   const [editingCapabilities, setEditingCapabilities] = useState(false)
+  const [visibleCapabilities, setVisibleCapabilities] = useState(100)
   const [working, setWorking] = useState(false)
   const [error, setError] = useState(null)
   const [notice, setNotice] = useState(null)
@@ -1550,14 +1576,19 @@ function LoadoutManager() {
     if (!availableApps.some(app => app.id === row.app)) availableApps.push({ id: row.app, label: `${row.app} (unavailable)` })
   }
   const beginEdit = (row, options = {}) => {
-    const saved = options.persisted === false ? null : storedLoadoutDrafts()[loadoutDraftKey(row.id)]
-    const nextDraft = saved && saved.draft ? saved.draft : { id: row.id || null, name: row.name, states: row.states.map(item => ({ ...item })) }
-    setDraft({ ...nextDraft, states: (nextDraft.states || []).map(item => ({ ...item })) })
-    const ids = saved && Array.isArray(saved.apps) ? saved.apps : Array.from(new Set((nextDraft.states || []).map(item => item.app)))
-    setApps(ids.length ? ids : ['hermes'])
-    setEditingApp(saved && saved.editingApp ? saved.editingApp : ids[0] || 'hermes')
+    const stored = options.persisted === false ? null : storedLoadoutDrafts()[loadoutDraftKey(row.id)]
+    const saved = validStoredLoadoutDraft(stored, row.id) ? stored : null
+    const nextDraft = saved ? saved.draft : { id: row.id || null, name: row.name, states: row.states.map(item => ({ ...item })) }
+    setDraft({ ...nextDraft, states: nextDraft.states.map(item => ({ ...item })) })
+    const ids = saved ? saved.apps : Array.from(new Set(nextDraft.states.map(item => item.app)))
+    const included = saved || ids.length ? ids : ['hermes']
+    setApps(included)
+    setEditingApp(saved && included.includes(saved.editingApp) ? saved.editingApp : included[0] || 'hermes')
     setSearch(saved && typeof saved.search === 'string' ? saved.search : '')
-    setError(null); setNotice(saved ? 'Unsaved draft restored. Save or discard it before leaving.' : null); setEditingCapabilities(saved ? saved.editingCapabilities === true : false)
+    setVisibleCapabilities(100)
+    setError(null)
+    setNotice(saved ? 'Unsaved draft restored. Save or discard it before leaving.' : stored ? 'An invalid local draft was ignored. Your saved loadout was not changed.' : null)
+    setEditingCapabilities(saved ? saved.editingCapabilities === true : false)
   }
   // Hydrate when selection changes, not on background refreshes that could
   // erase unsaved edits. An explicit New draft has no saved selection.
@@ -1571,9 +1602,13 @@ function LoadoutManager() {
     if (working) return
     setWorking(true); setError(null); setNotice(null)
     try {
+      await qc.cancelQueries({ queryKey: LOADOUTS_KEY })
       const result = requireOk(await pluginCtx.rest(path, { method: 'POST', body: body }))
-      const data = requireOk(await pluginCtx.rest('/loadouts'))
-      qc.setQueryData(LOADOUTS_KEY, data)
+      qc.setQueryData(LOADOUTS_KEY, previous => {
+        const rows = (previous && previous.loadouts || []).filter(row => row.id !== result.loadout.id)
+        if (body.action !== 'delete') rows.push(result.loadout)
+        return { ...previous, ok: true, loadouts: rows }
+      })
       if (body.action === 'delete') { clearPersistedLoadoutDraft(loadoutDraftKey(body.loadout_id)); selectedLoadoutAtom.set(null); storeSet('selectedLoadout', null); setDraft(null) }
       else { clearPersistedLoadoutDraft(loadoutDraftKey(body.loadout_id)); editingSelection.current = result.loadout.id; selectedLoadoutAtom.set(result.loadout.id); storeSet('selectedLoadout', result.loadout.id); beginEdit(result.loadout, { persisted: false }) }
       setNotice(body.action === 'delete' ? 'Loadout deleted. Application activation was not changed.' : 'Loadout saved. Application activation was not changed.')
@@ -1585,9 +1620,13 @@ function LoadoutManager() {
     const previousKey = loadoutDraftKey(draft.id)
     setWorking(true); setError(null); setNotice(null)
     try {
+      await qc.cancelQueries({ queryKey: LOADOUTS_KEY })
       const result = requireOk(await pluginCtx.rest('/loadouts/save', { method: 'POST', body: { name: draft.name, states: draft.states, ...(draft.id ? { loadout_id: draft.id } : {}) } }))
-      const data = requireOk(await pluginCtx.rest('/loadouts'))
-      qc.setQueryData(LOADOUTS_KEY, data)
+      qc.setQueryData(LOADOUTS_KEY, previous => {
+        const rows = previous && previous.loadouts || []
+        const exists = rows.some(row => row.id === result.loadout.id)
+        return { ...previous, ok: true, loadouts: exists ? rows.map(row => row.id === result.loadout.id ? result.loadout : row) : [...rows, result.loadout] }
+      })
       clearPersistedLoadoutDraft(previousKey)
       clearPersistedLoadoutDraft(loadoutDraftKey(result.loadout.id))
       editingSelection.current = result.loadout.id
@@ -1635,6 +1674,7 @@ function LoadoutManager() {
     if (row.app === editingApp && !capabilities.some(item => selectionKey(item) === selectionKey(row))) capabilities.push({ ...row, label: row.id, unavailable: true })
   }
   const filtered = capabilities.filter(row => `${row.label} ${row.kind}`.toLowerCase().includes(search.toLowerCase()))
+  useEffect(() => { setVisibleCapabilities(100) }, [search, editingApp])
   const dirty = draft && (!record || draft.name !== record.name || JSON.stringify(draft.states) !== JSON.stringify(record.states))
   const busy = working || operation.busy || !!operation.preview || !backendReady(state)
   useEffect(() => {
@@ -1692,7 +1732,7 @@ function LoadoutManager() {
         jsx('select', { id: `${editorId}-app`, 'aria-label': 'Edit application', value: editingApp, onChange: event => setEditingApp(event.target.value), className: 'max-w-full rounded-md border border-(--ui-stroke-secondary) bg-background p-1 text-xs', children: availableApps.filter(app => apps.includes(app.id)).map(app => jsx('option', { value: app.id, children: app.label }, app.id)) }),
         jsx(SearchField, { 'aria-label': 'Find a capability', placeholder: 'Find a skill or MCP server', value: search, onChange: setSearch }),
         jsx('p', { className: 'text-xs text-muted-foreground', children: 'Leave unchanged excludes an entry from this loadout. On and Off are explicit desired states, not live switches.' }),
-        filtered.slice(0, 100).map(row => {
+        filtered.slice(0, visibleCapabilities).map(row => {
           const desired = draft.states.find(item => selectionKey(item) === selectionKey(row))
           return jsxs('label', { className: 'flex min-w-0 flex-wrap items-center gap-2 text-xs', children: [
             jsx('span', { className: 'min-w-0 flex-1 break-words', children: `${row.label} (${row.kind === 'mcp' ? 'MCP' : 'Skill'}${row.unavailable ? ', unavailable' : ''})` }),
@@ -1700,7 +1740,10 @@ function LoadoutManager() {
               className: 'max-w-full rounded-md border border-(--ui-stroke-secondary) bg-background p-1', onChange: event => setDesired(row, event.target.value), children: [jsx('option', { value: 'ignore', children: 'Leave unchanged' }, 'ignore'), jsx('option', { value: 'on', children: 'On' }, 'on'), jsx('option', { value: 'off', children: 'Off' }, 'off')] })
           ] }, selectionKey(row))
         }),
-        filtered.length > 100 ? jsx('p', { className: 'text-xs text-muted-foreground', children: `Showing 100 of ${filtered.length}. Refine the search to edit the rest; all saved selections are retained.` }) : null
+        filtered.length > visibleCapabilities ? jsxs('div', { className: 'flex flex-wrap items-center gap-2', children: [
+          jsx('p', { role: 'status', className: 'text-xs text-muted-foreground', children: `Showing ${visibleCapabilities} of ${filtered.length}. All saved selections are retained.` }),
+          jsx(Button, { variant: 'ghost', size: 'xs', onClick: () => setVisibleCapabilities(value => value + 100), children: 'Show more capabilities' })
+        ] }) : null
       ] }) : null,
       jsxs('div', { className: 'flex flex-wrap gap-2', children: [
         jsx(Button, { variant: 'primary', size: 'xs', disabled: busy || !draft.name.trim(), onClick: saveDraft, children: 'Save loadout' }),

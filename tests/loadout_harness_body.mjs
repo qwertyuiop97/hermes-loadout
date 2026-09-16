@@ -4,8 +4,8 @@ import TestRenderer, { act } from 'react-test-renderer'
 import { readFileSync, writeFileSync } from 'fs'
 import assert from 'node:assert/strict'
 const path = process.env.STAGING_PLUGIN.replace(/plugin\.js$/, 'loadouts-plugin.mjs')
-writeFileSync(path, readFileSync(process.env.STAGING_PLUGIN, 'utf8') + '\nexport { LoadoutManager, LoadoutPicker, SkillDetails }\n')
-const { default: plugin, LoadoutManager, LoadoutPicker, SkillDetails } = await import(path)
+writeFileSync(path, readFileSync(process.env.STAGING_PLUGIN, 'utf8') + '\nexport { LoadoutManager, LoadoutPicker, SkillDetails, validStoredLoadoutDraft }\n')
+const { default: plugin, LoadoutManager, LoadoutPicker, SkillDetails, validStoredLoadoutDraft } = await import(path)
 const skill = { id: 'writing/draft', name: 'draft', category: 'writing', description: 'Write a draft', tools: { hermes: { state: 'disabled' }, codex: { state: 'missing' } } }
 const state = { ok: true, capabilities: { reviewed_operations: 1 }, skills_root_exists: true, counts: { skills: 1 }, tools: [
   { id: 'hermes', label: 'Hermes', special: 'config', present: true }, { id: 'codex', label: 'Codex', present: true }], skills: [skill] }
@@ -15,13 +15,14 @@ const channel = { state, mode: 'ready', bundle: {}, notifications: [], invalidat
   mcpState: { ok: true, rows: [{ name: 'reference', enabled: false, writers: { codex: 'missing', claude: 'missing' } }], writers: {} } }
 globalThis.__LOADOUT_TEST = channel
 const storage = new Map([['selectedLoadout', '111111111111']])
-let counter = 2, failSave = false
+let counter = 2, failSave = false, failRead = false, failCapture = false
 const copy = value => JSON.parse(JSON.stringify(value))
 const records = copy(channel.loadouts.loadouts)
 plugin.register({ source: 'plugin:hermes-loadout', rest: async (url, options = {}) => {
   const body = options.body
   channel.restCalls.push({ path: url, body: copy(body || {}) })
-  if (url === '/loadouts') return { ok: true, loadouts: copy(records) }
+  if (url === '/loadouts') { if (failRead) throw new Error('Refresh unavailable after acknowledged save'); return { ok: true, loadouts: copy(records) } }
+  if (url === '/loadouts/capture' && failCapture) return { ok: false, code: 'capture-unavailable', error: 'MCP catalog could not be read; draft not replaced' }
   if (url === '/loadouts/capture') return { ok: true, states: body.apps.map(app => ({ kind: 'skill', app, id: skill.id, enabled: false })), excluded: [] }
   if (url === '/loadouts/save') {
     if (failSave) return { ok: false, error: 'Disk unavailable; draft not saved' }
@@ -129,6 +130,95 @@ assert.equal(JSON.stringify(state), before)
 assert(channel.restCalls.every(row => /^\/loadouts(\/|$)/.test(row.path)))
 await act(async () => { tree.unmount() })
 console.log('ok  create/edit/rename/duplicate/delete, capture, failed save, and background refresh preserve independent user choices without activation')
+
+// The POST acknowledgement must establish success even if a subsequent list
+// read would fail. A retry of Save must update the same ID, not create a copy.
+await act(async () => { tree = TestRenderer.create(createElement(LoadoutManager)) })
+await click(tree, 'New loadout')
+await change(tree, 'Loadout name', 'Acknowledged')
+const countBeforeSave = records.length
+failRead = true
+await click(tree, 'Save loadout')
+assert.equal(records.length, countBeforeSave + 1)
+const savedId = records.at(-1).id
+assert.equal(storage.get('selectedLoadout'), savedId)
+assert.match(JSON.stringify(tree.toJSON()), /Loadout saved/)
+assert.doesNotMatch(JSON.stringify(tree.toJSON()), /Refresh unavailable/)
+await click(tree, 'Save loadout')
+assert.equal(records.length, countBeforeSave + 1, 'Retry saves the acknowledged ID')
+assert.equal(channel.restCalls.at(-1).body.loadout_id, savedId)
+await click(tree, 'Duplicate')
+assert.equal(records.length, countBeforeSave + 2)
+assert.equal(storage.get('selectedLoadout'), records.at(-1).id)
+await click(tree, 'Delete loadout')
+await act(async () => { const dialog = tree.root.findByProps({ role: 'dialog' }); button({ root: dialog }, 'Delete loadout').props.onClick() })
+assert.equal(records.length, countBeforeSave + 1)
+assert.equal(storage.get('selectedLoadout'), null)
+failRead = false
+await selectSaved(tree, savedId)
+await change(tree, 'Loadout name', 'Keep this unsaved draft')
+failCapture = true
+const draftBeforeCapture = copy(storage.get('loadoutDrafts')[savedId].draft)
+await click(tree, 'Capture current selections')
+assert.match(JSON.stringify(tree.toJSON()), /MCP catalog could not be read/)
+assert.deepEqual(storage.get('loadoutDrafts')[savedId].draft, draftBeforeCapture)
+failCapture = false
+await click(tree, 'Save loadout')
+await act(async () => { tree.unmount() })
+console.log('ok  acknowledged saves, duplicates, and deletes survive failed refreshes; failed capture preserves the unsaved draft')
+
+// Malformed plugin-local storage cannot take the whole editor down or redirect
+// a recovered draft to a different saved record. Valid unsaved work still loads.
+const validDraft = { draft: { id: savedId, name: 'Recovered unsaved work', states: [] }, apps: [], editingApp: 'hermes', editingCapabilities: true, search: '' }
+const invalidDrafts = [
+  null, [], { draft: 'broken' },
+  { ...copy(validDraft), draft: { ...validDraft.draft, states: {} } },
+  { ...copy(validDraft), draft: { ...validDraft.draft, name: null } },
+  { ...copy(validDraft), draft: { ...validDraft.draft, id: '111111111111' } },
+  { ...copy(validDraft), apps: [null] },
+  { ...copy(validDraft), draft: { ...validDraft.draft, states: [{ kind: 'skill', app: 'hermes', id: skill.id, enabled: 'false' }] }, apps: ['hermes'] },
+  { ...copy(validDraft), draft: { ...validDraft.draft, states: [{ kind: 'skill', app: 'hermes', id: '../outside', enabled: true }] }, apps: ['hermes'] },
+  { ...copy(validDraft), draft: { ...validDraft.draft, states: [null] } }
+]
+for (const candidate of invalidDrafts) assert.equal(validStoredLoadoutDraft(candidate, savedId), false)
+assert.equal(validStoredLoadoutDraft(validDraft, savedId), true)
+const savedRecordBefore = copy(records.find(row => row.id === savedId))
+storage.set('loadoutDrafts', { [savedId]: invalidDrafts[3] })
+await act(async () => { tree = TestRenderer.create(createElement(LoadoutManager)) })
+assert.equal(labeled(tree, 'Loadout name').props.value, savedRecordBefore.name)
+assert.match(JSON.stringify(tree.toJSON()), /invalid local draft was ignored/)
+assert.deepEqual(records.find(row => row.id === savedId), savedRecordBefore)
+await act(async () => { tree.unmount() })
+storage.set('loadoutDrafts', { [savedId]: copy(validDraft) })
+await act(async () => { tree = TestRenderer.create(createElement(LoadoutManager)) })
+assert.equal(labeled(tree, 'Loadout name').props.value, 'Recovered unsaved work')
+assert.equal(labeled(tree, 'Include Hermes').props.checked, false, 'An intentionally empty application selection stays empty after reload')
+assert.match(JSON.stringify(tree.toJSON()), /Unsaved draft restored/)
+await click(tree, 'Save loadout')
+console.log('ok  invalid persisted drafts fall back safely; valid unsaved work and empty application selections survive remounting')
+
+// Every capability can be reached without knowing its name in advance.
+const originalState = channel.state
+channel.state = { ...state, skills: Array.from({ length: 205 }, (_, index) => ({ ...skill, id: `writing/draft-${index}`, name: `draft-${index}` })) }
+await act(async () => { for (const notify of channel.queryListeners || []) notify() })
+await act(async () => { labeled(tree, 'Include Hermes').props.onChange({ target: { checked: true } }) })
+await click(tree, 'Edit capabilities')
+assert.equal(tree.root.findAllByType('select').filter(row => (row.props['aria-label'] || '').startsWith('Desired skill')).length, 100)
+await click(tree, 'Show more capabilities')
+await click(tree, 'Show more capabilities')
+assert(labeled(tree, 'Desired skill draft-204 in hermes'), 'The last item is reachable by browsing')
+await change(tree, 'Desired skill draft-204 in hermes', 'on')
+await act(async () => labeled(tree, 'Find a capability').props.onChange('draft-204'))
+assert.equal(labeled(tree, 'Desired skill draft-204 in hermes').props.value, 'on')
+await act(async () => labeled(tree, 'Find a capability').props.onChange(''))
+assert.equal(tree.root.findAllByType('select').filter(row => (row.props['aria-label'] || '').startsWith('Desired skill')).length, 100)
+await click(tree, 'Save loadout')
+assert(records.find(row => row.id === savedId).states.some(row => row.id === 'writing/draft-204' && row.enabled))
+channel.state = originalState
+await act(async () => { tree.unmount() })
+assert.equal(JSON.stringify(state), before)
+assert(channel.restCalls.every(row => /^\/loadouts(\/|$)/.test(row.path)), 'The editor never activates capabilities')
+console.log('ok  large capability lists are browsable in batches without losing off-screen selections')
 await act(async () => { tree = TestRenderer.create(createElement(SkillDetails, { skill, onClose: () => {} })) })
 await change(tree, 'Designed for draft', 'Hermes-specific')
 assert.equal(channel.metadata.skills[skill.id].classification, 'Hermes-specific')

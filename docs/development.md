@@ -143,3 +143,11 @@ Hermes version: plugin loading, backend restart, narrow/wide layouts, actual tab
 focus and dialog focus restoration, Global/Project setup, new-session client
 skill discovery, import without activation, and reopening/undo recovery.
 A screenshot of an SDK-fixture render is labeled as such, never as native proof.
+
+## Reliability audit
+
+See [the September 2026 audit](reliability-audit.md) for the implemented
+save/capture/review/editor fixes and remaining native acceptance priorities.
+Record writes use the same 4 MiB UTF-8 limit as reads and preserve existing
+records on overflow. Capture refuses unreadable selected MCP configurations
+without returning replacement draft states.

@@ -207,9 +207,9 @@ class LoadoutTests(unittest.TestCase):
             state = self.fx.core.state()
             hermes = state['skills'][0]['tools']['hermes']
             self.assertEqual(hermes['state'], 'config-unreadable')
-            captured = self.service.capture(['hermes'])
-            self.assertFalse(captured['states'])
-            self.assertTrue(captured['excluded'])
+            with self.assertRaises(pa.LoadoutError) as caught:
+                self.service.capture(['hermes'])
+            self.assertEqual(caught.exception.code, 'capture-unavailable')
             plan = self.service.plan([selection('skill', 'hermes', 'apple/apple-notes', False)])
             self.assertEqual(plan['counts']['unavailable'], 1, plan)
             mcp_plan = self.service.plan([selection('mcp', 'hermes', 'weather', True)])
@@ -220,9 +220,9 @@ class LoadoutTests(unittest.TestCase):
         state = self.fx.core.state()
         self.assertEqual(state['config']['code'], 'config-unreadable')
         self.assertEqual(state['skills'][0]['tools']['hermes']['state'], 'config-unreadable')
-        captured = self.service.capture(['hermes'])
-        self.assertFalse(captured['states'])
-        self.assertTrue(captured['excluded'])
+        with self.assertRaises(pa.LoadoutError) as caught:
+            self.service.capture(['hermes'])
+        self.assertEqual(caught.exception.code, 'capture-unavailable')
         mcp_state = self.mcp.mcp_state()
         self.assertTrue(mcp_state['partial_failure'])
         self.assertEqual(mcp_state['catalog_error']['code'], 'config-unreadable')

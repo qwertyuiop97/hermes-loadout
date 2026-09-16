@@ -17,6 +17,7 @@ from pathlib import Path
 
 class LoadoutService:
     FORMAT = 'hermes-loadout-operation-v1'
+    MAX_RECORD_BYTES = 4 * 1024 * 1024
 
     def __init__(self, core, mcp, api):
         self.core, self.mcp, self.api = core, mcp, api
@@ -45,7 +46,7 @@ class LoadoutService:
         path = self._path(name)
         if not path.exists():
             return copy.deepcopy(default)
-        if not path.is_file() or path.stat().st_size > 4 * 1024 * 1024:
+        if not path.is_file() or path.stat().st_size > self.MAX_RECORD_BYTES:
             raise self.Error('The saved Loadout record is invalid or too large.', 'record-invalid')
         try:
             data = json.loads(path.read_text(encoding='utf-8'))
@@ -56,8 +57,13 @@ class LoadoutService:
         return data
 
     def _write(self, name, data):
+        # Never accept a write that our own reader would refuse. Measure the
+        # serialized UTF-8 bytes before creating anything or replacing evidence.
+        text = json.dumps(data, indent=2, ensure_ascii=False) + '\n'
+        if len(text.encode('utf-8')) > self.MAX_RECORD_BYTES:
+            raise self.Error('The saved Loadout data would exceed its size limit. Reduce the selection or remove an unused loadout; existing records were preserved.', 'record-too-large')
         path = self._path(name, create=True)
-        self.api._atomic_write_text(path, json.dumps(data, indent=2, ensure_ascii=False) + '\n')
+        self.api._atomic_write_text(path, text)
 
     def _id(self, value):
         if not isinstance(value, str) or not re.fullmatch(r'[a-f0-9]{12}', value):
@@ -149,30 +155,46 @@ class LoadoutService:
             return {'ok': True, 'loadout': copy.deepcopy(record), 'action': action}
 
     def capture(self, apps):
-        """Save-only source data. This does not change filesystem or MCP state."""
-        if not isinstance(apps, list) or any(not isinstance(app, str) for app in apps):
-            raise self.Error('Select applications to capture.', 'invalid-body')
-        known = set(self.core.tools) | {'hermes', 'codex', 'claude-desktop'}
-        if any(app not in known for app in apps):
-            raise self.Error('An application is no longer available. Refresh the selection.', 'unknown-tool')
-        states, excluded = [], []
-        inventory = self.core.state()
-        for app in dict.fromkeys(apps):
-            if app in self.core.tools:
-                for skill in inventory['skills']:
-                    state = skill['tools'][app]['state']
-                    if state in ('enabled', 'disabled', 'missing'):
-                        states.append({'kind': 'skill', 'app': app, 'id': skill['id'], 'enabled': state == 'enabled'})
-                    else:
-                        excluded.append({'kind': 'skill', 'app': app, 'id': skill['id'], 'status': state})
-            if app in ('hermes', 'codex', 'claude-desktop'):
-                for row in self.mcp.mcp_state()['rows']:
-                    state = ('enabled' if row['enabled'] else 'disabled') if app == 'hermes' else row['writers'].get('claude' if app == 'claude-desktop' else app)
-                    if state in ('enabled', 'disabled', 'missing'):
-                        states.append({'kind': 'mcp', 'app': app, 'id': row['name'], 'enabled': state == 'enabled'})
-                    else:
-                        excluded.append({'kind': 'mcp', 'app': app, 'id': row['name'], 'status': state})
-        return {'ok': True, 'states': states, 'excluded': excluded}
+        """Save-only source data. Never present failed reads as empty selections."""
+        with self.core._lock, self.mcp._lock:
+            if not isinstance(apps, list) or any(not isinstance(app, str) for app in apps):
+                raise self.Error('Select applications to capture.', 'invalid-body')
+            known = set(self.core.tools) | {'hermes', 'codex', 'claude-desktop'}
+            if any(app not in known for app in apps):
+                raise self.Error('An application is no longer available. Refresh the selection.', 'unknown-tool')
+            apps = list(dict.fromkeys(apps))
+            if not apps:
+                return {'ok': True, 'states': [], 'excluded': []}
+            mcp_apps = set(apps) & {'hermes', 'codex', 'claude-desktop'}
+            public = self.mcp.mcp_state() if mcp_apps else None
+            if public is not None:
+                if public.get('catalog_error'):
+                    raise self.Error('The Hermes MCP catalog could not be read. Correct it and capture again; the draft was not replaced.', 'capture-unavailable')
+                for app in mcp_apps - {'hermes'}:
+                    writer = 'claude' if app == 'claude-desktop' else app
+                    if not public['writers'].get(writer, {}).get('available'):
+                        # Parser details may contain secrets. Only identify the
+                        # selected client, never include its native error text.
+                        raise self.Error(f'The {app} MCP configuration could not be read. Correct it and capture again; the draft was not replaced.', 'capture-unavailable')
+            states, excluded = [], []
+            inventory = self.core.state() if any(app in self.core.tools for app in apps) else None
+            for app in apps:
+                if app in self.core.tools:
+                    for skill in inventory['skills']:
+                        state = skill['tools'][app]['state']
+                        if state in ('enabled', 'disabled', 'missing'):
+                            states.append({'kind': 'skill', 'app': app, 'id': skill['id'], 'enabled': state == 'enabled'})
+                        else:
+                            excluded.append({'kind': 'skill', 'app': app, 'id': skill['id'], 'status': state})
+                if app in mcp_apps:
+                    for row in public['rows']:
+                        state = ('enabled' if row['enabled'] else 'disabled') if app == 'hermes' else row['writers'].get('claude' if app == 'claude-desktop' else app)
+                        if state in ('enabled', 'disabled', 'missing'):
+                            states.append({'kind': 'mcp', 'app': app, 'id': row['name'], 'enabled': state == 'enabled'})
+                        else:
+                            excluded.append({'kind': 'mcp', 'app': app, 'id': row['name'], 'status': state})
+            # Do not replace an editable draft with a capture it cannot save.
+            return {'ok': True, 'states': self._states(states), 'excluded': excluded}
 
     CLASSIFICATIONS = ('Portable', 'Hermes-specific', 'Codex-specific', 'Claude-specific',
                        'Other application-specific', 'Unclassified')
@@ -213,11 +235,12 @@ class LoadoutService:
             return self.mcp.claude_config, doc.get('mcpServers', {}).get(name)
         raise self.Error('No MCP writer is available for this application.', 'no-writer')
 
-    def _snapshot(self, row):
+    def _snapshot(self, row, skills=None):
         if row['kind'] == 'skill':
             self.core._validate_tool(row['app'])
-            self.core._validate_skill(row['id'])
-            skill = self.core._scan_skills()[row['id']]
+            skills = self.core._scan_skills() if skills is None else skills
+            self.core._validate_skill(row['id'], indexed=skills)
+            skill = skills[row['id']]
             if row['app'] == 'hermes':
                 return {'type': 'hermes-skill', 'context': self.api._canonical(str(self.core.config_path)),
                         'disabled': skill['name'] in self.core._disabled_set()}
@@ -235,11 +258,12 @@ class LoadoutService:
                 'present': native is not None, 'enabled': native.get('enabled', True) if isinstance(native, dict) else False,
                 'fingerprint': self.digest(native), 'source': self.digest(source['definition'] if source else None)}
 
-    def _disposition(self, row):
+    def _disposition(self, row, skills=None):
         if row['kind'] == 'skill':
             self.core._validate_tool(row['app'])
-            self.core._validate_skill(row['id'])
-            skill = self.core._scan_skills()[row['id']]
+            skills = self.core._scan_skills() if skills is None else skills
+            self.core._validate_skill(row['id'], indexed=skills)
+            skill = skills[row['id']]
             if row['enabled']:
                 self.core._validate_client_skill(skill, row['app'])
             result = self.core._bulk_disposition(skill, row['app'], row['enabled'], self.core._disabled_set())
@@ -279,25 +303,26 @@ class LoadoutService:
             states = self._states(states)
             items = []
             aliases = {}
+            # Only this read-only request shares a library snapshot. Apply and
+            # undo call the adapters afresh and still reject changed targets.
+            skills = self.core._scan_skills() if any(row['kind'] == 'skill' for row in states) else None
             for row in states:
                 try:
-                    status = self._disposition(row)
-                    before = self._snapshot(row)
+                    status = self._disposition(row, skills=skills)
+                    before = self._snapshot(row, skills=skills)
                     item = {**row, 'status': status, 'before': before}
                     alias = (row['kind'], before['context'], row['id'])
-                    previous = aliases.get(alias)
-                    if previous is not None:
-                        if previous['enabled'] != row['enabled']:
-                            previous.update(status='conflict', code='shared-target', error='These applications share a physical target and request opposite states.')
-                            item.update(status='conflict', code='shared-target', error='These applications share a physical target and request opposite states.')
-                        else:
-                            item['status'] = 'unchanged'
-                            item['reason'] = 'The same shared target is already included in this preview.'
-                    else:
-                        aliases[alias] = item
+                    aliases.setdefault(alias, []).append(item)
                     items.append(item)
                 except (self.Error, OSError, ValueError) as exc:
                     items.append(self._public_error(row, exc))
+            for group in aliases.values():
+                if len({item['enabled'] for item in group}) > 1:
+                    for item in group:
+                        item.update(status='conflict', code='shared-target', error='These applications share a physical target and request opposite states.')
+                else:
+                    for item in group[1:]:
+                        item.update(status='unchanged', reason='The same shared target is already included in this preview.')
             label = self._operation_label(label)
             payload = {'label': label, 'items': items, 'loadout_id': loadout_id}
             if loadout_id is not None:
@@ -733,7 +758,7 @@ class LoadoutService:
         if entry['kind'] == 'symlink' or not os.path.lexists(path):
             return entry
         if path.is_file():
-            if path.stat().st_size > 4 * 1024 * 1024:
+            if path.stat().st_size > self.MAX_RECORD_BYTES:
                 raise self.Error('The configuration exceeds the 4 MiB review limit.', 'record-invalid')
             return {'kind': 'file', 'identity': self.core._import_identity(path),
                     'hash': hashlib.sha256(path.read_bytes()).hexdigest()}
